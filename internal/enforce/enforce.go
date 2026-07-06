@@ -85,8 +85,10 @@ func (a Authorizer) Enforce(ctx context.Context, state model.State, processes []
 			decisions = append(decisions, Decision{Process: gpuProcess, Info: info, Action: "allow", Reason: "lease", LeaseID: leaseID})
 			continue
 		}
-		reason := fmt.Sprintf("unauthorized GPU access on gpu=%d pid=%d", gpuProcess.GPU, gpuProcess.PID)
-		decision := Decision{Process: gpuProcess, Info: info, Action: "kill", Reason: reason}
+		holder := leaseHolder(leases)
+		leaseID := firstLeaseID(leases)
+		reason := fmt.Sprintf("unauthorized GPU access on gpu=%d pid=%d; gpu is held by %s", gpuProcess.GPU, gpuProcess.PID, holder)
+		decision := Decision{Process: gpuProcess, Info: info, Action: "kill", Reason: reason, LeaseID: leaseID}
 		decisions = append(decisions, decision)
 		a.audit(model.AuditEvent{
 			Time:    now.UTC(),
@@ -94,9 +96,11 @@ func (a Authorizer) Enforce(ctx context.Context, state model.State, processes []
 			Message: reason,
 			GPU:     gpuProcess.GPU,
 			PID:     gpuProcess.PID,
+			LeaseID: leaseID,
+			User:    holder,
 		})
 		if !a.DryRun && a.Killer != nil {
-			msg := fmt.Sprintf("rocguard killed pid=%d on gpu=%d: unauthorized GPU access; use KEY=... rocguard run --gpu %d -- <command>", gpuProcess.PID, gpuProcess.GPU, gpuProcess.GPU)
+			msg := fmt.Sprintf("rocguard killed pid=%d on gpu=%d: unauthorized GPU access; gpu is held by %s; use KEY=... rocguard run --gpu %d -- <command>", gpuProcess.PID, gpuProcess.GPU, holder, gpuProcess.GPU)
 			if err := a.Killer.Kill(info, msg); err != nil {
 				return decisions, err
 			}
@@ -172,6 +176,31 @@ func activeLeasesForGPU(leases []model.Lease, gpu int, now time.Time) []model.Le
 		}
 	}
 	return out
+}
+
+func leaseHolder(leases []model.Lease) string {
+	var parts []string
+	for _, lease := range leases {
+		holder := strings.TrimSpace(lease.Holder)
+		if holder == "" {
+			holder = "unknown"
+		}
+		if lease.ID != "" {
+			holder = fmt.Sprintf("%s (lease=%s)", holder, lease.ID)
+		}
+		parts = append(parts, holder)
+	}
+	if len(parts) == 0 {
+		return "unknown"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func firstLeaseID(leases []model.Lease) string {
+	if len(leases) == 0 {
+		return ""
+	}
+	return leases[0].ID
 }
 
 func bypassMatch(rules []model.BypassRule, info model.ProcInfo, now time.Time) bool {

@@ -3,6 +3,7 @@ package enforce
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,11 +44,13 @@ func (f fakeRuntime) NamespaceForContainer(_ context.Context, id string) (string
 }
 
 type fakeKiller struct {
-	killed []int
+	killed   []int
+	messages []string
 }
 
-func (f *fakeKiller) Kill(info model.ProcInfo, _ string) error {
+func (f *fakeKiller) Kill(info model.ProcInfo, message string) error {
 	f.killed = append(f.killed, info.PID)
+	f.messages = append(f.messages, message)
 	return nil
 }
 
@@ -74,13 +77,21 @@ func TestUnauthorizedPIDIsKilledOnLeasedGPU(t *testing.T) {
 		Killer: killer,
 		Now:    fixedNow,
 	}
-	state := model.State{Leases: []model.Lease{activeLease(model.ModeBare, 0)}}
+	lease := activeLease(model.ModeBare, 0)
+	lease.Holder = "alice"
+	state := model.State{Leases: []model.Lease{lease}}
 	decisions, err := auth.Enforce(context.Background(), state, []model.GPUProcess{{GPU: 0, PID: 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decisions[0].Action != "kill" || len(killer.killed) != 1 || killer.killed[0] != 10 {
 		t.Fatalf("unexpected decisions=%+v killed=%v", decisions, killer.killed)
+	}
+	if decisions[0].LeaseID != "lease_test" || !strings.Contains(decisions[0].Reason, "alice (lease=lease_test)") {
+		t.Fatalf("kill reason should include holder and lease: %+v", decisions[0])
+	}
+	if len(killer.messages) != 1 || !strings.Contains(killer.messages[0], "gpu is held by alice (lease=lease_test)") {
+		t.Fatalf("kill message should include holder and lease: %v", killer.messages)
 	}
 }
 
