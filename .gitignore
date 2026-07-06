@@ -1,3 +1,5 @@
 /rocguard
 /coverage.out
 *.test
+__pycache__/
+*.py[cod]

@@ -38,8 +38,10 @@ type Server struct {
 }
 
 type peer struct {
-	UID int
-	GID int
+	PID    int
+	UID    int
+	GID    int
+	Groups []uint32
 }
 
 func New(cfg config.Config) *Server {
@@ -90,9 +92,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	p := peer{UID: -1, GID: -1}
-	if uid, gid, err := peerCred(conn); err == nil {
-		p = peer{UID: uid, GID: gid}
+	p := peer{PID: -1, UID: -1, GID: -1}
+	if resolved, err := peerCred(conn, s.Cfg.ProcRoot); err == nil {
+		p = resolved
 	}
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
@@ -331,10 +333,10 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID string, to
 	lease.CgroupRel = cgroupRel
 	cmd := exec.CommandContext(ctx, args.Command[0], args.Command[1:]...)
 	cmd.Dir = args.Workdir
-	cmd.Env = gpuEnv(filterTokenEnv(args.Env), args.GPU)
+	cmd.Env = commandEnv(args.Env)
 	sys := &syscall.SysProcAttr{Setpgid: true}
 	if os.Geteuid() == 0 && p.UID >= 0 && p.GID >= 0 {
-		sys.Credential = &syscall.Credential{Uid: uint32(p.UID), Gid: uint32(p.GID)}
+		sys.Credential = &syscall.Credential{Uid: uint32(p.UID), Gid: uint32(p.GID), Groups: p.Groups}
 	}
 	cmd.SysProcAttr = sys
 	stdout, err := cmd.StdoutPipe()
@@ -541,14 +543,7 @@ func writeResult(writer io.Writer, resp protocol.Response) {
 	_, _ = writer.Write(append(data, '\n'))
 }
 
-func gpuEnv(env []string, gpu int) []string {
-	out := append([]string(nil), env...)
-	value := strconv.Itoa(gpu)
-	out = append(out, "HIP_VISIBLE_DEVICES="+value, "ROCR_VISIBLE_DEVICES="+value, "GPU_DEVICE_ORDINAL="+value)
-	return out
-}
-
-func filterTokenEnv(env []string) []string {
+func commandEnv(env []string) []string {
 	if len(env) == 0 {
 		return os.Environ()
 	}
@@ -562,14 +557,14 @@ func filterTokenEnv(env []string) []string {
 	return out
 }
 
-func peerCred(conn net.Conn) (int, int, error) {
+func peerCred(conn net.Conn, procRoot string) (peer, error) {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
-		return -1, -1, errors.New("not a unix connection")
+		return peer{}, errors.New("not a unix connection")
 	}
 	raw, err := unixConn.SyscallConn()
 	if err != nil {
-		return -1, -1, err
+		return peer{}, err
 	}
 	var cred *syscall.Ucred
 	var controlErr error
@@ -577,10 +572,40 @@ func peerCred(conn net.Conn) (int, int, error) {
 		cred, controlErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 	})
 	if err != nil {
-		return -1, -1, err
+		return peer{}, err
 	}
 	if controlErr != nil {
-		return -1, -1, controlErr
+		return peer{}, controlErr
 	}
-	return int(cred.Uid), int(cred.Gid), nil
+	groups := peerGroups(procRoot, int(cred.Pid), int(cred.Gid))
+	return peer{PID: int(cred.Pid), UID: int(cred.Uid), GID: int(cred.Gid), Groups: groups}, nil
+}
+
+func peerGroups(procRoot string, pid, primaryGID int) []uint32 {
+	groups := []uint32{uint32(primaryGID)}
+	statusPath := filepath.Join(procRoot, strconv.Itoa(pid), "status")
+	data, err := os.ReadFile(statusPath)
+	if err != nil {
+		return groups
+	}
+	seen := map[uint32]bool{uint32(primaryGID): true}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "Groups:") {
+			continue
+		}
+		for _, field := range strings.Fields(strings.TrimPrefix(line, "Groups:")) {
+			gid, err := strconv.ParseUint(field, 10, 32)
+			if err != nil {
+				continue
+			}
+			value := uint32(gid)
+			if seen[value] {
+				continue
+			}
+			seen[value] = true
+			groups = append(groups, value)
+		}
+		return groups
+	}
+	return groups
 }

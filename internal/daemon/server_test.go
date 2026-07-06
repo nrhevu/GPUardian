@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +102,43 @@ func TestEnsureLeaseCanStartAllowsMatchingDockerContainer(t *testing.T) {
 	lease := model.Lease{ID: "lease_test", GPU: 0, Mode: model.ModeDocker, ContainerID: containerID, Active: true, ExpiresAt: time.Now().Add(time.Hour)}
 	if err := server.ensureLeaseCanStart(context.Background(), lease); err != nil {
 		t.Fatalf("expected matching docker container to be allowed: %v", err)
+	}
+}
+
+func TestCommandEnvDoesNotInjectGPUVisibility(t *testing.T) {
+	env := commandEnv([]string{"PATH=/bin", "KEY=rg_secret"})
+	for _, item := range env {
+		if strings.HasPrefix(item, "HIP_VISIBLE_DEVICES=") ||
+			strings.HasPrefix(item, "ROCR_VISIBLE_DEVICES=") ||
+			strings.HasPrefix(item, "GPU_DEVICE_ORDINAL=") ||
+			item == "KEY=rg_secret" {
+			t.Fatalf("unexpected env item %q", item)
+		}
+	}
+	if len(env) != 1 || env[0] != "PATH=/bin" {
+		t.Fatalf("unexpected env: %v", env)
+	}
+}
+
+func TestPeerGroupsIncludesSupplementaryGroups(t *testing.T) {
+	dir := t.TempDir()
+	statusDir := filepath.Join(dir, "1234")
+	if err := os.MkdirAll(statusDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	status := "Name:\trocguard\nGroups:\t1001 44 109 1001\n"
+	if err := os.WriteFile(filepath.Join(statusDir, "status"), []byte(status), 0644); err != nil {
+		t.Fatal(err)
+	}
+	groups := peerGroups(dir, 1234, 1001)
+	want := []uint32{1001, 44, 109}
+	if len(groups) != len(want) {
+		t.Fatalf("groups=%v want=%v", groups, want)
+	}
+	for i := range want {
+		if groups[i] != want[i] {
+			t.Fatalf("groups=%v want=%v", groups, want)
+		}
 	}
 }
 
