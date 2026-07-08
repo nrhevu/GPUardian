@@ -1,7 +1,6 @@
 package proc
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,7 +39,7 @@ func (r FSReader) Info(pid int) (model.ProcInfo, error) {
 	cmdline, _ := readCmdline(filepath.Join(base, "cmdline"))
 	cgroupBytes, _ := os.ReadFile(filepath.Join(base, "cgroup"))
 	statusBytes, _ := os.ReadFile(filepath.Join(base, "status"))
-	stderrPath, _ := os.Readlink(filepath.Join(base, "fd", "2"))
+	stderrPath := filepath.Join(base, "fd", "2")
 	info := model.ProcInfo{
 		PID:         pid,
 		UID:         parseUID(string(statusBytes)),
@@ -107,8 +106,8 @@ func ExtractContainerID(cgroup string) string {
 }
 
 func WriteMessageToStderr(info model.ProcInfo, message string) error {
-	if info.StderrPath == "" || strings.HasPrefix(info.StderrPath, "pipe:") || strings.HasPrefix(info.StderrPath, "socket:") {
-		return errors.New("stderr is not a writable path")
+	if info.StderrPath == "" {
+		info.StderrPath = filepath.Join("/proc", strconv.Itoa(info.PID), "fd", "2")
 	}
 	file, err := os.OpenFile(info.StderrPath, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
