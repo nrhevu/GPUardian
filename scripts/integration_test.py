@@ -2,7 +2,6 @@
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -24,7 +23,6 @@ def parse_args():
     parser.add_argument("--children", type=int, default=2, help="Child process count for cgroup test.")
     parser.add_argument("--bypass-ttl", default="30m", help="TTL for auto-bypass rules.")
     parser.add_argument("--no-auto-bypass", action="store_true", help="Do not bypass pre-existing GPU PIDs.")
-    parser.add_argument("--sudo", default="sudo", help="Deprecated; admin rocguard operations now use ROOT_KEY.")
     parser.add_argument("--docker-image", default="", help="Optional ROCm/PyTorch image for Docker test.")
     parser.add_argument("--docker-sudo", action="store_true", help="Run docker commands through sudo.")
     parser.add_argument("--k8s-namespace", default="", help="Optional namespace for K8s test.")
@@ -113,10 +111,6 @@ def run_json(cmd, *, env=None):
     return json.loads(result.stdout[start:])
 
 
-def admin_cmd(args, rocguard):
-    return [rocguard]
-
-
 def auto_bypass_existing_processes(args, rocguard, env):
     print("[setup] auto-bypass existing GPU processes on selected GPUs")
     processes = amd_smi_processes(set(args.gpu_list))
@@ -189,14 +183,10 @@ def hold_args(args, gpu_value):
 def test_multigpu(args, root, rocguard, env):
     print("[test] multi-gpu holder")
     gpu_csv = ",".join(str(gpu) for gpu in args.gpu_list)
-    if len(args.gpu_list) > 1:
-        print("[note] deprecated --gpu limits this authorization to the first selected GPU")
     run(
         [
             rocguard,
             "run",
-            "--gpu",
-            str(args.gpu_list[0]),
             "--",
             sys.executable,
             str(root / "scripts" / "hold_gpu.py"),
@@ -212,8 +202,6 @@ def test_child_processes(args, root, rocguard, env):
         [
             rocguard,
             "run",
-            "--gpu",
-            str(args.gpu_list[0]),
             "--",
             sys.executable,
             str(root / "scripts" / "spawn_gpu_children.py"),
@@ -235,15 +223,8 @@ def test_child_processes(args, root, rocguard, env):
 
 
 def docker_cmd(args):
-    prefix = command_prefix(args.sudo) if args.docker_sudo else []
+    prefix = ["sudo"] if args.docker_sudo else []
     return prefix + ["docker"]
-
-
-def command_prefix(value):
-    value = value.strip()
-    if not value:
-        return []
-    return shlex.split(value)
 
 
 def test_docker(args, root, rocguard, env):
@@ -275,10 +256,10 @@ def test_docker(args, root, rocguard, env):
                 "infinity",
             ]
         )
-        allow = run_json([rocguard, "allow", "docker", "--gpu", str(args.gpu_list[0]), "--container", name], env=env)
+        allow = run_json([rocguard, "allow", "docker", "--container", name], env=env)
         run(docker_cmd(args) + ["exec", name, "python3", "scripts/hold_gpu.py"] + hold_args(args, args.gpu_list[0]))
         if allow.get("authorization_id"):
-            run(admin_cmd(args, rocguard) + ["revoke", allow["authorization_id"]], env=env, check=False)
+            run([rocguard, "revoke", allow["authorization_id"]], env=env, check=False)
     finally:
         run(docker_cmd(args) + ["rm", "-f", name], check=False)
 
@@ -289,7 +270,7 @@ def test_k8s(args, rocguard, env):
     pod = f"rocguard-it-{os.getpid()}"
     if args.k8s_create_namespace:
         run(["kubectl", "create", "namespace", namespace], check=False)
-    allow = run_json([rocguard, "allow", "k8s", "--gpu", str(args.gpu_list[0]), "--namespace", namespace], env=env)
+    allow = run_json([rocguard, "allow", "k8s", "--namespace", namespace], env=env)
     manifest = k8s_manifest(args, namespace, pod)
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tmp:
@@ -304,7 +285,7 @@ def test_k8s(args, rocguard, env):
             Path(tmp_path).unlink(missing_ok=True)
         run(["kubectl", "delete", "pod", pod, "-n", namespace, "--ignore-not-found=true"], check=False)
         if allow.get("authorization_id"):
-            run(admin_cmd(args, rocguard) + ["revoke", allow["authorization_id"]], env=env, check=False)
+            run([rocguard, "revoke", allow["authorization_id"]], env=env, check=False)
 
 
 def k8s_manifest(args, namespace, pod):

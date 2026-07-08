@@ -33,24 +33,20 @@ type RegisterArgs struct {
 }
 
 type RunArgs struct {
-	GPU     *int     `json:"gpu,omitempty"`
 	Command []string `json:"command"`
 	Workdir string   `json:"workdir,omitempty"`
 	Env     []string `json:"env,omitempty"`
 }
 
 type DockerAllowArgs struct {
-	GPU       *int   `json:"gpu,omitempty"`
 	Container string `json:"container"`
 }
 
 type K8sAllowArgs struct {
-	GPU       *int   `json:"gpu,omitempty"`
 	Namespace string `json:"namespace"`
 }
 
 type UserAllowArgs struct {
-	GPU  *int   `json:"gpu,omitempty"`
 	User string `json:"user"`
 }
 

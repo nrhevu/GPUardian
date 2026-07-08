@@ -639,10 +639,8 @@ func newToken(mode, name string, expiresAt time.Time, now time.Time) (string, mo
 func NormalizeTokenMode(mode string) string {
 	mode = strings.TrimSpace(strings.ToLower(mode))
 	switch mode {
-	case "", "soft":
+	case "":
 		return model.TokenModeClaimed
-	case "hard":
-		return model.TokenModeReserved
 	default:
 		return mode
 	}
@@ -657,7 +655,6 @@ func authorizationView(authorization model.Authorization) model.AuthorizationVie
 		UID:         authorization.UID,
 		GID:         authorization.GID,
 		Username:    authorization.Username,
-		GPU:         authorization.GPU,
 		Command:     append([]string(nil), authorization.Command...),
 		RootPID:     authorization.RootPID,
 		ContainerID: authorization.ContainerID,

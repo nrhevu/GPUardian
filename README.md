@@ -45,14 +45,10 @@ Start the daemon as root:
 sudo ./rocguard daemon
 ```
 
-In another terminal, create or show the local root key:
-
-```bash
-sudo ./rocguard show-root-key
-```
-
-The old `show-key` command is kept as a compatibility alias. Only UID 0 can
-show or create the root key.
+In another terminal, get the root key from the root-owned key file. By default
+that file is `/var/lib/rocguard/root.key`; if `ROCGUARD_ROOT_KEY` is set, use
+that path instead. There is intentionally no Rocguard CLI command that prints
+the root key.
 
 Register a claimed-mode key:
 
@@ -83,6 +79,7 @@ TTL [2h]:
 ```
 
 Reserved TTL is capped at 8 hours.
+Only `--reserved` and `--claimed` are valid registration modes.
 
 Use the returned token to run a GPU command:
 
@@ -90,17 +87,14 @@ Use the returned token to run a GPU command:
 KEY=rg_xxx ./rocguard run -- python train.py
 ```
 
-The deprecated `--gpu` flag is still accepted to limit an authorization to one
-host GPU for older scripts. Rocguard does not set `HIP_VISIBLE_DEVICES`,
-`ROCR_VISIBLE_DEVICES`, or similar GPU visibility variables for the wrapped
-command.
+Rocguard does not set `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, or similar
+GPU visibility variables for the wrapped command.
 
 Check current state:
 
 ```bash
 ./rocguard status
 ./rocguard ps
-./rocguard who --gpu 0
 KEY=rg_xxx ./rocguard token info
 ROOT_KEY=rk_xxx ./rocguard show-keys
 ```
@@ -113,16 +107,19 @@ Admin commands that need the root key read it from `ROOT_KEY` or prompt for it.
 ## Command Reference
 
 ```text
+rocguard help
 rocguard daemon [--dry-run]
-sudo rocguard show-root-key
-rocguard show-keys
 rocguard register (--reserved | --claimed)
-KEY=... rocguard run [--gpu <id>] -- <command>
-KEY=... rocguard allow docker [--gpu <id>] --container <name-or-id>
-KEY=... rocguard allow k8s [--gpu <id>] --namespace <name>
-KEY=... rocguard allow user [--gpu <id>] --user <name>
-rocguard bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>
-rocguard revoke <token-or-reservation-or-authorization-or-bypass-id>
+KEY=... rocguard run -- <command>
+KEY=... rocguard allow docker --container <name-or-id>
+KEY=... rocguard allow k8s --namespace <name>
+KEY=... rocguard allow user --user <name>
+rocguard status
+rocguard ps
+KEY=... rocguard token info
+ROOT_KEY=... rocguard show-keys
+ROOT_KEY=... rocguard bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>
+ROOT_KEY=... rocguard revoke <token-or-reservation-or-authorization-or-bypass-id>
 ```
 
 ## Docker Mode
@@ -135,8 +132,7 @@ KEY=rg_xxx ./rocguard allow docker --container trainer
 
 Rocguard resolves the container name to an immutable container ID at
 authorization time. The mutable container name is not trusted during
-enforcement. The old `rocguard docker allow [--gpu <id>] --container ...`
-alias is still accepted.
+enforcement.
 
 For this to be meaningful, regular users should not have direct access to the
 Docker socket. Membership in the `docker` group is effectively root-equivalent.
@@ -150,8 +146,7 @@ KEY=rg_xxx ./rocguard allow k8s --namespace training
 ```
 
 Rocguard maps GPU PIDs to container IDs and then to Kubernetes namespaces using
-`crictl inspect` first, with `kubectl get pod -A -o json` as a fallback. The
-old `rocguard k8s allow [--gpu <id>] --namespace ...` alias is still accepted.
+`crictl inspect` first, with `kubectl get pod -A -o json` as a fallback.
 
 Namespace-level authorization is broad: any pod in that namespace can match the
 authorization.
@@ -233,14 +228,17 @@ Build:
 GOCACHE=/tmp/rocguard-go-build go build -buildvcs=false -o rocguard ./cmd/rocguard
 ```
 
-Run a root-key smoke test with temporary paths:
+Run a root-key smoke test with temporary paths by provisioning the key file
+directly:
 
 ```bash
-sudo env \
-  ROCGUARD_ROOT_KEY=/tmp/rocguard/root.key \
-  ROCGUARD_STATE=/tmp/rocguard/state.json \
-  ROCGUARD_AUDIT_LOG=/tmp/rocguard/audit.log \
-  ./rocguard show-root-key
+mkdir -p /tmp/rocguard
+printf 'rk_dev_only\n' > /tmp/rocguard/root.key
+chmod 600 /tmp/rocguard/root.key
+ROCGUARD_ROOT_KEY=/tmp/rocguard/root.key \
+ROCGUARD_STATE=/tmp/rocguard/state.json \
+ROCGUARD_AUDIT_LOG=/tmp/rocguard/audit.log \
+ROOT_KEY=rk_dev_only ./rocguard show-keys
 ```
 
 Run light bare-metal integration tests:

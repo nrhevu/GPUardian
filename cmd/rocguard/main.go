@@ -21,7 +21,6 @@ import (
 	"rocguardd/internal/daemon"
 	"rocguardd/internal/model"
 	"rocguardd/internal/protocol"
-	"rocguardd/internal/store"
 )
 
 func main() {
@@ -38,10 +37,11 @@ func run(args []string) error {
 		return nil
 	}
 	switch args[0] {
+	case "help", "-h", "--help":
+		usage()
+		return nil
 	case "daemon":
 		return daemonCommand(cfg, args[1:])
-	case "show-root-key", "show-key":
-		return showRootKey(cfg)
 	case "show-keys":
 		rootKey, err := rootKeyFromEnvOrPrompt()
 		if err != nil {
@@ -54,16 +54,10 @@ func run(args []string) error {
 		return runCommand(cfg, args[1:])
 	case "allow":
 		return allowCommand(cfg, args[1:])
-	case "docker":
-		return dockerCommand(cfg, args[1:])
-	case "k8s":
-		return k8sCommand(cfg, args[1:])
 	case "status":
 		return printRPC(cfg, "status", tokenFromEnv(), nil)
 	case "ps":
 		return psCommand(cfg)
-	case "who":
-		return whoCommand(cfg, args[1:])
 	case "token":
 		return tokenCommand(cfg, args[1:])
 	case "bypass":
@@ -98,25 +92,11 @@ func daemonCommand(cfg config.Config, args []string) error {
 	return daemon.New(cfg).Run(ctx)
 }
 
-func showRootKey(cfg config.Config) error {
-	if os.Geteuid() != 0 {
-		return errors.New("show-root-key requires uid 0")
-	}
-	key, err := store.New(cfg).ReadOrCreateRootKey()
-	if err != nil {
-		return err
-	}
-	fmt.Println(key)
-	return nil
-}
-
 func register(cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("register", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	reserved := fs.Bool("reserved", false, "create a reserved GPU key")
 	claimed := fs.Bool("claimed", false, "create a claimed-mode key")
-	hard := fs.Bool("hard", false, "legacy alias for --reserved")
-	soft := fs.Bool("soft", false, "legacy alias for --claimed")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -127,8 +107,6 @@ func register(cfg config.Config, args []string) error {
 	}{
 		{*reserved, model.TokenModeReserved},
 		{*claimed, model.TokenModeClaimed},
-		{*hard, model.TokenModeReserved},
-		{*soft, model.TokenModeClaimed},
 	} {
 		if !selected.ok {
 			continue
@@ -189,27 +167,18 @@ func register(cfg config.Config, args []string) error {
 }
 
 func runCommand(cfg config.Config, args []string) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	gpu := fs.Int("gpu", -1, "GPU id")
-	if err := fs.Parse(args); err != nil {
-		return err
+	command := args
+	if len(command) > 0 && command[0] != "--" && strings.HasPrefix(command[0], "-") {
+		return errors.New("usage: KEY=... rocguard run -- <command>")
 	}
-	command := fs.Args()
 	if len(command) > 0 && command[0] == "--" {
 		command = command[1:]
 	}
 	if len(command) == 0 {
-		return errors.New("usage: KEY=... rocguard run [--gpu <id>] -- <command>")
-	}
-	var gpuArg *int
-	if *gpu >= 0 {
-		value := *gpu
-		gpuArg = &value
+		return errors.New("usage: KEY=... rocguard run -- <command>")
 	}
 	workdir, _ := os.Getwd()
 	raw, err := callRPC(cfg, "run", requiredToken(), protocol.RunArgs{
-		GPU:     gpuArg,
 		Command: command,
 		Workdir: workdir,
 		Env:     os.Environ(),
@@ -227,34 +196,6 @@ func runCommand(cfg config.Config, args []string) error {
 	return nil
 }
 
-func dockerCommand(cfg config.Config, args []string) error {
-	if len(args) == 0 || args[0] != "allow" {
-		return errors.New("usage: KEY=... rocguard docker allow [--gpu <id>] --container <name-or-id>")
-	}
-	fs := flag.NewFlagSet("docker allow", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	gpu := fs.Int("gpu", -1, "GPU id")
-	container := fs.String("container", "", "container name or id")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	return printRPC(cfg, "docker_allow", requiredToken(), protocol.DockerAllowArgs{GPU: optionalGPU(*gpu), Container: *container})
-}
-
-func k8sCommand(cfg config.Config, args []string) error {
-	if len(args) == 0 || args[0] != "allow" {
-		return errors.New("usage: KEY=... rocguard k8s allow [--gpu <id>] --namespace <name>")
-	}
-	fs := flag.NewFlagSet("k8s allow", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	gpu := fs.Int("gpu", -1, "GPU id")
-	namespace := fs.String("namespace", "", "namespace")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	return printRPC(cfg, "k8s_allow", requiredToken(), protocol.K8sAllowArgs{GPU: optionalGPU(*gpu), Namespace: *namespace})
-}
-
 func allowCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: KEY=... rocguard allow (docker|k8s|user) ...")
@@ -263,46 +204,30 @@ func allowCommand(cfg config.Config, args []string) error {
 	case "docker":
 		fs := flag.NewFlagSet("allow docker", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
-		gpu := fs.Int("gpu", -1, "GPU id")
 		container := fs.String("container", "", "container name or id")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return printRPC(cfg, "allow_docker", requiredToken(), protocol.DockerAllowArgs{GPU: optionalGPU(*gpu), Container: *container})
+		return printRPC(cfg, "allow_docker", requiredToken(), protocol.DockerAllowArgs{Container: *container})
 	case "k8s":
 		fs := flag.NewFlagSet("allow k8s", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
-		gpu := fs.Int("gpu", -1, "GPU id")
 		namespace := fs.String("namespace", "", "namespace")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return printRPC(cfg, "allow_k8s", requiredToken(), protocol.K8sAllowArgs{GPU: optionalGPU(*gpu), Namespace: *namespace})
+		return printRPC(cfg, "allow_k8s", requiredToken(), protocol.K8sAllowArgs{Namespace: *namespace})
 	case "user":
 		fs := flag.NewFlagSet("allow user", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
-		gpu := fs.Int("gpu", -1, "GPU id")
 		username := fs.String("user", "", "username")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return printRPC(cfg, "allow_user", requiredToken(), protocol.UserAllowArgs{GPU: optionalGPU(*gpu), User: *username})
+		return printRPC(cfg, "allow_user", requiredToken(), protocol.UserAllowArgs{User: *username})
 	default:
 		return fmt.Errorf("unknown allow scope %q", args[0])
 	}
-}
-
-func whoCommand(cfg config.Config, args []string) error {
-	fs := flag.NewFlagSet("who", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	gpu := fs.Int("gpu", -1, "GPU id")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *gpu < 0 {
-		return errors.New("usage: rocguard who --gpu <id>")
-	}
-	return printRPC(cfg, "who", tokenFromEnv(), protocol.WhoArgs{GPU: *gpu})
 }
 
 func tokenCommand(cfg config.Config, args []string) error {
@@ -388,13 +313,6 @@ func rootKeyFromEnvOrPrompt() (string, error) {
 	return prompt(bufio.NewReader(os.Stdin), "Root key: ")
 }
 
-func optionalGPU(gpu int) *int {
-	if gpu < 0 {
-		return nil
-	}
-	return &gpu
-}
-
 func callRPC(cfg config.Config, method, token string, args any, stream bool) (json.RawMessage, error) {
 	conn, err := net.Dial("unix", cfg.SocketPath)
 	if err != nil {
@@ -468,22 +386,23 @@ func tokenFromEnv() string {
 }
 
 func usage() {
-	fmt.Print(`rocguard commands:
+	fmt.Print(usageText())
+}
+
+func usageText() string {
+	return `rocguard commands:
+  rocguard help
   rocguard daemon [--dry-run]
-  sudo rocguard show-root-key
-  rocguard show-keys
   rocguard register (--reserved | --claimed)
-  KEY=... rocguard run [--gpu <id>] -- <command>
-  KEY=... rocguard allow docker [--gpu <id>] --container <name-or-id>
-  KEY=... rocguard allow k8s [--gpu <id>] --namespace <name>
-  KEY=... rocguard allow user [--gpu <id>] --user <name>
-  KEY=... rocguard docker allow [--gpu <id>] --container <name-or-id>
-  KEY=... rocguard k8s allow [--gpu <id>] --namespace <name>
+  KEY=... rocguard run -- <command>
+  KEY=... rocguard allow docker --container <name-or-id>
+  KEY=... rocguard allow k8s --namespace <name>
+  KEY=... rocguard allow user --user <name>
   rocguard status
   rocguard ps
-  rocguard who --gpu <id>
-  rocguard token info
-  rocguard bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>
-  rocguard revoke <token-or-reservation-or-authorization-or-bypass-id>
-`)
+  KEY=... rocguard token info
+  ROOT_KEY=... rocguard show-keys
+  ROOT_KEY=... rocguard bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>
+  ROOT_KEY=... rocguard revoke <token-or-reservation-or-authorization-or-bypass-id>
+`
 }

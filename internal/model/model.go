@@ -11,9 +11,6 @@ const (
 	TokenModeReserved = "reserved"
 	TokenModeClaimed  = "claimed"
 
-	TokenModeHard = TokenModeReserved
-	TokenModeSoft = TokenModeClaimed
-
 	BypassPID     = "pid"
 	BypassCommand = "command"
 )
@@ -65,7 +62,6 @@ type Authorization struct {
 	UID         int       `json:"uid,omitempty"`
 	GID         int       `json:"gid,omitempty"`
 	Username    string    `json:"username,omitempty"`
-	GPU         *int      `json:"gpu,omitempty"`
 	Command     []string  `json:"command,omitempty"`
 	RootPID     int       `json:"root_pid,omitempty"`
 	CgroupPath  string    `json:"cgroup_path,omitempty"`
@@ -176,7 +172,6 @@ type AuthorizationView struct {
 	UID         int        `json:"uid,omitempty"`
 	GID         int        `json:"gid,omitempty"`
 	Username    string     `json:"username,omitempty"`
-	GPU         *int       `json:"gpu,omitempty"`
 	Command     []string   `json:"command,omitempty"`
 	RootPID     int        `json:"root_pid,omitempty"`
 	ContainerID string     `json:"container_id,omitempty"`
@@ -222,7 +217,6 @@ type AllowResult struct {
 	AuthorizationID string     `json:"authorization_id"`
 	LeaseID         string     `json:"lease_id,omitempty"`
 	Mode            string     `json:"mode"`
-	GPU             *int       `json:"gpu,omitempty"`
 	ContainerID     string     `json:"container_id,omitempty"`
 	Namespace       string     `json:"namespace,omitempty"`
 	Username        string     `json:"username,omitempty"`

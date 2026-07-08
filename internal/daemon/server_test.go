@@ -62,7 +62,7 @@ func TestRegisterRPC(t *testing.T) {
 	defer client.Close()
 	go server.handleConn(context.Background(), srv)
 
-	args, _ := json.Marshal(protocol.RegisterArgs{RootKey: key, Name: "alice", TTL: "1h"})
+	args, _ := json.Marshal(protocol.RegisterArgs{RootKey: key, Mode: model.TokenModeClaimed, Name: "alice", TTL: "1h"})
 	req, _ := json.Marshal(protocol.Request{ID: "1", Method: "register", Args: args})
 	if _, err := client.Write(append(req, '\n')); err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestDockerAllowAliasCreatesAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "trainer"})
-	result, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "docker_allow", Token: secret, Args: args})
+	result, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
 	if err != nil {
 		t.Fatal(err)
 	}

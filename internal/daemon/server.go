@@ -127,6 +127,9 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 		if err := json.Unmarshal(req.Args, &args); err != nil {
 			return nil, err
 		}
+		if strings.TrimSpace(args.Mode) == "" {
+			return nil, errors.New("mode must be reserved or claimed")
+		}
 		if ok, err := s.Store.ValidateRootKey(args.RootKey); err != nil {
 			return nil, err
 		} else if !ok {
@@ -151,7 +154,7 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 		default:
 			return nil, errors.New("mode must be reserved or claimed")
 		}
-	case "docker_allow", "allow_docker":
+	case "allow_docker":
 		token, tokenHash, err := s.validateToken(req.Token, now)
 		if err != nil {
 			return nil, err
@@ -161,7 +164,7 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 			return nil, err
 		}
 		return s.createDockerAuthorization(ctx, token, tokenHash, p, args)
-	case "k8s_allow", "allow_k8s":
+	case "allow_k8s":
 		token, tokenHash, err := s.validateToken(req.Token, now)
 		if err != nil {
 			return nil, err
@@ -273,9 +276,6 @@ func (s *Server) validateToken(secret string, now time.Time) (model.Token, strin
 }
 
 func (s *Server) createDockerAuthorization(ctx context.Context, token model.Token, tokenHash string, p peer, args protocol.DockerAllowArgs) (model.AllowResult, error) {
-	if err := validateOptionalGPU(args.GPU); err != nil {
-		return model.AllowResult{}, err
-	}
 	if err := s.ensureTokenCanAuthorize(tokenHash, token, time.Now()); err != nil {
 		return model.AllowResult{}, err
 	}
@@ -292,7 +292,6 @@ func (s *Server) createDockerAuthorization(ctx context.Context, token model.Toke
 		Holder:      token.Name,
 		UID:         p.UID,
 		GID:         p.GID,
-		GPU:         args.GPU,
 		ContainerID: containerID,
 		CreatedAt:   now.UTC(),
 		ExpiresAt:   token.ExpiresAt,
@@ -301,13 +300,10 @@ func (s *Server) createDockerAuthorization(ctx context.Context, token model.Toke
 	if err := s.Store.AddAuthorization(authorization); err != nil {
 		return model.AllowResult{}, err
 	}
-	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, GPU: authorization.GPU, ContainerID: containerID, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
+	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, ContainerID: containerID, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
 }
 
 func (s *Server) createK8sAuthorization(ctx context.Context, token model.Token, tokenHash string, p peer, args protocol.K8sAllowArgs) (model.AllowResult, error) {
-	if err := validateOptionalGPU(args.GPU); err != nil {
-		return model.AllowResult{}, err
-	}
 	if err := s.ensureTokenCanAuthorize(tokenHash, token, time.Now()); err != nil {
 		return model.AllowResult{}, err
 	}
@@ -328,7 +324,6 @@ func (s *Server) createK8sAuthorization(ctx context.Context, token model.Token, 
 		Holder:    token.Name,
 		UID:       p.UID,
 		GID:       p.GID,
-		GPU:       args.GPU,
 		Namespace: strings.TrimSpace(args.Namespace),
 		CreatedAt: now.UTC(),
 		ExpiresAt: token.ExpiresAt,
@@ -337,13 +332,10 @@ func (s *Server) createK8sAuthorization(ctx context.Context, token model.Token, 
 	if err := s.Store.AddAuthorization(authorization); err != nil {
 		return model.AllowResult{}, err
 	}
-	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, GPU: authorization.GPU, Namespace: authorization.Namespace, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
+	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, Namespace: authorization.Namespace, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
 }
 
 func (s *Server) createUserAuthorization(token model.Token, tokenHash string, p peer, args protocol.UserAllowArgs) (model.AllowResult, error) {
-	if err := validateOptionalGPU(args.GPU); err != nil {
-		return model.AllowResult{}, err
-	}
 	if err := s.ensureTokenCanAuthorize(tokenHash, token, time.Now()); err != nil {
 		return model.AllowResult{}, err
 	}
@@ -365,7 +357,6 @@ func (s *Server) createUserAuthorization(token model.Token, tokenHash string, p 
 		UID:       uid,
 		GID:       p.GID,
 		Username:  username,
-		GPU:       args.GPU,
 		CreatedAt: now.UTC(),
 		ExpiresAt: token.ExpiresAt,
 		Active:    true,
@@ -373,13 +364,10 @@ func (s *Server) createUserAuthorization(token model.Token, tokenHash string, p 
 	if err := s.Store.AddAuthorization(authorization); err != nil {
 		return model.AllowResult{}, err
 	}
-	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, GPU: authorization.GPU, Username: authorization.Username, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
+	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, Username: authorization.Username, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
 }
 
 func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID string, token model.Token, tokenHash string, p peer, args protocol.RunArgs) (model.RunResult, error) {
-	if err := validateOptionalGPU(args.GPU); err != nil {
-		return model.RunResult{}, err
-	}
 	if err := s.ensureTokenCanAuthorize(tokenHash, token, time.Now()); err != nil {
 		return model.RunResult{}, err
 	}
@@ -395,7 +383,6 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID string, to
 		Holder:    token.Name,
 		UID:       p.UID,
 		GID:       p.GID,
-		GPU:       args.GPU,
 		Command:   args.Command,
 		CreatedAt: now.UTC(),
 		ExpiresAt: token.ExpiresAt,
@@ -574,13 +561,6 @@ func (s *Server) ps(ctx context.Context, now time.Time) ([]model.PSRow, error) {
 		return rows[i].ID < rows[j].ID
 	})
 	return rows, nil
-}
-
-func validateOptionalGPU(gpu *int) error {
-	if gpu != nil && *gpu < 0 {
-		return errors.New("gpu must be >= 0")
-	}
-	return nil
 }
 
 func lookupUID(username string) (int, error) {

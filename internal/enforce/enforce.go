@@ -405,9 +405,6 @@ func (a Authorizer) authorizationMatches(ctx context.Context, authorization mode
 	if !authorization.Active || authorization.Revoked || authorizationExpired(authorization, now) {
 		return false
 	}
-	if authorization.GPU != nil && *authorization.GPU != gpu {
-		return false
-	}
 	switch authorization.Mode {
 	case model.ModeBare:
 		return authorization.RootPID == info.PID ||
@@ -598,10 +595,8 @@ func sameContainer(a, b string) bool {
 func normalizeTokenMode(mode string) string {
 	mode = strings.TrimSpace(strings.ToLower(mode))
 	switch mode {
-	case "", "soft":
+	case "":
 		return model.TokenModeClaimed
-	case "hard":
-		return model.TokenModeReserved
 	default:
 		return mode
 	}
