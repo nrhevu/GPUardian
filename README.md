@@ -198,8 +198,9 @@ Revoke a token, reservation, authorization, or bypass ID:
 ROOT_KEY=rk_xxx ./rocguard revoke <id>
 ```
 
-Revoking a token also disables reservations, authorizations, and claimed GPUs
-created by that token.
+Revoked objects are deleted from state and no longer appear in `status` or
+`show-keys`. Revoking a token also deletes reservations, authorizations, and
+claimed GPUs created by that token.
 
 ## Runtime Paths
 

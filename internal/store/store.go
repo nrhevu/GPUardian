@@ -407,39 +407,57 @@ func (s *Store) Revoke(idOrToken string) error {
 		tokenHash = HashToken(idOrToken)
 	}
 	changed := false
-	for i := range s.state.Tokens {
-		if s.state.Tokens[i].ID == idOrToken || s.state.Tokens[i].Hash == tokenHash {
-			s.state.Tokens[i].Revoked = true
-			tokenHash = s.state.Tokens[i].Hash
+	tokens := s.state.Tokens[:0]
+	for _, token := range s.state.Tokens {
+		if token.ID == idOrToken || token.Hash == tokenHash {
+			tokenHash = token.Hash
 			changed = true
+			continue
 		}
+		tokens = append(tokens, token)
 	}
-	for i := range s.state.Reservations {
-		if s.state.Reservations[i].ID == idOrToken || (tokenHash != "" && s.state.Reservations[i].TokenHash == tokenHash) {
-			s.state.Reservations[i].Active = false
-			s.state.Reservations[i].Revoked = true
+	s.state.Tokens = tokens
+
+	reservations := s.state.Reservations[:0]
+	for _, reservation := range s.state.Reservations {
+		if reservation.ID == idOrToken || (tokenHash != "" && reservation.TokenHash == tokenHash) {
 			changed = true
+			continue
 		}
+		reservations = append(reservations, reservation)
 	}
-	for i := range s.state.Authorizations {
-		if s.state.Authorizations[i].ID == idOrToken || (tokenHash != "" && s.state.Authorizations[i].TokenHash == tokenHash) {
-			s.state.Authorizations[i].Active = false
-			s.state.Authorizations[i].Revoked = true
+	s.state.Reservations = reservations
+
+	authorizations := s.state.Authorizations[:0]
+	for _, authorization := range s.state.Authorizations {
+		if authorization.ID == idOrToken || (tokenHash != "" && authorization.TokenHash == tokenHash) {
 			changed = true
+			continue
 		}
+		authorizations = append(authorizations, authorization)
 	}
-	for i := range s.state.Leases {
-		if s.state.Leases[i].ID == idOrToken {
-			s.state.Leases[i].Active = false
+	s.state.Authorizations = authorizations
+
+	leases := s.state.Leases[:0]
+	for _, lease := range s.state.Leases {
+		if lease.ID == idOrToken {
 			changed = true
+			continue
 		}
+		leases = append(leases, lease)
 	}
-	for i := range s.state.Bypasses {
-		if s.state.Bypasses[i].ID == idOrToken {
-			s.state.Bypasses[i].Revoked = true
+	s.state.Leases = leases
+
+	bypasses := s.state.Bypasses[:0]
+	for _, bypass := range s.state.Bypasses {
+		if bypass.ID == idOrToken {
 			changed = true
+			continue
 		}
+		bypasses = append(bypasses, bypass)
 	}
+	s.state.Bypasses = bypasses
+
 	if tokenHash != "" || changed {
 		filtered := s.state.SoftClaims[:0]
 		for _, claim := range s.state.SoftClaims {
@@ -479,8 +497,13 @@ func (s *Store) Status(now time.Time) (model.Status, error) {
 	if err := s.loadLocked(); err != nil {
 		return model.Status{}, err
 	}
-	status := model.Status{Now: now.UTC(), Bypasses: append([]model.BypassRule(nil), s.state.Bypasses...)}
+	status := model.Status{Now: now.UTC()}
+	activeTokenHashes := map[string]bool{}
 	for _, token := range s.state.Tokens {
+		if token.Revoked {
+			continue
+		}
+		activeTokenHashes[token.Hash] = true
 		status.Tokens = append(status.Tokens, model.TokenView{
 			ID:        token.ID,
 			Name:      token.Name,
@@ -491,7 +514,7 @@ func (s *Store) Status(now time.Time) (model.Status, error) {
 		})
 	}
 	for _, reservation := range s.state.Reservations {
-		if reservation.Active && now.Before(reservation.ExpiresAt) {
+		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
 			status.Reservations = append(status.Reservations, model.ReservationView{
 				ID:        reservation.ID,
 				GPU:       reservation.GPU,
@@ -503,12 +526,17 @@ func (s *Store) Status(now time.Time) (model.Status, error) {
 			})
 		}
 	}
+	activeAuthorizationIDs := map[string]bool{}
 	for _, authorization := range s.state.Authorizations {
-		if authorization.Active && !authorizationExpired(authorization, now) {
+		if authorization.Active && !authorization.Revoked && !authorizationExpired(authorization, now) {
+			activeAuthorizationIDs[authorization.ID] = true
 			status.Authorizations = append(status.Authorizations, authorizationView(authorization))
 		}
 	}
 	for _, claim := range s.state.SoftClaims {
+		if !activeTokenHashes[claim.TokenHash] || !activeAuthorizationIDs[claim.AuthorizationID] {
+			continue
+		}
 		status.SoftClaims = append(status.SoftClaims, model.SoftClaimView{
 			ID:              claim.ID,
 			GPU:             claim.GPU,
@@ -522,6 +550,12 @@ func (s *Store) Status(now time.Time) (model.Status, error) {
 		if lease.Active && now.Before(lease.ExpiresAt) {
 			status.Leases = append(status.Leases, lease)
 		}
+	}
+	for _, bypass := range s.state.Bypasses {
+		if bypass.Revoked || !now.Before(bypass.ExpiresAt) {
+			continue
+		}
+		status.Bypasses = append(status.Bypasses, bypass)
 	}
 	return status, nil
 }

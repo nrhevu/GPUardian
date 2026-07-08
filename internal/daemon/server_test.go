@@ -216,6 +216,29 @@ func TestAdminMethodsRequireRootKey(t *testing.T) {
 	}
 }
 
+func TestRevokeDeletesFromKeyStatus(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := server.Store.RegisterSoftToken(key, "alice", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(protocol.RevokeArgs{RootKey: key, ID: secret})
+	if _, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "revoke", Args: args}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := server.Store.KeyStatus(key, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Tokens) != 0 {
+		t.Fatalf("revoked token should be deleted from key status: %+v", status.Tokens)
+	}
+}
+
 func TestEnsureGPUCanReserveRejectsBusyGPU(t *testing.T) {
 	server := testServer(t)
 	server.AMD = fakeAMD{processes: []model.GPUProcess{{GPU: 0, PID: 10, MemBytes: 1}}}

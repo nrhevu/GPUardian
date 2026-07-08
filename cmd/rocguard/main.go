@@ -47,7 +47,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return printRPC(cfg, "show_keys", "", protocol.RootKeyArgs{RootKey: rootKey})
+		return printKeyStatusRPC(cfg, protocol.RootKeyArgs{RootKey: rootKey})
 	case "register":
 		return register(cfg, args[1:])
 	case "run":
@@ -55,7 +55,7 @@ func run(args []string) error {
 	case "allow":
 		return allowCommand(cfg, args[1:])
 	case "status":
-		return printRPC(cfg, "status", tokenFromEnv(), nil)
+		return printStatusRPC(cfg)
 	case "ps":
 		return psCommand(cfg)
 	case "token":
@@ -329,6 +329,40 @@ func printRPC(cfg config.Config, method, token string, args any) error {
 	if err != nil {
 		return err
 	}
+	return printJSON(raw)
+}
+
+func printStatusRPC(cfg config.Config) error {
+	raw, err := callRPC(cfg, "status", tokenFromEnv(), nil, false)
+	if err != nil {
+		return err
+	}
+	var status model.Status
+	if err := json.Unmarshal(raw, &status); err == nil {
+		filterStatus(&status)
+		out, _ := json.MarshalIndent(status, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+	return printJSON(raw)
+}
+
+func printKeyStatusRPC(cfg config.Config, args protocol.RootKeyArgs) error {
+	raw, err := callRPC(cfg, "show_keys", "", args, false)
+	if err != nil {
+		return err
+	}
+	var status model.KeyStatus
+	if err := json.Unmarshal(raw, &status); err == nil {
+		filterKeyStatus(&status)
+		out, _ := json.MarshalIndent(status, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+	return printJSON(raw)
+}
+
+func printJSON(raw json.RawMessage) error {
 	var pretty any
 	if err := json.Unmarshal(raw, &pretty); err != nil {
 		fmt.Println(string(raw))
@@ -337,6 +371,72 @@ func printRPC(cfg config.Config, method, token string, args any) error {
 	out, _ := json.MarshalIndent(pretty, "", "  ")
 	fmt.Println(string(out))
 	return nil
+}
+
+func filterStatus(status *model.Status) {
+	status.Tokens = filterTokens(status.Tokens)
+	status.Reservations = filterReservations(status.Reservations, status.Now)
+	status.Authorizations = filterAuthorizations(status.Authorizations, status.Now)
+	status.Bypasses = filterBypasses(status.Bypasses, status.Now)
+
+	activeAuthorizationIDs := map[string]bool{}
+	for _, authorization := range status.Authorizations {
+		activeAuthorizationIDs[authorization.ID] = true
+	}
+	filteredClaims := status.SoftClaims[:0]
+	for _, claim := range status.SoftClaims {
+		if activeAuthorizationIDs[claim.AuthorizationID] {
+			filteredClaims = append(filteredClaims, claim)
+		}
+	}
+	status.SoftClaims = filteredClaims
+}
+
+func filterKeyStatus(status *model.KeyStatus) {
+	status.Tokens = filterTokens(status.Tokens)
+	status.Reservations = filterReservations(status.Reservations, status.Now)
+	status.Authorizations = filterAuthorizations(status.Authorizations, status.Now)
+	status.Bypasses = filterBypasses(status.Bypasses, status.Now)
+}
+
+func filterTokens(tokens []model.TokenView) []model.TokenView {
+	filtered := tokens[:0]
+	for _, token := range tokens {
+		if !token.Revoked {
+			filtered = append(filtered, token)
+		}
+	}
+	return filtered
+}
+
+func filterReservations(reservations []model.ReservationView, now time.Time) []model.ReservationView {
+	filtered := reservations[:0]
+	for _, reservation := range reservations {
+		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
+			filtered = append(filtered, reservation)
+		}
+	}
+	return filtered
+}
+
+func filterAuthorizations(authorizations []model.AuthorizationView, now time.Time) []model.AuthorizationView {
+	filtered := authorizations[:0]
+	for _, authorization := range authorizations {
+		if authorization.Active && !authorization.Revoked && (authorization.ExpiresAt == nil || now.Before(*authorization.ExpiresAt)) {
+			filtered = append(filtered, authorization)
+		}
+	}
+	return filtered
+}
+
+func filterBypasses(bypasses []model.BypassRule, now time.Time) []model.BypassRule {
+	filtered := bypasses[:0]
+	for _, bypass := range bypasses {
+		if !bypass.Revoked && now.Before(bypass.ExpiresAt) {
+			filtered = append(filtered, bypass)
+		}
+	}
+	return filtered
 }
 
 func rootKeyFromEnvOrPrompt() (string, error) {

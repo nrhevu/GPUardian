@@ -43,8 +43,8 @@ func TestRootKeyAndTokenLifecycle(t *testing.T) {
 	if err := st.Revoke(secret); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.ValidateToken(secret, now.Add(30*time.Minute)); !errors.Is(err, ErrTokenRevoked) {
-		t.Fatalf("got %v, want ErrTokenRevoked", err)
+	if _, _, err := st.ValidateToken(secret, now.Add(30*time.Minute)); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("got %v, want ErrTokenNotFound", err)
 	}
 }
 
@@ -161,14 +161,14 @@ func TestRevokeTokenRevokesRelatedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Tokens[0].Revoked {
-		t.Fatal("token should be revoked")
+	if len(state.Tokens) != 0 {
+		t.Fatalf("token should be deleted: %+v", state.Tokens)
 	}
-	if state.Reservations[0].ID != reservation.ID || state.Reservations[0].Active || !state.Reservations[0].Revoked {
-		t.Fatalf("reservation should be inactive/revoked: %+v", state.Reservations[0])
+	if len(state.Reservations) != 0 {
+		t.Fatalf("reservation should be deleted, including %s: %+v", reservation.ID, state.Reservations)
 	}
-	if state.Authorizations[0].Active || !state.Authorizations[0].Revoked {
-		t.Fatalf("authorization should be inactive/revoked: %+v", state.Authorizations[0])
+	if len(state.Authorizations) != 0 {
+		t.Fatalf("authorization should be deleted: %+v", state.Authorizations)
 	}
 	if len(state.SoftClaims) != 0 {
 		t.Fatalf("claims should be removed: %+v", state.SoftClaims)
@@ -180,7 +180,92 @@ func TestRevokeTokenRevokesRelatedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Bypasses[0].Revoked {
-		t.Fatalf("bypass should be revoked: %+v", state.Bypasses[0])
+	if len(state.Bypasses) != 0 {
+		t.Fatalf("bypass should be deleted: %+v", state.Bypasses)
+	}
+}
+
+func TestStatusHidesRevokedLegacyState(t *testing.T) {
+	st := testStore(t)
+	key, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	tokenHash := "revoked-token-hash"
+	authID := NewAuthorizationID()
+
+	st.mu.Lock()
+	st.state = model.State{
+		Tokens: []model.Token{{
+			ID:        "tok_revoked",
+			Hash:      tokenHash,
+			Name:      "alice",
+			Mode:      model.TokenModeClaimed,
+			CreatedAt: now,
+			Revoked:   true,
+		}},
+		Reservations: []model.Reservation{{
+			ID:        NewReservationID(),
+			GPU:       0,
+			TokenHash: tokenHash,
+			Holder:    "alice",
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+			Active:    true,
+			Revoked:   true,
+		}},
+		Authorizations: []model.Authorization{{
+			ID:        authID,
+			Mode:      model.ModeUser,
+			TokenHash: tokenHash,
+			TokenMode: model.TokenModeClaimed,
+			Holder:    "alice",
+			UID:       1000,
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+			Active:    true,
+			Revoked:   true,
+		}},
+		SoftClaims: []model.SoftClaim{{
+			ID:              NewSoftClaimID(),
+			GPU:             0,
+			TokenHash:       tokenHash,
+			AuthorizationID: authID,
+			Holder:          "alice",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}},
+		Bypasses: []model.BypassRule{{
+			ID:        NewBypassID(),
+			Type:      model.BypassPID,
+			PID:       123,
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+			Revoked:   true,
+		}, {
+			ID:        NewBypassID(),
+			Type:      model.BypassPID,
+			PID:       124,
+			CreatedAt: now.Add(-2 * time.Hour),
+			ExpiresAt: now.Add(-time.Hour),
+		}},
+	}
+	st.loaded = true
+	st.mu.Unlock()
+
+	status, err := st.Status(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Tokens) != 0 || len(status.Reservations) != 0 || len(status.Authorizations) != 0 || len(status.SoftClaims) != 0 || len(status.Bypasses) != 0 {
+		t.Fatalf("revoked legacy state should be hidden: %+v", status)
+	}
+	keyStatus, err := st.KeyStatus(key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keyStatus.Tokens) != 0 || len(keyStatus.Reservations) != 0 || len(keyStatus.Authorizations) != 0 || len(keyStatus.Bypasses) != 0 {
+		t.Fatalf("revoked legacy state should be hidden from key status: %+v", keyStatus)
 	}
 }

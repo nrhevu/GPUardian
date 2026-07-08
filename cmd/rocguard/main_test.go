@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"rocguardd/internal/config"
 	"rocguardd/internal/model"
@@ -75,5 +76,54 @@ func TestUsageTextShowsOnlyCurrentCommands(t *testing.T) {
 		if strings.Contains(out, old) {
 			t.Fatalf("usage text still contains old command %q: %q", old, out)
 		}
+	}
+}
+
+func TestFilterStatusHidesRevokedAndExpiredRows(t *testing.T) {
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(time.Hour)
+	expiredAt := now.Add(-time.Hour)
+	status := model.Status{
+		Now: now,
+		Tokens: []model.TokenView{
+			{ID: "tok_revoked", Revoked: true},
+			{ID: "tok_ok"},
+		},
+		Reservations: []model.ReservationView{
+			{ID: "res_revoked", Active: true, Revoked: true, ExpiresAt: expiresAt},
+			{ID: "res_expired", Active: true, ExpiresAt: expiredAt},
+			{ID: "res_ok", Active: true, ExpiresAt: expiresAt},
+		},
+		Authorizations: []model.AuthorizationView{
+			{ID: "auth_revoked", Active: true, Revoked: true},
+			{ID: "auth_ok", Active: true},
+		},
+		SoftClaims: []model.SoftClaimView{
+			{ID: "claim_revoked", AuthorizationID: "auth_revoked"},
+			{ID: "claim_ok", AuthorizationID: "auth_ok"},
+		},
+		Bypasses: []model.BypassRule{
+			{ID: "bp_revoked", ExpiresAt: expiresAt, Revoked: true},
+			{ID: "bp_expired", ExpiresAt: expiredAt},
+			{ID: "bp_ok", ExpiresAt: expiresAt},
+		},
+	}
+
+	filterStatus(&status)
+
+	if len(status.Tokens) != 1 || status.Tokens[0].ID != "tok_ok" {
+		t.Fatalf("unexpected tokens: %+v", status.Tokens)
+	}
+	if len(status.Reservations) != 1 || status.Reservations[0].ID != "res_ok" {
+		t.Fatalf("unexpected reservations: %+v", status.Reservations)
+	}
+	if len(status.Authorizations) != 1 || status.Authorizations[0].ID != "auth_ok" {
+		t.Fatalf("unexpected authorizations: %+v", status.Authorizations)
+	}
+	if len(status.SoftClaims) != 1 || status.SoftClaims[0].ID != "claim_ok" {
+		t.Fatalf("unexpected soft claims: %+v", status.SoftClaims)
+	}
+	if len(status.Bypasses) != 1 || status.Bypasses[0].ID != "bp_ok" {
+		t.Fatalf("unexpected bypasses: %+v", status.Bypasses)
 	}
 }
