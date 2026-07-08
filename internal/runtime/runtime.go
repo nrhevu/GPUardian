@@ -11,6 +11,7 @@ import (
 
 type Resolver interface {
 	ResolveDockerContainer(ctx context.Context, nameOrID string) (string, error)
+	DockerContainerName(ctx context.Context, containerID string) (string, error)
 	NamespaceForContainer(ctx context.Context, containerID string) (string, error)
 }
 
@@ -34,6 +35,24 @@ func (r CLIResolver) ResolveDockerContainer(ctx context.Context, nameOrID string
 		return "", errors.New("docker inspect returned empty container id")
 	}
 	return strings.ToLower(id), nil
+}
+
+func (r CLIResolver) DockerContainerName(ctx context.Context, containerID string) (string, error) {
+	containerID = strings.TrimSpace(containerID)
+	if containerID == "" {
+		return "", errors.New("container id is empty")
+	}
+	ctx, cancel := r.withTimeout(ctx)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Name}}", containerID).Output()
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimPrefix(strings.TrimSpace(string(out)), "/")
+	if name == "" {
+		return "", errors.New("docker inspect returned empty container name")
+	}
+	return name, nil
 }
 
 func (r CLIResolver) NamespaceForContainer(ctx context.Context, containerID string) (string, error) {

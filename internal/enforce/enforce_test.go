@@ -29,10 +29,19 @@ func (f fakeProc) Info(pid int) (model.ProcInfo, error) {
 
 type fakeRuntime struct {
 	namespaces map[string]string
+	names      map[string]string
 }
 
 func (f fakeRuntime) ResolveDockerContainer(context.Context, string) (string, error) {
 	return "", nil
+}
+
+func (f fakeRuntime) DockerContainerName(_ context.Context, id string) (string, error) {
+	name, ok := f.names[id]
+	if !ok {
+		return "", errors.New("missing container name")
+	}
+	return name, nil
 }
 
 func (f fakeRuntime) NamespaceForContainer(_ context.Context, id string) (string, error) {
@@ -241,6 +250,30 @@ func TestHardReservationAllowsMatchingAuthorizationScopes(t *testing.T) {
 			}),
 			info: model.ProcInfo{PID: 10, UID: 1000},
 		},
+		{
+			name: "docker wildcard",
+			auth: authorization("auth_docker_wildcard", "hash_reserved", model.TokenModeReserved, model.ModeDocker, func(a *model.Authorization) {
+				a.ContainerPattern = "codex*"
+			}),
+			info:    model.ProcInfo{PID: 10, ContainerID: containerID},
+			runtime: fakeRuntime{names: map[string]string{containerID: "codex-worker"}},
+		},
+		{
+			name: "k8s wildcard",
+			auth: authorization("auth_k8s_wildcard", "hash_reserved", model.TokenModeReserved, model.ModeK8s, func(a *model.Authorization) {
+				a.Namespace = "train*"
+			}),
+			info:    model.ProcInfo{PID: 10, ContainerID: containerID},
+			runtime: fakeRuntime{namespaces: map[string]string{containerID: "training"}},
+		},
+		{
+			name: "user wildcard",
+			auth: authorization("auth_user_wildcard", "hash_reserved", model.TokenModeReserved, model.ModeUser, func(a *model.Authorization) {
+				a.UID = -1
+				a.Username = "codex*"
+			}),
+			info: model.ProcInfo{PID: 10, UID: 1000, Username: "codex-runner"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -248,6 +281,9 @@ func TestHardReservationAllowsMatchingAuthorizationScopes(t *testing.T) {
 			rt := tt.runtime
 			if rt.namespaces == nil {
 				rt.namespaces = map[string]string{}
+			}
+			if rt.names == nil {
+				rt.names = map[string]string{}
 			}
 			authz := Authorizer{
 				Proc:    fakeProc{infos: map[int]model.ProcInfo{10: tt.info}},

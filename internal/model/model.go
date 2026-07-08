@@ -25,6 +25,7 @@ type GPUProcess struct {
 type ProcInfo struct {
 	PID         int
 	UID         int
+	Username    string
 	Cmdline     []string
 	CommandPath string
 	Cgroup      string
@@ -54,24 +55,25 @@ type Reservation struct {
 }
 
 type Authorization struct {
-	ID          string    `json:"id"`
-	Mode        string    `json:"mode"`
-	TokenHash   string    `json:"token_hash"`
-	TokenMode   string    `json:"token_mode"`
-	Holder      string    `json:"holder"`
-	UID         int       `json:"uid,omitempty"`
-	GID         int       `json:"gid,omitempty"`
-	Username    string    `json:"username,omitempty"`
-	Command     []string  `json:"command,omitempty"`
-	RootPID     int       `json:"root_pid,omitempty"`
-	CgroupPath  string    `json:"cgroup_path,omitempty"`
-	CgroupRel   string    `json:"cgroup_rel,omitempty"`
-	ContainerID string    `json:"container_id,omitempty"`
-	Namespace   string    `json:"namespace,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at,omitempty"`
-	Active      bool      `json:"active"`
-	Revoked     bool      `json:"revoked"`
+	ID               string    `json:"id"`
+	Mode             string    `json:"mode"`
+	TokenHash        string    `json:"token_hash"`
+	TokenMode        string    `json:"token_mode"`
+	Holder           string    `json:"holder"`
+	UID              int       `json:"uid,omitempty"`
+	GID              int       `json:"gid,omitempty"`
+	Username         string    `json:"username,omitempty"`
+	Command          []string  `json:"command,omitempty"`
+	RootPID          int       `json:"root_pid,omitempty"`
+	CgroupPath       string    `json:"cgroup_path,omitempty"`
+	CgroupRel        string    `json:"cgroup_rel,omitempty"`
+	ContainerID      string    `json:"container_id,omitempty"`
+	ContainerPattern string    `json:"container_pattern,omitempty"`
+	Namespace        string    `json:"namespace,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+	Active           bool      `json:"active"`
+	Revoked          bool      `json:"revoked"`
 }
 
 type SoftClaim struct {
@@ -165,21 +167,22 @@ type ReservationView struct {
 }
 
 type AuthorizationView struct {
-	ID          string     `json:"id"`
-	Mode        string     `json:"mode"`
-	TokenMode   string     `json:"token_mode"`
-	Holder      string     `json:"holder"`
-	UID         int        `json:"uid,omitempty"`
-	GID         int        `json:"gid,omitempty"`
-	Username    string     `json:"username,omitempty"`
-	Command     []string   `json:"command,omitempty"`
-	RootPID     int        `json:"root_pid,omitempty"`
-	ContainerID string     `json:"container_id,omitempty"`
-	Namespace   string     `json:"namespace,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	Active      bool       `json:"active"`
-	Revoked     bool       `json:"revoked"`
+	ID               string     `json:"id"`
+	Mode             string     `json:"mode"`
+	TokenMode        string     `json:"token_mode"`
+	Holder           string     `json:"holder"`
+	UID              int        `json:"uid,omitempty"`
+	GID              int        `json:"gid,omitempty"`
+	Username         string     `json:"username,omitempty"`
+	Command          []string   `json:"command,omitempty"`
+	RootPID          int        `json:"root_pid,omitempty"`
+	ContainerID      string     `json:"container_id,omitempty"`
+	ContainerPattern string     `json:"container_pattern,omitempty"`
+	Namespace        string     `json:"namespace,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	Active           bool       `json:"active"`
+	Revoked          bool       `json:"revoked"`
 }
 
 type SoftClaimView struct {
@@ -214,13 +217,14 @@ type RunResult struct {
 }
 
 type AllowResult struct {
-	AuthorizationID string     `json:"authorization_id"`
-	LeaseID         string     `json:"lease_id,omitempty"`
-	Mode            string     `json:"mode"`
-	ContainerID     string     `json:"container_id,omitempty"`
-	Namespace       string     `json:"namespace,omitempty"`
-	Username        string     `json:"username,omitempty"`
-	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	AuthorizationID  string     `json:"authorization_id"`
+	LeaseID          string     `json:"lease_id,omitempty"`
+	Mode             string     `json:"mode"`
+	ContainerID      string     `json:"container_id,omitempty"`
+	ContainerPattern string     `json:"container_pattern,omitempty"`
+	Namespace        string     `json:"namespace,omitempty"`
+	Username         string     `json:"username,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 }
 
 type PSRow struct {

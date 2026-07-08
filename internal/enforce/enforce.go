@@ -425,15 +425,25 @@ func (a Authorizer) authorizationMatches(ctx context.Context, authorization mode
 			(authorization.CgroupRel != "" && strings.Contains(info.Cgroup, authorization.CgroupRel)) ||
 			(authorization.CgroupPath != "" && strings.Contains(info.Cgroup, strings.TrimPrefix(authorization.CgroupPath, "/sys/fs/cgroup/")))
 	case model.ModeDocker:
+		if authorization.ContainerPattern != "" {
+			if info.ContainerID == "" || a.Runtime == nil {
+				return false
+			}
+			name, err := a.Runtime.DockerContainerName(ctx, info.ContainerID)
+			return err == nil && wildcardMatch(authorization.ContainerPattern, name)
+		}
 		return sameContainer(info.ContainerID, authorization.ContainerID)
 	case model.ModeK8s:
 		if info.ContainerID == "" || a.Runtime == nil {
 			return false
 		}
 		ns, err := a.Runtime.NamespaceForContainer(ctx, info.ContainerID)
-		return err == nil && ns == authorization.Namespace
+		return err == nil && wildcardMatch(authorization.Namespace, ns)
 	case model.ModeUser:
-		return authorization.UID >= 0 && info.UID == authorization.UID
+		if authorization.UID >= 0 {
+			return info.UID == authorization.UID
+		}
+		return authorization.Username != "" && wildcardMatch(authorization.Username, info.Username)
 	default:
 		return false
 	}
@@ -604,6 +614,41 @@ func sameContainer(a, b string) bool {
 		return false
 	}
 	return a == b || strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+}
+
+func wildcardMatch(pattern, value string) bool {
+	pattern = strings.TrimSpace(pattern)
+	value = strings.TrimSpace(value)
+	if pattern == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+	if pattern == "*" {
+		return true
+	}
+	parts := strings.Split(pattern, "*")
+	pos := 0
+	if parts[0] != "" {
+		if !strings.HasPrefix(value, parts[0]) {
+			return false
+		}
+		pos = len(parts[0])
+	}
+	for i := 1; i < len(parts); i++ {
+		part := parts[i]
+		if part == "" {
+			continue
+		}
+		index := strings.Index(value[pos:], part)
+		if index < 0 {
+			return false
+		}
+		pos += index + len(part)
+	}
+	last := parts[len(parts)-1]
+	return last == "" || strings.HasSuffix(value, last)
 }
 
 func normalizeTokenMode(mode string) string {

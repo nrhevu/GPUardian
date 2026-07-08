@@ -290,28 +290,40 @@ func (s *Server) createDockerAuthorization(ctx context.Context, token model.Toke
 	if err := s.ensureTokenCanAuthorize(tokenHash, token, time.Now()); err != nil {
 		return model.AllowResult{}, err
 	}
-	containerID, err := s.Runtime.ResolveDockerContainer(ctx, args.Container)
-	if err != nil {
-		return model.AllowResult{}, fmt.Errorf("resolve docker container: %w", err)
+	container := strings.TrimSpace(args.Container)
+	if container == "" {
+		return model.AllowResult{}, errors.New("container is required")
+	}
+	var containerID string
+	var containerPattern string
+	if hasWildcard(container) {
+		containerPattern = container
+	} else {
+		var err error
+		containerID, err = s.Runtime.ResolveDockerContainer(ctx, container)
+		if err != nil {
+			return model.AllowResult{}, fmt.Errorf("resolve docker container: %w", err)
+		}
 	}
 	now := time.Now()
 	authorization := model.Authorization{
-		ID:          store.NewAuthorizationID(),
-		Mode:        model.ModeDocker,
-		TokenHash:   tokenHash,
-		TokenMode:   store.NormalizeTokenMode(token.Mode),
-		Holder:      token.Name,
-		UID:         p.UID,
-		GID:         p.GID,
-		ContainerID: containerID,
-		CreatedAt:   now.UTC(),
-		ExpiresAt:   token.ExpiresAt,
-		Active:      true,
+		ID:               store.NewAuthorizationID(),
+		Mode:             model.ModeDocker,
+		TokenHash:        tokenHash,
+		TokenMode:        store.NormalizeTokenMode(token.Mode),
+		Holder:           token.Name,
+		UID:              p.UID,
+		GID:              p.GID,
+		ContainerID:      containerID,
+		ContainerPattern: containerPattern,
+		CreatedAt:        now.UTC(),
+		ExpiresAt:        token.ExpiresAt,
+		Active:           true,
 	}
 	if err := s.Store.AddAuthorization(authorization); err != nil {
 		return model.AllowResult{}, err
 	}
-	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, ContainerID: containerID, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
+	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, ContainerID: containerID, ContainerPattern: containerPattern, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
 }
 
 func (s *Server) createK8sAuthorization(ctx context.Context, token model.Token, tokenHash string, p peer, args protocol.K8sAllowArgs) (model.AllowResult, error) {
@@ -354,9 +366,13 @@ func (s *Server) createUserAuthorization(token model.Token, tokenHash string, p 
 	if username == "" {
 		return model.AllowResult{}, errors.New("user is required")
 	}
-	uid, err := lookupUID(username)
-	if err != nil {
-		return model.AllowResult{}, err
+	uid := -1
+	if !hasWildcard(username) {
+		var err error
+		uid, err = lookupUID(username)
+		if err != nil {
+			return model.AllowResult{}, err
+		}
 	}
 	now := time.Now()
 	authorization := model.Authorization{
@@ -376,6 +392,10 @@ func (s *Server) createUserAuthorization(token model.Token, tokenHash string, p 
 		return model.AllowResult{}, err
 	}
 	return model.AllowResult{AuthorizationID: authorization.ID, Mode: authorization.Mode, Username: authorization.Username, ExpiresAt: timePtrIfSet(authorization.ExpiresAt)}, nil
+}
+
+func hasWildcard(value string) bool {
+	return strings.Contains(value, "*")
 }
 
 func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID string, token model.Token, tokenHash string, p peer, args protocol.RunArgs) (model.RunResult, error) {

@@ -48,6 +48,10 @@ func (daemonFakeRuntime) ResolveDockerContainer(context.Context, string) (string
 	return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil
 }
 
+func (daemonFakeRuntime) DockerContainerName(context.Context, string) (string, error) {
+	return "trainer", nil
+}
+
 func (daemonFakeRuntime) NamespaceForContainer(context.Context, string) (string, error) {
 	return "training", nil
 }
@@ -264,6 +268,62 @@ func TestDockerAllowAliasCreatesAuthorization(t *testing.T) {
 	}
 	if len(status.Authorizations) != 1 || status.Authorizations[0].Mode != model.ModeDocker {
 		t.Fatalf("expected docker authorization, got %+v", status.Authorizations)
+	}
+}
+
+func TestDockerAllowWildcardStoresPattern(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := server.Store.RegisterSoftToken(key, "alice", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "codex*"})
+	result, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := result.(model.AllowResult)
+	if allow.AuthorizationID == "" || allow.ContainerPattern != "codex*" || allow.ContainerID != "" {
+		t.Fatalf("unexpected allow result: %+v", allow)
+	}
+	status, err := server.Store.Status(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Authorizations) != 1 || status.Authorizations[0].ContainerPattern != "codex*" {
+		t.Fatalf("expected wildcard docker authorization, got %+v", status.Authorizations)
+	}
+}
+
+func TestUserAllowWildcardDoesNotLookupUser(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := server.Store.RegisterSoftToken(key, "alice", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(protocol.UserAllowArgs{User: "codex*"})
+	result, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "allow_user", Token: secret, Args: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := result.(model.AllowResult)
+	if allow.AuthorizationID == "" || allow.Username != "codex*" {
+		t.Fatalf("unexpected allow result: %+v", allow)
+	}
+	status, err := server.Store.Status(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Authorizations) != 1 || status.Authorizations[0].Username != "codex*" || status.Authorizations[0].UID != -1 {
+		t.Fatalf("expected wildcard user authorization, got %+v", status.Authorizations)
 	}
 }
 

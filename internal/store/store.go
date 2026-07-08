@@ -661,21 +661,22 @@ func NormalizeTokenMode(mode string) string {
 
 func authorizationView(authorization model.Authorization) model.AuthorizationView {
 	return model.AuthorizationView{
-		ID:          authorization.ID,
-		Mode:        authorization.Mode,
-		TokenMode:   NormalizeTokenMode(authorization.TokenMode),
-		Holder:      authorization.Holder,
-		UID:         authorization.UID,
-		GID:         authorization.GID,
-		Username:    authorization.Username,
-		Command:     append([]string(nil), authorization.Command...),
-		RootPID:     authorization.RootPID,
-		ContainerID: authorization.ContainerID,
-		Namespace:   authorization.Namespace,
-		CreatedAt:   authorization.CreatedAt,
-		ExpiresAt:   timePtrIfSet(authorization.ExpiresAt),
-		Active:      authorization.Active,
-		Revoked:     authorization.Revoked,
+		ID:               authorization.ID,
+		Mode:             authorization.Mode,
+		TokenMode:        NormalizeTokenMode(authorization.TokenMode),
+		Holder:           authorization.Holder,
+		UID:              authorization.UID,
+		GID:              authorization.GID,
+		Username:         authorization.Username,
+		Command:          append([]string(nil), authorization.Command...),
+		RootPID:          authorization.RootPID,
+		ContainerID:      authorization.ContainerID,
+		ContainerPattern: authorization.ContainerPattern,
+		Namespace:        authorization.Namespace,
+		CreatedAt:        authorization.CreatedAt,
+		ExpiresAt:        timePtrIfSet(authorization.ExpiresAt),
+		Active:           authorization.Active,
+		Revoked:          authorization.Revoked,
 	}
 }
 

@@ -2,6 +2,7 @@ package proc
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -40,9 +41,11 @@ func (r FSReader) Info(pid int) (model.ProcInfo, error) {
 	cgroupBytes, _ := os.ReadFile(filepath.Join(base, "cgroup"))
 	statusBytes, _ := os.ReadFile(filepath.Join(base, "status"))
 	stderrPath := filepath.Join(base, "fd", "2")
+	uid := parseUID(string(statusBytes))
 	info := model.ProcInfo{
 		PID:         pid,
-		UID:         parseUID(string(statusBytes)),
+		UID:         uid,
+		Username:    lookupUsername(uid),
 		Cmdline:     cmdline,
 		CommandPath: first(cmdline),
 		Cgroup:      strings.TrimSpace(string(cgroupBytes)),
@@ -50,6 +53,17 @@ func (r FSReader) Info(pid int) (model.ProcInfo, error) {
 	}
 	info.ContainerID = ExtractContainerID(info.Cgroup)
 	return info, nil
+}
+
+func lookupUsername(uid int) string {
+	if uid < 0 {
+		return ""
+	}
+	u, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		return ""
+	}
+	return u.Username
 }
 
 func readCmdline(path string) ([]string, error) {

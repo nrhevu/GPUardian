@@ -110,6 +110,9 @@ reserved GPU reservations appear as `reserved until <timestamp>`.
 
 Admin commands that need the root key read it from `ROOT_KEY` or prompt for it.
 
+`allow` scope values support `*` as a wildcard. For example, `codex*` matches
+`codex`, `codex-1`, and `codex-worker`.
+
 ## Command Reference
 
 ```text
@@ -136,9 +139,10 @@ Authorize a specific Docker container:
 KEY=rg_xxx ./rocguard allow docker --container trainer
 ```
 
-Rocguard resolves the container name to an immutable container ID at
-authorization time. The mutable container name is not trusted during
-enforcement.
+For exact container names, Rocguard resolves the container name to an immutable
+container ID at authorization time. The mutable container name is not trusted
+during enforcement. Wildcard container values such as `codex*` are matched
+dynamically against Docker container names during enforcement.
 
 For this to be meaningful, regular users should not have direct access to the
 Docker socket. Membership in the `docker` group is effectively root-equivalent.
@@ -153,6 +157,7 @@ KEY=rg_xxx ./rocguard allow k8s --namespace training
 
 Rocguard maps GPU PIDs to container IDs and then to Kubernetes namespaces using
 `crictl inspect` first, with `kubectl get pod -A -o json` as a fallback.
+Namespace values support wildcards such as `training-*`.
 
 Namespace-level authorization is broad: any pod in that namespace can match the
 authorization.
@@ -164,6 +169,8 @@ Authorize all processes for one Linux user:
 ```bash
 KEY=rg_xxx ./rocguard allow user --user alice
 ```
+
+User values support wildcards such as `codex*`.
 
 ## Bypass Rules
 
