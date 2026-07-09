@@ -304,17 +304,6 @@ func (a Authorizer) enforceSoft(ctx context.Context, state model.State, gpu int,
 		}
 		return nil
 	}
-	if len(unauthorized) > 0 {
-		msg := fmt.Sprintf("claimed-mode authorization skipped on gpu=%d because non-authorized processes were already present", gpu)
-		a.audit(model.AuditEvent{Time: now.UTC(), Kind: "claim_conflict", Message: msg, GPU: gpu, User: authorized[0].auth.Holder})
-		for _, item := range authorized {
-			*decisions = append(*decisions, Decision{Process: item.view.Process, Info: item.view.Info, Action: "skip", Reason: "claim blocked by existing process", AuthID: item.auth.ID, Holder: item.auth.Holder, TokenHash: item.auth.TokenHash})
-		}
-		for _, view := range unauthorized {
-			*decisions = append(*decisions, Decision{Process: view.Process, Info: view.Info, Action: "skip", Reason: "claim blocked by existing process"})
-		}
-		return nil
-	}
 
 	claimAuth := authorized[0].auth
 	claim := model.SoftClaim{
@@ -342,6 +331,12 @@ func (a Authorizer) enforceSoft(ctx context.Context, state model.State, gpu int,
 		}
 		reason := fmt.Sprintf("unauthorized GPU access on gpu=%d pid=%d; gpu is claimed by %s", gpu, item.view.Process.PID, claimAuth.Holder)
 		if err := a.kill(decisions, item.view, reason, "", claimAuth.ID, claimAuth.Holder, claimAuth.TokenHash, now); err != nil {
+			return err
+		}
+	}
+	for _, view := range unauthorized {
+		reason := fmt.Sprintf("unauthorized GPU access on gpu=%d pid=%d; gpu is claimed by %s", gpu, view.Process.PID, claimAuth.Holder)
+		if err := a.kill(decisions, view, reason, "", claimAuth.ID, claimAuth.Holder, claimAuth.TokenHash, now); err != nil {
 			return err
 		}
 	}

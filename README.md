@@ -14,11 +14,10 @@ The enforcement model is intentionally simple:
   active, non-bypassed processes on that GPU must match an authorization for
   the reservation token.
 - `claimed` registration creates a non-expiring key. A claimed-mode
-  authorization claims a GPU only after an authorized process is observed on an
-  otherwise clean GPU.
-- If a claimed-mode process appears on a GPU that already has unrelated
-  processes, Rocguard leaves the GPU unclaimed and does not kill those existing
-  workloads.
+  authorization claims any GPU where an authorized process is observed using
+  non-zero GPU memory.
+- Once a GPU is claimed, non-bypassed processes on that GPU must match the
+  claiming authorization token or they are killed.
 
 This is monitor-kill enforcement, not kernel device isolation. Users with root,
 sudo, or root-equivalent Docker access can bypass it.

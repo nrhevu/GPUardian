@@ -42,6 +42,15 @@ func (f daemonFakeProc) Info(pid int) (model.ProcInfo, error) {
 	return info, nil
 }
 
+type daemonFakeKiller struct {
+	killed []int
+}
+
+func (f *daemonFakeKiller) Kill(info model.ProcInfo, message string) error {
+	f.killed = append(f.killed, info.PID)
+	return nil
+}
+
 type daemonFakeRuntime struct{}
 
 func (daemonFakeRuntime) ResolveDockerContainer(context.Context, string) (string, error) {
@@ -198,6 +207,63 @@ func TestSoftRegisterCreatesTokenOnly(t *testing.T) {
 	}
 	if len(status.Tokens) != 1 || len(status.Reservations) != 0 {
 		t.Fatalf("expected token only, got tokens=%+v reservations=%+v", status.Tokens, status.Reservations)
+	}
+}
+
+func TestClaimedMonitorClaimsRunGPUAndKillsUnauthorized(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, token, err := server.Store.RegisterSoftToken(key, "alice", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tokenHash, err := server.Store.ValidateToken(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := model.Authorization{
+		ID:        "auth_run",
+		Mode:      model.ModeBare,
+		TokenHash: tokenHash,
+		TokenMode: token.Mode,
+		Holder:    token.Name,
+		UID:       1000,
+		GID:       1000,
+		RootPID:   99,
+		CgroupRel: "rocguard/auth_run",
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: token.ExpiresAt,
+		Active:    true,
+	}
+	if err := server.Store.AddAuthorization(auth); err != nil {
+		t.Fatal(err)
+	}
+	killer := &daemonFakeKiller{}
+	server.Killer = killer
+	server.AMD = fakeAMD{processes: []model.GPUProcess{
+		{GPU: 0, PID: 100, MemBytes: 1},
+		{GPU: 0, PID: 200, MemBytes: 1},
+	}}
+	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{
+		99:  {PID: 99, UID: 1000, Cgroup: "0::/rocguard/auth_run"},
+		100: {PID: 100, UID: 1000, Cgroup: "0::/rocguard/auth_run"},
+		200: {PID: 200, UID: 2000, Cgroup: "0::/user.slice"},
+	}}
+
+	server.monitorOnce(context.Background())
+
+	status, err := server.Store.Status(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.SoftClaims) != 1 || status.SoftClaims[0].GPU != 0 || status.SoftClaims[0].AuthorizationID != auth.ID {
+		t.Fatalf("expected claimed GPU to be stored, got %+v", status.SoftClaims)
+	}
+	if len(killer.killed) != 1 || killer.killed[0] != 200 {
+		t.Fatalf("expected unauthorized pid to be killed, got %v", killer.killed)
 	}
 }
 

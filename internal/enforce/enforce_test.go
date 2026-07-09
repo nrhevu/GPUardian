@@ -327,7 +327,7 @@ func TestSoftClaimCreatedOnCleanAuthorizedGPU(t *testing.T) {
 	}
 }
 
-func TestSoftClaimBlockedByExistingUnauthorizedProcess(t *testing.T) {
+func TestSoftClaimKillsUnauthorizedOnInitialClaim(t *testing.T) {
 	killer := &fakeKiller{}
 	authz := Authorizer{
 		Proc: fakeProc{infos: map[int]model.ProcInfo{
@@ -345,13 +345,40 @@ func TestSoftClaimBlockedByExistingUnauthorizedProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, decision := range decisions {
-		if decision.Action == "kill" || decision.Action == "claim" {
-			t.Fatalf("claimed conflict should not kill or claim: %+v", decisions)
-		}
+	if len(decisions) != 3 || decisions[0].Action != "claim" || decisions[1].Action != "allow" || decisions[2].Action != "kill" {
+		t.Fatalf("expected claim, allow, kill decisions: %+v", decisions)
 	}
-	if len(killer.killed) != 0 {
-		t.Fatalf("unexpected kills: %v", killer.killed)
+	if len(killer.killed) != 1 || killer.killed[0] != 11 {
+		t.Fatalf("expected unauthorized pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
+	}
+}
+
+func TestSoftClaimMatchesRunCgroupAndKillsUnauthorized(t *testing.T) {
+	killer := &fakeKiller{}
+	authz := Authorizer{
+		Proc: fakeProc{infos: map[int]model.ProcInfo{
+			20: {PID: 20, UID: 1000, Cgroup: "0::/rocguard/auth_run"},
+			21: {PID: 21, UID: 2000, Cgroup: "0::/user.slice"},
+		}},
+		Killer: killer,
+		Now:    fixedNow,
+	}
+	state := model.State{
+		Tokens: []model.Token{token("hash_claimed", model.TokenModeClaimed)},
+		Authorizations: []model.Authorization{authorization("auth_run", "hash_claimed", model.TokenModeClaimed, model.ModeBare, func(a *model.Authorization) {
+			a.RootPID = 19
+			a.CgroupRel = "rocguard/auth_run"
+		})},
+	}
+	decisions, err := authz.Enforce(context.Background(), state, []model.GPUProcess{gpuProcess(0, 20), gpuProcess(0, 21)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 3 || decisions[0].Action != "claim" || decisions[1].Action != "allow" || decisions[2].Action != "kill" {
+		t.Fatalf("expected run cgroup to claim and kill unauthorized pid: %+v", decisions)
+	}
+	if len(killer.killed) != 1 || killer.killed[0] != 21 {
+		t.Fatalf("expected unauthorized pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
 	}
 }
 
