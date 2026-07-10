@@ -319,7 +319,7 @@ func writePSRows(out io.Writer, rows []model.PSRow) error {
 	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "id\tgpu\tuser\tcommand")
 	for _, row := range rows {
-		fmt.Fprintf(writer, "%s\t%d\t%s\t%s\n", row.ID, row.GPU, row.User, row.Command)
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", row.ID, row.GPU, row.User, row.Command)
 	}
 	return writer.Flush()
 }
@@ -374,7 +374,7 @@ func printJSON(raw json.RawMessage) error {
 }
 
 func filterStatus(status *model.Status) {
-	status.Tokens = filterTokens(status.Tokens)
+	status.Tokens = filterTokens(status.Tokens, status.Now)
 	status.Reservations = filterReservations(status.Reservations, status.Now)
 	status.Authorizations = filterAuthorizations(status.Authorizations, status.Now)
 	status.Bypasses = filterBypasses(status.Bypasses, status.Now)
@@ -393,16 +393,16 @@ func filterStatus(status *model.Status) {
 }
 
 func filterKeyStatus(status *model.KeyStatus) {
-	status.Tokens = filterTokens(status.Tokens)
+	status.Tokens = filterTokens(status.Tokens, status.Now)
 	status.Reservations = filterReservations(status.Reservations, status.Now)
 	status.Authorizations = filterAuthorizations(status.Authorizations, status.Now)
 	status.Bypasses = filterBypasses(status.Bypasses, status.Now)
 }
 
-func filterTokens(tokens []model.TokenView) []model.TokenView {
+func filterTokens(tokens []model.TokenView, now time.Time) []model.TokenView {
 	filtered := tokens[:0]
 	for _, token := range tokens {
-		if !token.Revoked {
+		if !token.Revoked && (token.ExpiresAt == nil || now.Before(*token.ExpiresAt)) {
 			filtered = append(filtered, token)
 		}
 	}

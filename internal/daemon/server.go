@@ -212,7 +212,7 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 		}
 		var out []model.PSRow
 		for _, row := range rows {
-			if row.GPU == args.GPU {
+			if gpuListContains(row.GPU, args.GPU) {
 				out = append(out, row)
 			}
 		}
@@ -638,7 +638,7 @@ func (s *Server) ps(ctx context.Context, now time.Time) ([]model.PSRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	var rows []model.PSRow
+	liveRows := map[string]*psRowBuilder{}
 	liveHard := map[string]bool{}
 	for _, decision := range decisions {
 		if decision.Action != "allow" || decision.Reason == "bypass" {
@@ -662,15 +662,28 @@ func (s *Server) ps(ctx context.Context, now time.Time) ([]model.PSRow, error) {
 		if command == "" {
 			command = fmt.Sprintf("pid %d", decision.Process.PID)
 		}
-		rows = append(rows, model.PSRow{
-			ID:      fmt.Sprintf("%s/%d", id, decision.Process.PID),
-			GPU:     decision.Process.GPU,
-			User:    holder,
-			Command: command,
-		})
+		rowID := fmt.Sprintf("%s/%d", id, decision.Process.PID)
+		row := liveRows[rowID]
+		if row == nil {
+			row = &psRowBuilder{
+				row: model.PSRow{
+					ID:      rowID,
+					User:    holder,
+					Command: command,
+				},
+				gpus: map[int]bool{},
+			}
+			liveRows[rowID] = row
+		}
+		row.gpus[decision.Process.GPU] = true
 		if decision.TokenHash != "" {
 			liveHard[reservationLiveKey(decision.Process.GPU, decision.TokenHash)] = true
 		}
+	}
+	rows := make([]model.PSRow, 0, len(liveRows)+len(state.Reservations))
+	for _, row := range liveRows {
+		row.row.GPU = formatGPUSet(row.gpus)
+		rows = append(rows, row.row)
 	}
 	for _, reservation := range state.Reservations {
 		if !reservation.Active || reservation.Revoked || !now.Before(reservation.ExpiresAt) || liveHard[reservationLiveKey(reservation.GPU, reservation.TokenHash)] {
@@ -678,18 +691,60 @@ func (s *Server) ps(ctx context.Context, now time.Time) ([]model.PSRow, error) {
 		}
 		rows = append(rows, model.PSRow{
 			ID:      reservation.ID,
-			GPU:     reservation.GPU,
+			GPU:     strconv.Itoa(reservation.GPU),
 			User:    reservation.Holder,
 			Command: "reserved until " + reservation.ExpiresAt.Format(time.RFC3339),
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].GPU != rows[j].GPU {
-			return rows[i].GPU < rows[j].GPU
+		left := firstGPU(rows[i].GPU)
+		right := firstGPU(rows[j].GPU)
+		if left != right {
+			return left < right
 		}
 		return rows[i].ID < rows[j].ID
 	})
 	return rows, nil
+}
+
+type psRowBuilder struct {
+	row  model.PSRow
+	gpus map[int]bool
+}
+
+func formatGPUSet(gpus map[int]bool) string {
+	if len(gpus) == 0 {
+		return ""
+	}
+	values := make([]int, 0, len(gpus))
+	for gpu := range gpus {
+		values = append(values, gpu)
+	}
+	sort.Ints(values)
+	parts := make([]string, 0, len(values))
+	for _, gpu := range values {
+		parts = append(parts, strconv.Itoa(gpu))
+	}
+	return strings.Join(parts, ",")
+}
+
+func firstGPU(value string) int {
+	head, _, _ := strings.Cut(value, ",")
+	gpu, err := strconv.Atoi(strings.TrimSpace(head))
+	if err != nil {
+		return 1<<31 - 1
+	}
+	return gpu
+}
+
+func gpuListContains(value string, want int) bool {
+	for _, part := range strings.Split(value, ",") {
+		gpu, err := strconv.Atoi(strings.TrimSpace(part))
+		if err == nil && gpu == want {
+			return true
+		}
+	}
+	return false
 }
 
 func validateGPUs(gpus []int) error {

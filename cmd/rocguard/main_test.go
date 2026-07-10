@@ -14,7 +14,7 @@ func TestWritePSRowsFormatsTable(t *testing.T) {
 	var buf bytes.Buffer
 	err := writePSRows(&buf, []model.PSRow{{
 		ID:      "res_test",
-		GPU:     3,
+		GPU:     "3",
 		User:    "alice",
 		Command: "reserved until 2026-07-02T01:00:00Z",
 	}})
@@ -87,6 +87,7 @@ func TestFilterStatusHidesRevokedAndExpiredRows(t *testing.T) {
 		Now: now,
 		Tokens: []model.TokenView{
 			{ID: "tok_revoked", Revoked: true},
+			{ID: "tok_expired", ExpiresAt: &expiredAt},
 			{ID: "tok_ok"},
 		},
 		Reservations: []model.ReservationView{

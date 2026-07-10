@@ -107,10 +107,17 @@ KEY=rg_xxx ./rocguard token info
 ROOT_KEY=rk_xxx ./rocguard show-keys
 ```
 
-`rocguard ps` prints a table with `id`, `gpu`, `user`, and `command`. Idle
-reserved GPU reservations appear as `reserved until <timestamp>`.
+`rocguard ps` prints a table with `id`, `gpu`, `user`, and `command`. A
+multi-GPU process is shown once with a comma-separated GPU list such as `0,1`.
+Idle reserved GPU reservations appear as `reserved until <timestamp>`.
 
 Admin commands that need the root key read it from `ROOT_KEY` or prompt for it.
+`show-keys` includes the stored `key` for tokens created by current Rocguard
+versions. Older tokens that were created before Rocguard stored token secrets
+show `key_status: "not_stored"`; those keys cannot be recovered from their hashes
+and should be re-registered if the secret was lost.
+Expired tokens and their related reservations, authorizations, claims, leases,
+and bypasses are pruned from `status` and `show-keys`.
 
 `allow` scope values support `*` as a wildcard. For example, `codex*` matches
 `codex`, `codex-1`, and `codex-worker`.
@@ -148,6 +155,43 @@ dynamically against Docker container names during enforcement.
 
 For this to be meaningful, regular users should not have direct access to the
 Docker socket. Membership in the `docker` group is effectively root-equivalent.
+
+Build a small Docker image for `scripts/hold_gpu.py`:
+
+```bash
+docker build -f Dockerfile.hold-gpu -t rocguard-hold-gpu .
+```
+
+If you need a specific ROCm/PyTorch tag:
+
+```bash
+docker build \
+  --build-arg BASE_IMAGE=<rocm-pytorch-image> \
+  -f Dockerfile.hold-gpu \
+  -t rocguard-hold-gpu .
+```
+
+Run a claimed-mode Docker smoke test. Use an idle GPU unless the daemon is in
+dry-run mode:
+
+```bash
+KEY=rg_xxx ./rocguard allow docker --container 'rocguard-hold-gpu*'
+
+docker run --rm \
+  --name rocguard-hold-gpu-2 \
+  --device=/dev/kfd \
+  --device=/dev/dri \
+  --group-add video \
+  --group-add render \
+  --ipc=host \
+  --security-opt seccomp=unconfined \
+  rocguard-hold-gpu \
+  --gpus 2 \
+  --mem-mb 256 \
+  --duration 60 \
+  --matrix 512 \
+  --sleep 0.2
+```
 
 ## Kubernetes Mode
 

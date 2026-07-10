@@ -497,10 +497,15 @@ func (s *Store) Status(now time.Time) (model.Status, error) {
 	if err := s.loadLocked(); err != nil {
 		return model.Status{}, err
 	}
+	if s.pruneExpiredLocked(now) {
+		if err := s.saveLocked(); err != nil {
+			return model.Status{}, err
+		}
+	}
 	status := model.Status{Now: now.UTC()}
 	activeTokenHashes := map[string]bool{}
 	for _, token := range s.state.Tokens {
-		if token.Revoked {
+		if token.Revoked || tokenExpired(token, now) {
 			continue
 		}
 		activeTokenHashes[token.Hash] = true
@@ -566,17 +571,62 @@ func (s *Store) KeyStatus(rootKey string, now time.Time) (model.KeyStatus, error
 	} else if !ok {
 		return model.KeyStatus{}, ErrInvalidRootKey
 	}
-	status, err := s.Status(now)
-	if err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.loadLocked(); err != nil {
 		return model.KeyStatus{}, err
 	}
-	return model.KeyStatus{
-		Now:            status.Now,
-		Tokens:         status.Tokens,
-		Reservations:   status.Reservations,
-		Authorizations: status.Authorizations,
-		Bypasses:       status.Bypasses,
-	}, nil
+	if s.pruneExpiredLocked(now) {
+		if err := s.saveLocked(); err != nil {
+			return model.KeyStatus{}, err
+		}
+	}
+	status := model.KeyStatus{Now: now.UTC()}
+	for _, token := range s.state.Tokens {
+		if token.Revoked || tokenExpired(token, now) {
+			continue
+		}
+		view := model.TokenView{
+			ID:        token.ID,
+			Name:      token.Name,
+			Mode:      NormalizeTokenMode(token.Mode),
+			CreatedAt: token.CreatedAt,
+			ExpiresAt: timePtrIfSet(token.ExpiresAt),
+			Revoked:   token.Revoked,
+		}
+		if token.Secret != "" {
+			view.Key = token.Secret
+			view.KeyStatus = model.TokenKeyStatusStored
+		} else {
+			view.KeyStatus = model.TokenKeyStatusNotStored
+		}
+		status.Tokens = append(status.Tokens, view)
+	}
+	for _, reservation := range s.state.Reservations {
+		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
+			status.Reservations = append(status.Reservations, model.ReservationView{
+				ID:        reservation.ID,
+				GPU:       reservation.GPU,
+				Holder:    reservation.Holder,
+				CreatedAt: reservation.CreatedAt,
+				ExpiresAt: reservation.ExpiresAt,
+				Active:    reservation.Active,
+				Revoked:   reservation.Revoked,
+			})
+		}
+	}
+	for _, authorization := range s.state.Authorizations {
+		if authorization.Active && !authorization.Revoked && !authorizationExpired(authorization, now) {
+			status.Authorizations = append(status.Authorizations, authorizationView(authorization))
+		}
+	}
+	for _, bypass := range s.state.Bypasses {
+		if bypass.Revoked || !now.Before(bypass.ExpiresAt) {
+			continue
+		}
+		status.Bypasses = append(status.Bypasses, bypass)
+	}
+	return status, nil
 }
 
 func (s *Store) ReadOrCreateRootKey() (string, error) {
@@ -652,6 +702,82 @@ func appendAuditLog(path string, event model.AuditEvent) error {
 	return err
 }
 
+func (s *Store) pruneExpiredLocked(now time.Time) bool {
+	changed := false
+	expiredTokenHashes := map[string]bool{}
+
+	tokens := s.state.Tokens[:0]
+	for _, token := range s.state.Tokens {
+		if token.Revoked || tokenExpired(token, now) {
+			if token.Hash != "" {
+				expiredTokenHashes[token.Hash] = true
+			}
+			changed = true
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+	s.state.Tokens = tokens
+
+	reservations := s.state.Reservations[:0]
+	for _, reservation := range s.state.Reservations {
+		if reservation.Revoked || !reservation.Active || !now.Before(reservation.ExpiresAt) || expiredTokenHashes[reservation.TokenHash] {
+			changed = true
+			continue
+		}
+		reservations = append(reservations, reservation)
+	}
+	s.state.Reservations = reservations
+
+	authorizations := s.state.Authorizations[:0]
+	for _, authorization := range s.state.Authorizations {
+		if authorization.Revoked || !authorization.Active || authorizationExpired(authorization, now) || expiredTokenHashes[authorization.TokenHash] {
+			changed = true
+			continue
+		}
+		authorizations = append(authorizations, authorization)
+	}
+	s.state.Authorizations = authorizations
+
+	leases := s.state.Leases[:0]
+	for _, lease := range s.state.Leases {
+		if !lease.Active || !now.Before(lease.ExpiresAt) || expiredTokenHashes[lease.TokenHash] {
+			changed = true
+			continue
+		}
+		leases = append(leases, lease)
+	}
+	s.state.Leases = leases
+
+	bypasses := s.state.Bypasses[:0]
+	for _, bypass := range s.state.Bypasses {
+		if bypass.Revoked || !now.Before(bypass.ExpiresAt) {
+			changed = true
+			continue
+		}
+		bypasses = append(bypasses, bypass)
+	}
+	s.state.Bypasses = bypasses
+
+	if len(expiredTokenHashes) > 0 || changed {
+		activeAuthorizationIDs := map[string]bool{}
+		for _, authorization := range s.state.Authorizations {
+			activeAuthorizationIDs[authorization.ID] = true
+		}
+		claims := s.state.SoftClaims[:0]
+		for _, claim := range s.state.SoftClaims {
+			if expiredTokenHashes[claim.TokenHash] || !activeAuthorizationIDs[claim.AuthorizationID] {
+				changed = true
+				continue
+			}
+			claims = append(claims, claim)
+		}
+		s.state.SoftClaims = claims
+	}
+
+	return changed
+}
+
 func cloneState(state model.State) model.State {
 	out := model.State{}
 	out.Tokens = append(out.Tokens, state.Tokens...)
@@ -669,6 +795,7 @@ func newToken(mode, name string, expiresAt time.Time, now time.Time) (string, mo
 	token := model.Token{
 		ID:        "tok_" + randomHex(8),
 		Hash:      HashToken(tokenSecret),
+		Secret:    tokenSecret,
 		Name:      strings.TrimSpace(name),
 		Mode:      NormalizeTokenMode(mode),
 		CreatedAt: now.UTC(),
@@ -716,6 +843,10 @@ func authorizationView(authorization model.Authorization) model.AuthorizationVie
 
 func authorizationExpired(authorization model.Authorization, now time.Time) bool {
 	return timeIsSet(authorization.ExpiresAt) && !now.Before(authorization.ExpiresAt)
+}
+
+func tokenExpired(token model.Token, now time.Time) bool {
+	return timeIsSet(token.ExpiresAt) && !now.Before(token.ExpiresAt)
 }
 
 func timeIsSet(value time.Time) bool {

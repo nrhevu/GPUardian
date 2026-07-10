@@ -329,8 +329,53 @@ func TestPSIncludesHardReservationRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].GPU != 3 || !strings.Contains(rows[0].Command, "reserved until") {
+	if len(rows) != 1 || rows[0].GPU != "3" || !strings.Contains(rows[0].Command, "reserved until") {
 		t.Fatalf("unexpected ps rows: %+v", rows)
+	}
+}
+
+func TestPSAggregatesMultiGPUProcessRows(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	secret, token, err := server.Store.RegisterSoftToken(key, "alice", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tokenHash, err := server.Store.ValidateToken(secret, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization := model.Authorization{
+		ID:        "auth_multi",
+		Mode:      model.ModeUser,
+		TokenHash: tokenHash,
+		TokenMode: token.Mode,
+		Holder:    token.Name,
+		Username:  "alice",
+		CreatedAt: now,
+		Active:    true,
+	}
+	if err := server.Store.AddAuthorization(authorization); err != nil {
+		t.Fatal(err)
+	}
+	server.AMD = fakeAMD{processes: []model.GPUProcess{
+		{GPU: 0, PID: 123, MemBytes: 1},
+		{GPU: 1, PID: 123, MemBytes: 1},
+	}}
+	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{
+		123: {PID: 123, Username: "alice", Cmdline: []string{"python", "train.py"}},
+	}}
+
+	rows, err := server.ps(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "auth_multi/123" || rows[0].GPU != "0,1" || rows[0].Command != "python train.py" {
+		t.Fatalf("expected one aggregated ps row, got %+v", rows)
 	}
 }
 

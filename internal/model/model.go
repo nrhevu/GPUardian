@@ -11,6 +11,9 @@ const (
 	TokenModeReserved = "reserved"
 	TokenModeClaimed  = "claimed"
 
+	TokenKeyStatusStored    = "stored"
+	TokenKeyStatusNotStored = "not_stored"
+
 	BypassPID     = "pid"
 	BypassCommand = "command"
 )
@@ -36,11 +39,12 @@ type ProcInfo struct {
 type Token struct {
 	ID        string    `json:"id"`
 	Hash      string    `json:"hash"`
+	Secret    string    `json:"secret,omitempty"`
 	Name      string    `json:"name"`
 	Mode      string    `json:"mode"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
-	Revoked   bool      `json:"revoked"`
+	Revoked   bool      `json:"revoked,omitempty"`
 }
 
 type Reservation struct {
@@ -51,7 +55,7 @@ type Reservation struct {
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Active    bool      `json:"active"`
-	Revoked   bool      `json:"revoked"`
+	Revoked   bool      `json:"revoked,omitempty"`
 }
 
 type Authorization struct {
@@ -73,7 +77,7 @@ type Authorization struct {
 	CreatedAt        time.Time `json:"created_at"`
 	ExpiresAt        time.Time `json:"expires_at,omitempty"`
 	Active           bool      `json:"active"`
-	Revoked          bool      `json:"revoked"`
+	Revoked          bool      `json:"revoked,omitempty"`
 }
 
 type SoftClaim struct {
@@ -114,7 +118,7 @@ type BypassRule struct {
 	Reason    string    `json:"reason"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
-	Revoked   bool      `json:"revoked"`
+	Revoked   bool      `json:"revoked,omitempty"`
 }
 
 type AuditEvent struct {
@@ -149,11 +153,13 @@ type Status struct {
 
 type TokenView struct {
 	ID        string     `json:"id"`
+	Key       string     `json:"key,omitempty"`
+	KeyStatus string     `json:"key_status,omitempty"`
 	Name      string     `json:"name"`
 	Mode      string     `json:"mode"`
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	Revoked   bool       `json:"revoked"`
+	Revoked   bool       `json:"revoked,omitempty"`
 }
 
 type ReservationView struct {
@@ -163,7 +169,7 @@ type ReservationView struct {
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Active    bool      `json:"active"`
-	Revoked   bool      `json:"revoked"`
+	Revoked   bool      `json:"revoked,omitempty"`
 }
 
 type AuthorizationView struct {
@@ -182,7 +188,7 @@ type AuthorizationView struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 	Active           bool       `json:"active"`
-	Revoked          bool       `json:"revoked"`
+	Revoked          bool       `json:"revoked,omitempty"`
 }
 
 type SoftClaimView struct {
@@ -229,7 +235,7 @@ type AllowResult struct {
 
 type PSRow struct {
 	ID      string `json:"id"`
-	GPU     int    `json:"gpu"`
+	GPU     string `json:"gpu"`
 	User    string `json:"user"`
 	Command string `json:"command"`
 }

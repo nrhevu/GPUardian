@@ -1,8 +1,10 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +114,146 @@ func TestSoftRegisterHasNoExpiry(t *testing.T) {
 	}
 	if _, _, err := st.ValidateToken(secret, now.Add(365*24*time.Hour)); err != nil {
 		t.Fatalf("claimed token should not expire: %v", err)
+	}
+}
+
+func TestKeyStatusShowsStoredTokenKeys(t *testing.T) {
+	st := testStore(t)
+	rootKey, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	secret, token, err := st.RegisterSoftToken(rootKey, "alice", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := st.Status(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Tokens) != 1 || status.Tokens[0].Key != "" {
+		t.Fatalf("status should not expose token key: %+v", status.Tokens)
+	}
+
+	keyStatus, err := st.KeyStatus(rootKey, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keyStatus.Tokens) != 1 ||
+		keyStatus.Tokens[0].ID != token.ID ||
+		keyStatus.Tokens[0].Key != secret ||
+		keyStatus.Tokens[0].KeyStatus != model.TokenKeyStatusStored {
+		t.Fatalf("show-keys should expose stored token key: %+v", keyStatus.Tokens)
+	}
+}
+
+func TestKeyStatusMarksLegacyTokenKeysUnavailable(t *testing.T) {
+	st := testStore(t)
+	rootKey, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	st.mu.Lock()
+	st.state = model.State{Tokens: []model.Token{{
+		ID:        "tok_legacy",
+		Hash:      "legacy-hash",
+		Name:      "alice",
+		Mode:      model.TokenModeClaimed,
+		CreatedAt: now,
+	}}}
+	st.loaded = true
+	st.mu.Unlock()
+
+	keyStatus, err := st.KeyStatus(rootKey, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keyStatus.Tokens) != 1 ||
+		keyStatus.Tokens[0].KeyStatus != model.TokenKeyStatusNotStored ||
+		keyStatus.Tokens[0].Key != "" {
+		t.Fatalf("legacy token should be marked not stored: %+v", keyStatus.Tokens)
+	}
+}
+
+func TestKeyStatusDeletesExpiredTokenState(t *testing.T) {
+	st := testStore(t)
+	rootKey, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	_, token, reservations, err := st.RegisterHardReservations(rootKey, "expired", []int{0}, "1h", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization := model.Authorization{
+		ID:        NewAuthorizationID(),
+		Mode:      model.ModeUser,
+		TokenHash: token.Hash,
+		TokenMode: token.Mode,
+		Holder:    token.Name,
+		UID:       1000,
+		CreatedAt: now,
+		ExpiresAt: token.ExpiresAt,
+		Active:    true,
+	}
+	if err := st.AddAuthorization(authorization); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertSoftClaim(model.SoftClaim{
+		GPU:             0,
+		TokenHash:       token.Hash,
+		AuthorizationID: authorization.ID,
+		Holder:          token.Name,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddLease(model.Lease{
+		ID:        NewLeaseID(),
+		GPU:       0,
+		Mode:      model.ModeUser,
+		TokenHash: token.Hash,
+		Holder:    token.Name,
+		UID:       1000,
+		CreatedAt: now,
+		ExpiresAt: token.ExpiresAt,
+		Active:    true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddBypass(model.BypassRule{
+		ID:        NewBypassID(),
+		Type:      model.BypassPID,
+		PID:       123,
+		Reason:    "expired",
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	later := now.Add(2 * time.Hour)
+	keyStatus, err := st.KeyStatus(rootKey, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keyStatus.Tokens) != 0 || len(keyStatus.Reservations) != 0 || len(keyStatus.Authorizations) != 0 || len(keyStatus.Bypasses) != 0 {
+		t.Fatalf("expired state should be hidden from key status: %+v", keyStatus)
+	}
+	state, err := st.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Tokens) != 0 ||
+		len(state.Reservations) != 0 ||
+		len(state.Authorizations) != 0 ||
+		len(state.SoftClaims) != 0 ||
+		len(state.Leases) != 0 ||
+		len(state.Bypasses) != 0 {
+		t.Fatalf("expired state should be deleted, reservation=%s state=%+v", reservations[0].ID, state)
 	}
 }
 
@@ -267,5 +409,50 @@ func TestStatusHidesRevokedLegacyState(t *testing.T) {
 	}
 	if len(keyStatus.Tokens) != 0 || len(keyStatus.Reservations) != 0 || len(keyStatus.Authorizations) != 0 || len(keyStatus.Bypasses) != 0 {
 		t.Fatalf("revoked legacy state should be hidden from key status: %+v", keyStatus)
+	}
+}
+
+func TestStatusJSONOmitsFalseRevokedFields(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	status := model.KeyStatus{
+		Now: now,
+		Tokens: []model.TokenView{{
+			ID:        "tok_ok",
+			Name:      "alice",
+			Mode:      model.TokenModeClaimed,
+			CreatedAt: now,
+		}},
+		Reservations: []model.ReservationView{{
+			ID:        "res_ok",
+			GPU:       0,
+			Holder:    "alice",
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+			Active:    true,
+		}},
+		Authorizations: []model.AuthorizationView{{
+			ID:        "auth_ok",
+			Mode:      model.ModeUser,
+			TokenMode: model.TokenModeClaimed,
+			Holder:    "alice",
+			CreatedAt: now,
+			Active:    true,
+		}},
+		Bypasses: []model.BypassRule{{
+			ID:        "bp_ok",
+			Type:      model.BypassPID,
+			PID:       123,
+			Reason:    "test",
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		}},
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "revoked") {
+		t.Fatalf("status JSON should omit false revoked fields: %s", data)
 	}
 }
