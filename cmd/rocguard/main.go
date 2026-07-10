@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"text/tabwriter"
 	"time"
+	"unsafe"
 
 	"rocguardd/internal/config"
 	"rocguardd/internal/daemon"
@@ -120,7 +121,7 @@ func register(cfg config.Config, args []string) error {
 		return errors.New("usage: rocguard register (--reserved | --claimed)")
 	}
 	reader := bufio.NewReader(os.Stdin)
-	rootKey, err := prompt(reader, "Root key: ")
+	rootKey, err := promptSecret(reader, "Root key: ")
 	if err != nil {
 		return err
 	}
@@ -443,7 +444,7 @@ func rootKeyFromEnvOrPrompt() (string, error) {
 	if value := strings.TrimSpace(os.Getenv("ROOT_KEY")); value != "" {
 		return value, nil
 	}
-	return prompt(bufio.NewReader(os.Stdin), "Root key: ")
+	return promptSecret(bufio.NewReader(os.Stdin), "Root key: ")
 }
 
 func callRPC(cfg config.Config, method, token string, args any, stream bool) (json.RawMessage, error) {
@@ -503,6 +504,62 @@ func prompt(reader *bufio.Reader, label string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(value), nil
+}
+
+func promptSecret(reader *bufio.Reader, label string) (string, error) {
+	fmt.Print(label)
+	fd := os.Stdin.Fd()
+	state, ok, err := getTermios(fd)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return readPromptValue(reader)
+	}
+
+	noEcho := *state
+	noEcho.Lflag &^= syscall.ECHO
+	if err := setTermios(fd, &noEcho); err != nil {
+		return "", err
+	}
+	value, readErr := readPromptValue(reader)
+	restoreErr := setTermios(fd, state)
+	fmt.Println()
+	if readErr != nil {
+		return "", readErr
+	}
+	if restoreErr != nil {
+		return "", restoreErr
+	}
+	return value, nil
+}
+
+func readPromptValue(reader *bufio.Reader) (string, error) {
+	value, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func getTermios(fd uintptr) (*syscall.Termios, bool, error) {
+	var state syscall.Termios
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&state)), 0, 0, 0)
+	if errno == 0 {
+		return &state, true, nil
+	}
+	if errno == syscall.ENOTTY || errno == syscall.EINVAL {
+		return nil, false, nil
+	}
+	return nil, false, errno
+}
+
+func setTermios(fd uintptr, state *syscall.Termios) error {
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, uintptr(syscall.TCSETS), uintptr(unsafe.Pointer(state)), 0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func requiredToken() string {
