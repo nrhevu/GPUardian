@@ -127,6 +127,22 @@ func (s *Store) RegisterHardReservations(rootKey, name string, gpus []int, ttlTe
 	if err != nil {
 		return "", model.Token{}, nil, err
 	}
+	return s.RegisterScheduledReservations(rootKey, name, "", gpus, now, now.Add(ttl), now)
+}
+
+func (s *Store) RegisterScheduledReservations(rootKey, name, purpose string, gpus []int, startsAt, expiresAt, now time.Time) (string, model.Token, []model.Reservation, error) {
+	startsAt = startsAt.UTC()
+	expiresAt = expiresAt.UTC()
+	now = now.UTC()
+	if startsAt.IsZero() {
+		startsAt = now
+	}
+	if !expiresAt.After(startsAt) {
+		return "", model.Token{}, nil, fmt.Errorf("reservation end must be after start")
+	}
+	if expiresAt.Sub(startsAt) > MaxHardTTL {
+		return "", model.Token{}, nil, fmt.Errorf("reservation duration exceeds max %s", MaxHardTTL)
+	}
 	if len(gpus) == 0 {
 		return "", model.Token{}, nil, fmt.Errorf("at least one gpu is required")
 	}
@@ -145,7 +161,6 @@ func (s *Store) RegisterHardReservations(rootKey, name string, gpus []int, ttlTe
 	} else if !ok {
 		return "", model.Token{}, nil, ErrInvalidRootKey
 	}
-	expiresAt := now.UTC().Add(ttl)
 	tokenSecret, token := newToken(model.TokenModeReserved, name, expiresAt, now)
 	reservations := make([]model.Reservation, 0, len(gpus))
 	for _, gpu := range gpus {
@@ -154,7 +169,9 @@ func (s *Store) RegisterHardReservations(rootKey, name string, gpus []int, ttlTe
 			GPU:       gpu,
 			TokenHash: token.Hash,
 			Holder:    token.Name,
-			CreatedAt: now.UTC(),
+			Purpose:   strings.TrimSpace(purpose),
+			CreatedAt: now,
+			StartsAt:  startsAt,
 			ExpiresAt: expiresAt,
 			Active:    true,
 		})
@@ -163,6 +180,13 @@ func (s *Store) RegisterHardReservations(rootKey, name string, gpus []int, ttlTe
 	defer s.mu.Unlock()
 	if err := s.loadLocked(); err != nil {
 		return "", model.Token{}, nil, err
+	}
+	for _, requested := range reservations {
+		for _, existing := range s.state.Reservations {
+			if existing.GPU == requested.GPU && model.ReservationOverlaps(existing, requested.StartsAt, requested.ExpiresAt) {
+				return "", model.Token{}, nil, fmt.Errorf("gpu %d reservation overlaps %s", requested.GPU, existing.ID)
+			}
+		}
 	}
 	s.state.Tokens = append(s.state.Tokens, token)
 	s.state.Reservations = append(s.state.Reservations, reservations...)
@@ -406,10 +430,24 @@ func (s *Store) Revoke(idOrToken string) error {
 	if strings.HasPrefix(idOrToken, "rg_") {
 		tokenHash = HashToken(idOrToken)
 	}
+	for _, token := range s.state.Tokens {
+		if token.ID == idOrToken || (tokenHash != "" && token.Hash == tokenHash) {
+			tokenHash = token.Hash
+			break
+		}
+	}
+	if tokenHash == "" {
+		for _, reservation := range s.state.Reservations {
+			if reservation.ID == idOrToken {
+				tokenHash = reservation.TokenHash
+				break
+			}
+		}
+	}
 	changed := false
 	tokens := s.state.Tokens[:0]
 	for _, token := range s.state.Tokens {
-		if token.ID == idOrToken || token.Hash == tokenHash {
+		if token.ID == idOrToken || (tokenHash != "" && token.Hash == tokenHash) {
 			tokenHash = token.Hash
 			changed = true
 			continue
@@ -504,11 +542,13 @@ func (s *Store) Status(now time.Time) (model.Status, error) {
 	}
 	status := model.Status{Now: now.UTC()}
 	activeTokenHashes := map[string]bool{}
+	tokenIDsByHash := map[string]string{}
 	for _, token := range s.state.Tokens {
 		if token.Revoked || tokenExpired(token, now) {
 			continue
 		}
 		activeTokenHashes[token.Hash] = true
+		tokenIDsByHash[token.Hash] = token.ID
 		status.Tokens = append(status.Tokens, model.TokenView{
 			ID:        token.ID,
 			Name:      token.Name,
@@ -522,9 +562,12 @@ func (s *Store) Status(now time.Time) (model.Status, error) {
 		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
 			status.Reservations = append(status.Reservations, model.ReservationView{
 				ID:        reservation.ID,
+				GroupID:   tokenIDsByHash[reservation.TokenHash],
 				GPU:       reservation.GPU,
 				Holder:    reservation.Holder,
+				Purpose:   reservation.Purpose,
 				CreatedAt: reservation.CreatedAt,
+				StartsAt:  model.ReservationStartsAt(reservation),
 				ExpiresAt: reservation.ExpiresAt,
 				Active:    reservation.Active,
 				Revoked:   reservation.Revoked,
@@ -582,10 +625,12 @@ func (s *Store) KeyStatus(rootKey string, now time.Time) (model.KeyStatus, error
 		}
 	}
 	status := model.KeyStatus{Now: now.UTC()}
+	tokenIDsByHash := map[string]string{}
 	for _, token := range s.state.Tokens {
 		if token.Revoked || tokenExpired(token, now) {
 			continue
 		}
+		tokenIDsByHash[token.Hash] = token.ID
 		view := model.TokenView{
 			ID:        token.ID,
 			Name:      token.Name,
@@ -606,9 +651,12 @@ func (s *Store) KeyStatus(rootKey string, now time.Time) (model.KeyStatus, error
 		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
 			status.Reservations = append(status.Reservations, model.ReservationView{
 				ID:        reservation.ID,
+				GroupID:   tokenIDsByHash[reservation.TokenHash],
 				GPU:       reservation.GPU,
 				Holder:    reservation.Holder,
+				Purpose:   reservation.Purpose,
 				CreatedAt: reservation.CreatedAt,
+				StartsAt:  model.ReservationStartsAt(reservation),
 				ExpiresAt: reservation.ExpiresAt,
 				Active:    reservation.Active,
 				Revoked:   reservation.Revoked,
@@ -705,10 +753,17 @@ func appendAuditLog(path string, event model.AuditEvent) error {
 func (s *Store) pruneExpiredLocked(now time.Time) bool {
 	changed := false
 	expiredTokenHashes := map[string]bool{}
+	reservedTokenHashes := map[string]bool{}
+	for _, reservation := range s.state.Reservations {
+		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) && reservation.TokenHash != "" {
+			reservedTokenHashes[reservation.TokenHash] = true
+		}
+	}
 
 	tokens := s.state.Tokens[:0]
 	for _, token := range s.state.Tokens {
-		if token.Revoked || tokenExpired(token, now) {
+		orphanReserved := NormalizeTokenMode(token.Mode) == model.TokenModeReserved && !reservedTokenHashes[token.Hash]
+		if token.Revoked || tokenExpired(token, now) || orphanReserved {
 			if token.Hash != "" {
 				expiredTokenHashes[token.Hash] = true
 			}

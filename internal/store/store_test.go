@@ -98,6 +98,49 @@ func TestHardRegisterMultipleGPUs(t *testing.T) {
 	}
 }
 
+func TestScheduledReservationRejectsOverlap(t *testing.T) {
+	st := testStore(t)
+	key, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	start := now.Add(2 * time.Hour)
+	end := start.Add(2 * time.Hour)
+	if _, _, reservations, err := st.RegisterScheduledReservations(key, "alice", "training", []int{0}, start, end, now); err != nil {
+		t.Fatal(err)
+	} else if reservations[0].StartsAt != start || reservations[0].Purpose != "training" {
+		t.Fatalf("unexpected scheduled reservation: %+v", reservations[0])
+	}
+	if _, _, _, err := st.RegisterScheduledReservations(key, "bob", "", []int{0}, start.Add(time.Hour), end.Add(time.Hour), now); err == nil {
+		t.Fatal("expected overlapping reservation to fail")
+	}
+	if _, _, _, err := st.RegisterScheduledReservations(key, "bob", "", []int{0}, end, end.Add(time.Hour), now); err != nil {
+		t.Fatalf("adjacent reservation should succeed: %v", err)
+	}
+}
+
+func TestReservationActiveAtHonorsStartWindow(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	reservation := model.Reservation{
+		ID:        "res_test",
+		GPU:       0,
+		CreatedAt: now,
+		StartsAt:  now.Add(time.Hour),
+		ExpiresAt: now.Add(2 * time.Hour),
+		Active:    true,
+	}
+	if model.ReservationActiveAt(reservation, now.Add(30*time.Minute)) {
+		t.Fatal("reservation should not be active before starts_at")
+	}
+	if !model.ReservationActiveAt(reservation, now.Add(90*time.Minute)) {
+		t.Fatal("reservation should be active during window")
+	}
+	if model.ReservationActiveAt(reservation, now.Add(3*time.Hour)) {
+		t.Fatal("reservation should not be active after expires_at")
+	}
+}
+
 func TestSoftRegisterHasNoExpiry(t *testing.T) {
 	st := testStore(t)
 	key, err := st.ReadOrCreateRootKey()
@@ -324,6 +367,70 @@ func TestRevokeTokenRevokesRelatedState(t *testing.T) {
 	}
 	if len(state.Bypasses) != 0 {
 		t.Fatalf("bypass should be deleted: %+v", state.Bypasses)
+	}
+}
+
+func TestRevokeFutureReservationDeletesRelatedToken(t *testing.T) {
+	st := testStore(t)
+	key, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	start := now.Add(2 * time.Hour)
+	_, _, reservations, err := st.RegisterScheduledReservations(key, "alice", "training", []int{0, 1}, start, start.Add(time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Revoke(reservations[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := st.KeyStatus(key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Tokens) != 0 {
+		t.Fatalf("revoke by future reservation id should delete related token: %+v", status.Tokens)
+	}
+	if len(status.Reservations) != 0 {
+		t.Fatalf("revoke by future reservation id should delete related reservations: %+v", status.Reservations)
+	}
+}
+
+func TestStatusPrunesOrphanReservedToken(t *testing.T) {
+	st := testStore(t)
+	key, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	_, token := newToken(model.TokenModeReserved, "orphan", now.Add(time.Hour), now)
+
+	st.mu.Lock()
+	st.state.Tokens = append(st.state.Tokens, token)
+	st.loaded = true
+	st.mu.Unlock()
+
+	status, err := st.Status(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Tokens) != 0 {
+		t.Fatalf("orphan reserved token should be hidden from status: %+v", status.Tokens)
+	}
+	keyStatus, err := st.KeyStatus(key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keyStatus.Tokens) != 0 {
+		t.Fatalf("orphan reserved token should be hidden from key status: %+v", keyStatus.Tokens)
+	}
+	state, err := st.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Tokens) != 0 {
+		t.Fatalf("orphan reserved token should be pruned from state: %+v", state.Tokens)
 	}
 }
 

@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 type Config struct {
 	SocketPath  string
@@ -10,6 +13,15 @@ type Config struct {
 	CgroupRoot  string
 	ProcRoot    string
 	DryRun      bool
+	GPUCount    int
+	NodeAddr    string
+	NodeTLSCert string
+	NodeTLSKey  string
+	WebAddr     string
+	WebRegistry string
+	WebUIDir    string
+	WebUser     string
+	WebPassword string
 }
 
 func Default() Config {
@@ -21,6 +33,15 @@ func Default() Config {
 		CgroupRoot:  env("ROCGUARD_CGROUP_ROOT", "/sys/fs/cgroup/rocguard"),
 		ProcRoot:    env("ROCGUARD_PROC_ROOT", "/proc"),
 		DryRun:      env("ROCGUARD_DRY_RUN", "") == "1",
+		GPUCount:    envInt("ROCGUARD_GPU_COUNT", 0),
+		NodeAddr:    env("ROCGUARD_NODE_ADDR", ""),
+		NodeTLSCert: env("ROCGUARD_NODE_TLS_CERT", ""),
+		NodeTLSKey:  env("ROCGUARD_NODE_TLS_KEY", ""),
+		WebAddr:     env("ROCGUARD_WEB_ADDR", "127.0.0.1:8080"),
+		WebRegistry: env("ROCGUARD_WEB_REGISTRY", "/var/lib/rocguard/web-servers.json"),
+		WebUIDir:    env("ROCGUARD_WEB_UI_DIR", "web/ui/dist"),
+		WebUser:     env("ROCGUARD_WEB_USER", "admin"),
+		WebPassword: env("ROCGUARD_WEB_PASSWORD", ""),
 	}
 }
 
@@ -29,4 +50,16 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

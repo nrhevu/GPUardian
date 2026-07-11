@@ -50,6 +50,19 @@ Start the daemon as root:
 sudo ./rocguard daemon
 ```
 
+To expose a node API for the web gateway, configure the daemon with an address
+and TLS certificate paths:
+
+```bash
+sudo ROCGUARD_NODE_ADDR=:8443 \
+  ROCGUARD_NODE_TLS_CERT=/etc/rocguard/tls.crt \
+  ROCGUARD_NODE_TLS_KEY=/etc/rocguard/tls.key \
+  ./rocguard daemon
+```
+
+The node API requires `Authorization: Bearer <root-key>` on every endpoint. Do
+not expose it without TLS outside local development.
+
 In another terminal, get the root key from the root-owned key file. By default
 that file is `/var/lib/rocguard/root.key`; if `ROCGUARD_ROOT_KEY` is set, use
 that path instead. There is intentionally no Rocguard CLI command that prints
@@ -119,6 +132,43 @@ and should be re-registered if the secret was lost.
 Expired tokens and their related reservations, authorizations, claims, leases,
 and bypasses are pruned from `status` and `show-keys`.
 
+## Web Gateway
+
+The web UI uses a central gateway. Browsers talk only to `rocguard web`; the
+gateway stores node endpoint/root-key records locally and calls each daemon's
+authenticated node API.
+
+Build the React UI:
+
+```bash
+cd web/ui
+npm install
+npm run build
+```
+
+Start the gateway:
+
+```bash
+ROCGUARD_WEB_PASSWORD=<password> ./rocguard web
+```
+
+Open the gateway in a browser and sign in with `ROCGUARD_WEB_USER` and
+`ROCGUARD_WEB_PASSWORD`. The gateway stores a signed `HttpOnly` session cookie,
+so refreshing the page does not prompt for credentials again.
+
+Useful gateway settings:
+
+- `ROCGUARD_WEB_ADDR` defaults to `127.0.0.1:8080`.
+- `ROCGUARD_WEB_USER` defaults to `admin`.
+- `ROCGUARD_WEB_PASSWORD` is required for the web login screen.
+- `ROCGUARD_WEB_REGISTRY` defaults to `/var/lib/rocguard/web-servers.json`.
+- `ROCGUARD_WEB_UI_DIR` defaults to `web/ui/dist`.
+
+The registry file is written with mode `0600` because it contains node root
+keys. Add server in the UI requires `Endpoint API` and `Root key`; reserve and
+create-claim-key actions use the stored credential server-side. Showing stored
+keys prompts for the root key again.
+
 `allow` scope values support `*` as a wildcard. For example, `codex*` matches
 `codex`, `codex-1`, and `codex-worker`.
 
@@ -127,6 +177,7 @@ and bypasses are pruned from `status` and `show-keys`.
 ```text
 rocguard help
 rocguard daemon [--dry-run]
+rocguard web [--addr <host:port>] [--registry <path>] [--ui-dir <path>]
 rocguard register (--reserved | --claimed)
 KEY=... rocguard run -- <command>
 KEY=... rocguard allow docker --container <name-or-id>

@@ -25,6 +25,13 @@ type GPUProcess struct {
 	MemBytes uint64 `json:"mem_bytes,omitempty"`
 }
 
+type GPUMetric struct {
+	GPU              int      `json:"gpu"`
+	MemoryUsedBytes  *uint64  `json:"memory_used_bytes,omitempty"`
+	MemoryTotalBytes *uint64  `json:"memory_total_bytes,omitempty"`
+	UtilizationPct   *float64 `json:"utilization_percent,omitempty"`
+}
+
 type ProcInfo struct {
 	PID         int
 	UID         int
@@ -52,10 +59,33 @@ type Reservation struct {
 	GPU       int       `json:"gpu"`
 	TokenHash string    `json:"token_hash"`
 	Holder    string    `json:"holder"`
+	Purpose   string    `json:"purpose,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	StartsAt  time.Time `json:"starts_at,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Active    bool      `json:"active"`
 	Revoked   bool      `json:"revoked,omitempty"`
+}
+
+func ReservationStartsAt(reservation Reservation) time.Time {
+	if !reservation.StartsAt.IsZero() {
+		return reservation.StartsAt
+	}
+	return reservation.CreatedAt
+}
+
+func ReservationActiveAt(reservation Reservation, now time.Time) bool {
+	return reservation.Active &&
+		!reservation.Revoked &&
+		!now.Before(ReservationStartsAt(reservation)) &&
+		now.Before(reservation.ExpiresAt)
+}
+
+func ReservationOverlaps(reservation Reservation, startsAt, expiresAt time.Time) bool {
+	if !reservation.Active || reservation.Revoked {
+		return false
+	}
+	return ReservationStartsAt(reservation).Before(expiresAt) && startsAt.Before(reservation.ExpiresAt)
 }
 
 type Authorization struct {
@@ -151,6 +181,30 @@ type Status struct {
 	Bypasses       []BypassRule        `json:"bypasses,omitempty"`
 }
 
+type GPUSnapshot struct {
+	ID               int              `json:"id"`
+	State            string           `json:"state"`
+	MemoryUsedBytes  *uint64          `json:"memory_used_bytes,omitempty"`
+	MemoryTotalBytes *uint64          `json:"memory_total_bytes,omitempty"`
+	UtilizationPct   *float64         `json:"utilization_percent,omitempty"`
+	Processes        []GPUProcess     `json:"processes,omitempty"`
+	Reservation      *ReservationView `json:"reservation,omitempty"`
+	Claim            *SoftClaimView   `json:"claim,omitempty"`
+}
+
+type NodeSnapshot struct {
+	Now            time.Time           `json:"now"`
+	Hostname       string              `json:"hostname,omitempty"`
+	GPUs           []GPUSnapshot       `json:"gpus"`
+	Tokens         []TokenView         `json:"tokens,omitempty"`
+	Reservations   []ReservationView   `json:"reservations,omitempty"`
+	Authorizations []AuthorizationView `json:"authorizations,omitempty"`
+	SoftClaims     []SoftClaimView     `json:"soft_claims,omitempty"`
+	Leases         []Lease             `json:"leases,omitempty"`
+	Bypasses       []BypassRule        `json:"bypasses,omitempty"`
+	PS             []PSRow             `json:"ps,omitempty"`
+}
+
 type TokenView struct {
 	ID        string     `json:"id"`
 	Key       string     `json:"key,omitempty"`
@@ -164,9 +218,12 @@ type TokenView struct {
 
 type ReservationView struct {
 	ID        string    `json:"id"`
+	GroupID   string    `json:"group_id,omitempty"`
 	GPU       int       `json:"gpu"`
 	Holder    string    `json:"holder"`
+	Purpose   string    `json:"purpose,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	StartsAt  time.Time `json:"starts_at,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Active    bool      `json:"active"`
 	Revoked   bool      `json:"revoked,omitempty"`
@@ -213,6 +270,7 @@ type RegisterResult struct {
 	Mode           string     `json:"mode"`
 	ReservationIDs []string   `json:"reservation_ids,omitempty"`
 	GPUs           []int      `json:"gpus,omitempty"`
+	StartsAt       *time.Time `json:"starts_at,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 }
 

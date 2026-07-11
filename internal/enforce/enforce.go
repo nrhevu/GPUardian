@@ -515,7 +515,7 @@ func (a Authorizer) leaseMatches(ctx context.Context, lease model.Lease, info mo
 func activeReservationsForGPU(reservations []model.Reservation, gpu int, now time.Time) []model.Reservation {
 	var out []model.Reservation
 	for _, reservation := range reservations {
-		if reservation.GPU == gpu && reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
+		if reservation.GPU == gpu && model.ReservationActiveAt(reservation, now) {
 			out = append(out, reservation)
 		}
 	}

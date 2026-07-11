@@ -65,6 +65,13 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.Store.Load(); err != nil {
 		return err
 	}
+	if s.Cfg.NodeAddr != "" {
+		closeNodeHTTP, err := s.startNodeHTTP(ctx)
+		if err != nil {
+			return err
+		}
+		defer closeNodeHTTP()
+	}
 	if err := os.MkdirAll(filepath.Dir(s.Cfg.SocketPath), 0755); err != nil {
 		return err
 	}
@@ -142,12 +149,27 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 			if err := validateGPUs(args.GPUs); err != nil {
 				return nil, err
 			}
+			startsAt := now
+			var expiresAt time.Time
+			if args.StartsAt != nil {
+				startsAt = args.StartsAt.UTC()
+			}
+			if args.ExpiresAt != nil {
+				expiresAt = args.ExpiresAt.UTC()
+			}
+			if expiresAt.IsZero() {
+				ttl, err := store.ParseTTL(args.TTL, store.DefaultHardTTL, store.MaxHardTTL)
+				if err != nil {
+					return nil, err
+				}
+				expiresAt = startsAt.Add(ttl)
+			}
 			for _, gpu := range args.GPUs {
-				if err := s.ensureGPUCanReserve(ctx, gpu); err != nil {
+				if err := s.ensureGPUCanReserveWindow(ctx, gpu, startsAt, expiresAt); err != nil {
 					return nil, err
 				}
 			}
-			secret, token, reservations, err := s.Store.RegisterHardReservations(args.RootKey, args.Name, args.GPUs, args.TTL, now)
+			secret, token, reservations, err := s.Store.RegisterScheduledReservations(args.RootKey, args.Name, args.Purpose, args.GPUs, startsAt, expiresAt, now)
 			if err != nil {
 				return nil, err
 			}
@@ -157,7 +179,7 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 				ids = append(ids, reservation.ID)
 				gpus = append(gpus, reservation.GPU)
 			}
-			return model.RegisterResult{Token: secret, Mode: token.Mode, ReservationIDs: ids, GPUs: gpus, ExpiresAt: timePtrIfSet(token.ExpiresAt)}, nil
+			return model.RegisterResult{Token: secret, Mode: token.Mode, ReservationIDs: ids, GPUs: gpus, StartsAt: timePtrIfSet(startsAt), ExpiresAt: timePtrIfSet(token.ExpiresAt)}, nil
 		case model.TokenModeClaimed:
 			secret, token, err := s.Store.RegisterSoftToken(args.RootKey, args.Name, now)
 			if err != nil {
@@ -571,8 +593,21 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID string, to
 }
 
 func (s *Server) ensureGPUCanReserve(ctx context.Context, gpu int) error {
+	now := time.Now()
+	return s.ensureGPUCanReserveWindow(ctx, gpu, now, now.Add(store.DefaultHardTTL))
+}
+
+func (s *Server) ensureGPUCanReserveWindow(ctx context.Context, gpu int, startsAt, expiresAt time.Time) error {
 	if gpu < 0 {
 		return errors.New("gpu must be >= 0")
+	}
+	startsAt = startsAt.UTC()
+	expiresAt = expiresAt.UTC()
+	if startsAt.IsZero() {
+		startsAt = time.Now().UTC()
+	}
+	if !expiresAt.After(startsAt) {
+		return errors.New("reservation end must be after start")
 	}
 	state, err := s.Store.Snapshot()
 	if err != nil {
@@ -580,14 +615,17 @@ func (s *Server) ensureGPUCanReserve(ctx context.Context, gpu int) error {
 	}
 	now := time.Now()
 	for _, reservation := range state.Reservations {
-		if reservation.GPU == gpu && reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
+		if reservation.GPU == gpu && model.ReservationOverlaps(reservation, startsAt, expiresAt) {
 			return fmt.Errorf("gpu %d already reserved by %s", gpu, reservation.ID)
 		}
 	}
 	for _, lease := range state.Leases {
-		if lease.GPU == gpu && lease.Active && now.Before(lease.ExpiresAt) {
+		if lease.GPU == gpu && lease.Active && !now.Before(startsAt) && now.Before(expiresAt) && now.Before(lease.ExpiresAt) {
 			return fmt.Errorf("gpu %d already held by legacy lease %s", gpu, lease.ID)
 		}
+	}
+	if now.Before(startsAt) || !now.Before(expiresAt) {
+		return nil
 	}
 	processes, err := s.AMD.Processes(ctx)
 	if err != nil {
@@ -614,7 +652,7 @@ func (s *Server) ensureTokenCanAuthorize(tokenHash string, token model.Token, no
 		return err
 	}
 	for _, reservation := range state.Reservations {
-		if reservation.TokenHash == tokenHash && reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
+		if reservation.TokenHash == tokenHash && model.ReservationActiveAt(reservation, now) {
 			return nil
 		}
 	}
@@ -686,7 +724,7 @@ func (s *Server) ps(ctx context.Context, now time.Time) ([]model.PSRow, error) {
 		rows = append(rows, row.row)
 	}
 	for _, reservation := range state.Reservations {
-		if !reservation.Active || reservation.Revoked || !now.Before(reservation.ExpiresAt) || liveHard[reservationLiveKey(reservation.GPU, reservation.TokenHash)] {
+		if !model.ReservationActiveAt(reservation, now) || liveHard[reservationLiveKey(reservation.GPU, reservation.TokenHash)] {
 			continue
 		}
 		rows = append(rows, model.PSRow{

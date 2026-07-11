@@ -22,6 +22,7 @@ import (
 	"rocguardd/internal/daemon"
 	"rocguardd/internal/model"
 	"rocguardd/internal/protocol"
+	webserver "rocguardd/internal/web"
 )
 
 func main() {
@@ -43,6 +44,8 @@ func run(args []string) error {
 		return nil
 	case "daemon":
 		return daemonCommand(cfg, args[1:])
+	case "web":
+		return webCommand(cfg, args[1:])
 	case "show-keys":
 		rootKey, err := rootKeyFromEnvOrPrompt()
 		if err != nil {
@@ -76,6 +79,23 @@ func run(args []string) error {
 		usage()
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func webCommand(cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("web", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	addr := fs.String("addr", cfg.WebAddr, "web listen address")
+	registry := fs.String("registry", cfg.WebRegistry, "server registry path")
+	uiDir := fs.String("ui-dir", cfg.WebUIDir, "React/Vite dist directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg.WebAddr = *addr
+	cfg.WebRegistry = *registry
+	cfg.WebUIDir = *uiDir
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return webserver.New(cfg).Run(ctx)
 }
 
 func daemonCommand(cfg config.Config, args []string) error {
@@ -583,6 +603,7 @@ func usageText() string {
 	return `rocguard commands:
   rocguard help
   rocguard daemon [--dry-run]
+  rocguard web [--addr <host:port>] [--registry <path>] [--ui-dir <path>]
   rocguard register (--reserved | --claimed)
   KEY=... rocguard run -- <command>
   KEY=... rocguard allow docker --container <name-or-id>

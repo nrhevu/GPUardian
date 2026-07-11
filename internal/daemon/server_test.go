@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -209,6 +211,61 @@ func TestSoftRegisterCreatesTokenOnly(t *testing.T) {
 	}
 	if len(status.Tokens) != 1 || len(status.Reservations) != 0 {
 		t.Fatalf("expected token only, got tokens=%+v reservations=%+v", status.Tokens, status.Reservations)
+	}
+}
+
+func TestReservedTokenCannotAuthorizeBeforeStart(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	start := now.Add(time.Hour)
+	secret, _, _, err := server.Store.RegisterScheduledReservations(key, "alice", "", []int{0}, start, start.Add(time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, tokenHash, err := server.Store.ValidateToken(secret, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.ensureTokenCanAuthorize(tokenHash, token, now); err == nil {
+		t.Fatal("reserved token should not authorize before starts_at")
+	}
+	if err := server.ensureTokenCanAuthorize(tokenHash, token, start.Add(time.Minute)); err != nil {
+		t.Fatalf("reserved token should authorize during window: %v", err)
+	}
+}
+
+func TestNodeHTTPRequiresBearerRootKey(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.nodeHTTPHandler()
+
+	missing := httptest.NewRecorder()
+	handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/v1/snapshot", nil))
+	if missing.Code != http.StatusUnauthorized {
+		t.Fatalf("missing bearer got %d, want 401", missing.Code)
+	}
+
+	badReq := httptest.NewRequest(http.MethodGet, "/api/v1/snapshot", nil)
+	badReq.Header.Set("Authorization", "Bearer bad")
+	bad := httptest.NewRecorder()
+	handler.ServeHTTP(bad, badReq)
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("bad bearer got %d, want 401", bad.Code)
+	}
+
+	goodReq := httptest.NewRequest(http.MethodGet, "/api/v1/snapshot", nil)
+	goodReq.Header.Set("Authorization", "Bearer "+key)
+	good := httptest.NewRecorder()
+	handler.ServeHTTP(good, goodReq)
+	if good.Code != http.StatusOK {
+		t.Fatalf("valid bearer got %d: %s", good.Code, good.Body.String())
 	}
 }
 

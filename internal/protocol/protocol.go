@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Request struct {
 	ID     string          `json:"id"`
@@ -25,11 +28,14 @@ const (
 )
 
 type RegisterArgs struct {
-	RootKey string `json:"root_key"`
-	Mode    string `json:"mode"`
-	Name    string `json:"name"`
-	GPUs    []int  `json:"gpus,omitempty"`
-	TTL     string `json:"ttl"`
+	RootKey   string     `json:"root_key"`
+	Mode      string     `json:"mode"`
+	Name      string     `json:"name"`
+	Purpose   string     `json:"purpose,omitempty"`
+	GPUs      []int      `json:"gpus,omitempty"`
+	TTL       string     `json:"ttl"`
+	StartsAt  *time.Time `json:"starts_at,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type RunArgs struct {

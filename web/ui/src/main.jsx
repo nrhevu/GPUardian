@@ -1,0 +1,1146 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import "./styles.css";
+
+const statusLabels = {
+  available: "Available",
+  reserved: "Reserved",
+  claimed: "Claimed",
+};
+
+const showDevWarnings = import.meta.env.DEV;
+const calendarHourHeight = 28;
+const minCalendarHours = 10;
+const scheduleLaneGap = 4;
+const hourMs = 60 * 60 * 1000;
+const dayMs = 24 * hourMs;
+
+function App() {
+  const [auth, setAuth] = useState({ checking: true, authenticated: false, user: "" });
+  const [servers, setServers] = useState([]);
+  const [fleet, setFleet] = useState([]);
+  const [selectedServerId, setSelectedServerId] = useState("");
+  const [selectedGPUs, setSelectedGPUs] = useState(new Set());
+  const [activeGPU, setActiveGPU] = useState(null);
+  const [view, setView] = useState("gpu");
+  const [search, setSearch] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [keyPrompt, setKeyPrompt] = useState(null);
+  const [claimOpen, setClaimOpen] = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState(null);
+  const [scheduleTarget, setScheduleTarget] = useState(null);
+  const [reserveHint, setReserveHint] = useState(null);
+  const [successKey, setSuccessKey] = useState("");
+  const [error, setError] = useState("");
+  const [loginError, setLoginError] = useState("");
+
+  useEffect(() => {
+    checkSession();
+  }, []);
+
+  useEffect(() => {
+    if (!auth.authenticated) {
+      return undefined;
+    }
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(timer);
+  }, [auth.authenticated]);
+
+  async function checkSession() {
+    try {
+      const session = await api("/api/session");
+      setAuth({
+        checking: false,
+        authenticated: Boolean(session.authenticated),
+        user: session.user || "",
+      });
+    } catch {
+      setAuth({ checking: false, authenticated: false, user: "" });
+    }
+  }
+
+  async function login(values) {
+    try {
+      const session = await api("/api/login", {
+        method: "POST",
+        body: JSON.stringify(values),
+      });
+      setLoginError("");
+      setError("");
+      setAuth({ checking: false, authenticated: true, user: session.user || values.username });
+    } catch (err) {
+      setLoginError(err.message);
+    }
+  }
+
+  async function refresh() {
+    try {
+      const [serverList, snapshot] = await Promise.all([
+        api("/api/servers"),
+        api("/api/fleet/snapshot"),
+      ]);
+      setServers(serverList);
+      setFleet(snapshot.servers || []);
+      if (!selectedServerId && serverList.length > 0) {
+        setSelectedServerId(serverList[0].id);
+      }
+    } catch (err) {
+      if (err.status === 401) {
+        setAuth({ checking: false, authenticated: false, user: "" });
+        return;
+      }
+      setError(err.message);
+    }
+  }
+
+  const current = useMemo(() => {
+    return fleet.find((item) => item.server.id === selectedServerId) || fleet[0] || null;
+  }, [fleet, selectedServerId]);
+
+  const currentServerId = current?.server?.id || selectedServerId;
+  const gpus = current?.snapshot?.gpus || [];
+  const tokens = current?.snapshot?.tokens || [];
+  const reservations = current?.snapshot?.reservations || [];
+  const selectedGPUList = Array.from(selectedGPUs).sort((a, b) => a - b);
+  const allGPUIds = gpus.map((gpu) => gpu.id);
+  const availableGPUIds = gpus
+    .filter((gpu) => (gpu.state || "available") === "available")
+    .map((gpu) => gpu.id);
+  const allAvailableSelected =
+    availableGPUIds.length > 0 && availableGPUIds.every((gpuId) => selectedGPUs.has(gpuId));
+  const displayGPU = activeGPU ?? selectedGPUList[0] ?? gpus[0]?.id ?? 0;
+
+  function selectServer(id) {
+    setSelectedServerId(id);
+    setSelectedGPUs(new Set());
+    setActiveGPU(null);
+    setSuccessKey("");
+  }
+
+  function toggleGPU(id) {
+    setActiveGPU(id);
+    setSelectedGPUs((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function selectAllGPUs() {
+    if (allAvailableSelected) {
+      setSelectedGPUs(new Set());
+      setActiveGPU(null);
+      return;
+    }
+    setSelectedGPUs(new Set(availableGPUIds));
+    if (availableGPUIds.length > 0) {
+      setActiveGPU(availableGPUIds[0]);
+    }
+  }
+
+  function showSelectGPUHint() {
+    setReserveHint({
+      title: "Select GPU first",
+      message: "Choose one or more GPUs from the grid before submitting a reservation.",
+    });
+  }
+
+  function showReservationDetailsHint() {
+    setReserveHint({
+      title: "Complete reservation",
+      message: "Fill Name, Purpose, Start, and End before submitting a reservation.",
+    });
+  }
+
+  function showReservationConflictHint(conflict) {
+    setReserveHint({
+      title: "Schedule conflict",
+      message: `GPU ${conflict.gpus.join(", ")} already has a reservation from ${timeLabel(conflict.start)} to ${timeLabel(conflict.end)}.`,
+    });
+  }
+
+  async function addServer(values) {
+    await api("/api/servers", {
+      method: "POST",
+      body: JSON.stringify(values),
+    });
+    setAddOpen(false);
+    await refresh();
+  }
+
+  async function reserve(values) {
+    if (selectedGPUList.length === 0) {
+      showSelectGPUHint();
+      return;
+    }
+    if (!reservationDetailsComplete(values)) {
+      showReservationDetailsHint();
+      return;
+    }
+    const targets = selectedGPUList;
+    try {
+      const result = await api(`/api/servers/${currentServerId}/reservations`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: values.name,
+          purpose: values.purpose,
+          gpus: targets,
+          starts_at: new Date(values.start).toISOString(),
+          expires_at: new Date(values.end).toISOString(),
+        }),
+      });
+      setSuccessKey(result.token || "");
+      setSelectedGPUs(new Set());
+      await refresh();
+    } catch (err) {
+      setReserveHint({
+        title: "Reservation unavailable",
+        message: err.message,
+      });
+    }
+  }
+
+  async function createClaimKey(name) {
+    const result = await api(`/api/servers/${currentServerId}/claim-keys`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    setClaimOpen(false);
+    setSuccessKey(result.token || "");
+    await refresh();
+  }
+
+  async function showKey(tokenId, rootKey) {
+    const status = await api(`/api/servers/${currentServerId}/show-key`, {
+      method: "POST",
+      body: JSON.stringify({ root_key: rootKey }),
+    });
+    const token = (status.tokens || []).find((item) => item.id === tokenId);
+    setKeyPrompt(null);
+    setSuccessKey(token?.key || "");
+  }
+
+  async function revokeTargetItem(target) {
+    try {
+      await api(`/api/servers/${currentServerId}/revoke`, {
+        method: "POST",
+        body: JSON.stringify({ id: target.id }),
+      });
+      setError("");
+      setRevokeTarget(null);
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  const visibleServers = servers.filter((server) => {
+    const query = search.trim().toLowerCase();
+    return !query || `${server.name} ${server.endpoint}`.toLowerCase().includes(query);
+  });
+
+  if (auth.checking) {
+    return <LoadingScreen />;
+  }
+
+  if (!auth.authenticated) {
+    return <LoginScreen error={loginError} onSubmit={login} />;
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">RocGuard</div>
+        <input
+          className="sidebar-search"
+          placeholder="Search nodes..."
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+        <div className="nav-title">Nodes</div>
+        <div className="server-list">
+          {visibleServers.map((server) => {
+            const item = fleet.find((entry) => entry.server.id === server.id);
+            return (
+              <button
+                key={server.id}
+                className={`server-row ${server.id === currentServerId ? "active" : ""}`}
+                onClick={() => selectServer(server.id)}
+              >
+                <span className={`server-dot ${item?.online ? "online" : "offline"}`} />
+                <span className="server-name">{server.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        <button className="sidebar-add" onClick={() => setAddOpen(true)}>
+          Add server
+        </button>
+      </aside>
+
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">Nodes</p>
+            <h1>{current?.server?.name || "No server selected"}</h1>
+            {!current?.server && <p className="muted">Add a RocGuard node to begin.</p>}
+          </div>
+          <div className="topbar-actions">
+            <button className={view === "gpu" ? "tab active" : "tab"} onClick={() => setView("gpu")}>
+              Schedule
+            </button>
+            <button className={view === "keys" ? "tab active" : "tab"} onClick={() => setView("keys")}>
+              Key
+            </button>
+          </div>
+        </header>
+
+        {showDevWarnings && current?.error && <div className="banner">{current.error}</div>}
+
+        {view === "gpu" ? (
+          <div className="dashboard-grid">
+            <section className="content-panel">
+              <div className="section-heading">
+                <div>
+                  <h2>Available GPUs</h2>
+                  <p className="muted">Select one or more GPUs, then reserve a schedule window.</p>
+                </div>
+                <div className="section-tools">
+                  <Legend />
+                  <button
+                    type="button"
+                    className={`select-all-button ${allAvailableSelected ? "active" : ""}`}
+                    aria-pressed={allAvailableSelected}
+                    onClick={selectAllGPUs}
+                  >
+                    <span className="select-all-box">{allAvailableSelected ? "✓" : ""}</span>
+                    Select All
+                  </button>
+                </div>
+              </div>
+              <div className="gpu-grid">
+                {gpus.map((gpu) => (
+                  <GPUCard
+                    key={gpu.id}
+                    gpu={gpu}
+                    selected={selectedGPUs.has(gpu.id)}
+                    onClick={() => toggleGPU(gpu.id)}
+                  />
+                ))}
+              </div>
+            </section>
+            <aside className="inspector">
+              <Schedule
+                gpu={displayGPU}
+                allGPUs={allGPUIds}
+                selected={selectedGPUList}
+                reservations={reservations}
+                onOpen={setScheduleTarget}
+              />
+              <ReserveForm
+                selected={selectedGPUList}
+                reservations={reservations}
+                onMissingSelection={showSelectGPUHint}
+                onMissingDetails={showReservationDetailsHint}
+                onConflict={showReservationConflictHint}
+                onSubmit={reserve}
+              />
+            </aside>
+          </div>
+        ) : (
+          <KeysView
+            tokens={tokens}
+            onCreate={() => setClaimOpen(true)}
+            onShow={(tokenId) => setKeyPrompt({ tokenId })}
+            onRevoke={(token) => setRevokeTarget({ ...token, kind: "key" })}
+          />
+        )}
+      </main>
+
+      {addOpen && <AddServerModal onClose={() => setAddOpen(false)} onSubmit={addServer} />}
+      {claimOpen && <ClaimKeyModal onClose={() => setClaimOpen(false)} onSubmit={createClaimKey} />}
+      {keyPrompt && (
+        <RootKeyModal
+          title="Show key"
+          onClose={() => setKeyPrompt(null)}
+          onSubmit={(rootKey) => showKey(keyPrompt.tokenId, rootKey)}
+        />
+      )}
+      {revokeTarget && (
+        <RevokeModal
+          target={revokeTarget}
+          onClose={() => setRevokeTarget(null)}
+          onSubmit={() => revokeTargetItem(revokeTarget)}
+        />
+      )}
+      {scheduleTarget && (
+        <ScheduleDetailModal
+          target={scheduleTarget}
+          onClose={() => setScheduleTarget(null)}
+          onRevoke={() => {
+            setRevokeTarget(scheduleTarget);
+            setScheduleTarget(null);
+          }}
+        />
+      )}
+      {reserveHint && (
+        <ReserveHintModal
+          title={reserveHint.title}
+          message={reserveHint.message}
+          onClose={() => setReserveHint(null)}
+        />
+      )}
+      {successKey && <SuccessKey token={successKey} onClose={() => setSuccessKey("")} />}
+    </div>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <div className="login-shell">
+      <div className="login-panel">
+        <div className="login-brand">RocGuard</div>
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ error, onSubmit }) {
+  const [form, setForm] = useState({ username: "", password: "" });
+  return (
+    <div className="login-shell">
+      <form
+        className="login-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit(form);
+        }}
+      >
+        <div>
+          <div className="login-brand">RocGuard</div>
+          <h1>Sign in</h1>
+        </div>
+        <label>
+          Username
+          <input
+            autoComplete="username"
+            value={form.username}
+            onChange={(event) => setForm({ ...form, username: event.target.value })}
+            placeholder="Admin"
+            required
+          />
+        </label>
+        <label>
+          Password
+          <input
+            autoComplete="current-password"
+            type="password"
+            value={form.password}
+            onChange={(event) => setForm({ ...form, password: event.target.value })}
+            placeholder="Password"
+            required
+          />
+        </label>
+        {error && <div className="login-error">{error}</div>}
+        <button className="primary-button">Sign in</button>
+      </form>
+    </div>
+  );
+}
+
+function GPUCard({ gpu, selected, onClick }) {
+  const state = gpu.state || "available";
+  const memory = memoryMetric(gpu);
+  const utilization = utilizationMetric(gpu);
+  return (
+    <button className={`gpu-card ${state} ${selected ? "selected" : ""}`} onClick={onClick}>
+      <div className="gpu-title-row">
+        <span className="checkbox">{selected ? "✓" : ""}</span>
+        <h3>GPU {gpu.id}</h3>
+        <span className={`status-chip ${state}`}>{statusLabels[state] || state}</span>
+      </div>
+      <div className="gpu-metrics">
+        <MetricLine label="Memory" value={memory.label} percent={memory.percent} />
+        <MetricLine label="Utilization" value={utilization.label} percent={utilization.percent} />
+      </div>
+    </button>
+  );
+}
+
+function MetricLine({ label, value, percent }) {
+  return (
+    <div className="metric-line">
+      <div className="metric-text">
+        <span>{label}</span>
+        <strong>{value}</strong>
+      </div>
+      <div className="metric-track">
+        <span className={`metric-fill ${metricTone(percent)}`} style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function Legend() {
+  return (
+    <div className="legend">
+      <span><i className="dot available" />Available</span>
+      <span><i className="dot reserved" />Reserved</span>
+      <span><i className="dot claimed" />Claimed</span>
+    </div>
+  );
+}
+
+function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
+  const [selectedDay, setSelectedDay] = useState(() => dateInputValue(new Date()));
+  const now = new Date();
+  const dayStart = parseDateInput(selectedDay);
+  const dayEnd = new Date(dayStart.getTime() + dayMs);
+  const isToday = selectedDay === dateInputValue(now);
+  const timelineStart = isToday ? startOfHour(now) : dayStart;
+  const remainingTodayHours = Math.max(1, Math.ceil((dayEnd.getTime() - timelineStart.getTime()) / hourMs));
+  const visibleHours = isToday ? Math.max(minCalendarHours, remainingTodayHours) : 24;
+  const timelineEnd = new Date(timelineStart.getTime() + visibleHours * hourMs);
+  const hourSlots = Array.from(
+    { length: visibleHours },
+    (_, index) => new Date(timelineStart.getTime() + index * hourMs),
+  );
+  const targetGPUs = selected.length ? selected : allGPUs.length ? allGPUs : [gpu];
+  const gpuReservations = reservations.filter((reservation) => targetGPUs.includes(reservation.gpu));
+  const scheduleJobs = groupScheduleReservations(gpuReservations);
+  const blocks = layoutScheduleBlocks(
+    scheduleJobs
+      .map((job) => scheduleBlock(job, timelineStart, timelineEnd))
+      .filter(Boolean),
+  );
+  const timelineWidth = Math.max(...blocks.map((block) => block.timelineWidth || 0), 0);
+  const emptyLabel = selected.length === 0
+    ? "All GPUs available all day"
+    : targetGPUs.length > 1
+      ? "All selected GPUs available all day"
+      : "Available all day";
+
+  return (
+    <section className="schedule-card">
+      <div className="section-heading compact">
+        <div>
+          <h2>GPU schedule</h2>
+        </div>
+        <div className="schedule-controls">
+          <input
+            className="date-picker"
+            type="date"
+            aria-label="Schedule date"
+            value={selectedDay}
+            onChange={(event) => event.target.value && setSelectedDay(event.target.value)}
+          />
+          <button type="button" className="small-button" onClick={() => setSelectedDay(dateInputValue(new Date()))}>
+            Today
+          </button>
+        </div>
+      </div>
+      <div className="day-calendar">
+        <div
+          className="timeline-canvas"
+          style={{
+            minWidth: timelineWidth > 0
+              ? `${74 + timelineWidth}px`
+              : "100%",
+          }}
+        >
+          {hourSlots.map((slot) => (
+            <div className="hour-row" key={slot.getTime()}>
+              <time>
+                <span className="hour-clock">{formatHour(slot.getHours())}</span>
+                {dateInputValue(slot) !== dateInputValue(dayStart) && <span className="hour-day-offset">+1</span>}
+              </time>
+              <span />
+            </div>
+          ))}
+          <div className="timeline-events" style={{ height: `${hourSlots.length * calendarHourHeight}px` }}>
+            {blocks.map((block) => (
+              <button
+                type="button"
+                className={`booking-block ${block.compact ? "compact" : ""}`}
+                key={block.id}
+                title={`${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)}`}
+                style={{ top: block.top, height: block.height, left: block.left, width: block.width }}
+                onClick={() => onOpen(block)}
+              >
+                <strong>{block.label}</strong>
+                <span>{timeLabel(block.start)} - {timeLabel(block.end)}</span>
+              </button>
+            ))}
+          </div>
+          {blocks.length === 0 && <div className="timeline-empty">{emptyLabel}</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ReserveForm({ selected, reservations, onMissingSelection, onMissingDetails, onConflict, onSubmit }) {
+  const defaults = defaultWindow();
+  const [form, setForm] = useState({
+    name: "",
+    purpose: "",
+    start: defaults.start,
+    end: defaults.end,
+  });
+  const targetLabel = selected.length ? ` ${selected.join(", ")}` : "";
+  const hasDetails = reservationDetailsComplete(form);
+  const conflict = hasDetails ? reservationConflict(selected, reservations, form) : null;
+  const canSubmit = selected.length > 0 && hasDetails && !conflict;
+  function explainBlockedSubmit() {
+    if (selected.length === 0) {
+      onMissingSelection();
+      return;
+    }
+    if (!hasDetails) {
+      onMissingDetails();
+      return;
+    }
+    if (conflict) {
+      onConflict(conflict);
+    }
+  }
+  return (
+    <form
+      className="reserve-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canSubmit) {
+          explainBlockedSubmit();
+          return;
+        }
+        onSubmit(form);
+      }}
+    >
+      <h3>Reserve GPU{targetLabel}</h3>
+      <label>Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Research team" /></label>
+      <label>Purpose<input value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value })} placeholder="Training" /></label>
+      <label>Start<input type="datetime-local" value={form.start} onChange={(event) => setForm({ ...form, start: event.target.value })} /></label>
+      <label>End<input type="datetime-local" value={form.end} onChange={(event) => setForm({ ...form, end: event.target.value })} /></label>
+      {conflict && (
+        <div className="form-warning">
+          GPU {conflict.gpus.join(", ")} already reserved for this window.
+        </div>
+      )}
+      <div
+        className={`submit-guard ${canSubmit ? "" : "disabled"}`}
+        onClick={() => {
+          if (!canSubmit) {
+            explainBlockedSubmit();
+          }
+        }}
+      >
+        <button className="primary-button" disabled={!canSubmit}>Submit</button>
+      </div>
+    </form>
+  );
+}
+
+function KeysView({ tokens, onCreate, onShow, onRevoke }) {
+  return (
+    <section className="keys-panel">
+      <div className="section-heading">
+        <div>
+          <h2>Keys</h2>
+          <p className="muted">Claim keys and reserved keys are listed without secrets.</p>
+        </div>
+        <button className="primary-button" onClick={onCreate}>Create claim key</button>
+      </div>
+      <div className="key-list">
+        {tokens.map((token) => (
+          <div className="key-row" key={token.id}>
+            <div>
+              <strong>{token.name || "Key ..."}</strong>
+              <span>{token.mode} · {new Date(token.created_at).toLocaleDateString()}</span>
+            </div>
+            <div className="key-actions">
+              <button className="small-button" onClick={() => onShow(token.id)}>Show key</button>
+              <button type="button" className="small-danger-button" onClick={() => onRevoke(token)}>Revoke</button>
+            </div>
+          </div>
+        ))}
+        {tokens.length === 0 && <div className="empty">No keys yet.</div>}
+      </div>
+    </section>
+  );
+}
+
+function AddServerModal({ onClose, onSubmit }) {
+  const [form, setForm] = useState({ name: "", endpoint: "", root_key: "", tls_skip_verify: false });
+  return (
+    <Modal title="Add server" onClose={onClose}>
+      <form
+        className="modal-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit(form);
+        }}
+      >
+        <label>Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="prod-cluster-01" /></label>
+        <label>Endpoint API<input value={form.endpoint} onChange={(event) => setForm({ ...form, endpoint: event.target.value })} placeholder="https://server:8443" required /></label>
+        <label>Root key<input type="password" value={form.root_key} onChange={(event) => setForm({ ...form, root_key: event.target.value })} required /></label>
+        <label className="checkbox-line"><input type="checkbox" checked={form.tls_skip_verify} onChange={(event) => setForm({ ...form, tls_skip_verify: event.target.checked })} />Skip TLS verify</label>
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose}>Cancel</button>
+          <button className="primary-button">Add</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ClaimKeyModal({ onClose, onSubmit }) {
+  const [name, setName] = useState("research-team");
+  return (
+    <Modal title="Create claim key" onClose={onClose}>
+      <form
+        className="modal-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit(name);
+        }}
+      >
+        <label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose}>Cancel</button>
+          <button className="primary-button">Create</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function RootKeyModal({ title, onClose, onSubmit }) {
+  const [rootKey, setRootKey] = useState("");
+  return (
+    <Modal title={title} onClose={onClose}>
+      <form
+        className="modal-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit(rootKey);
+        }}
+      >
+        <label>Root key<input type="password" value={rootKey} onChange={(event) => setRootKey(event.target.value)} required /></label>
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose}>Cancel</button>
+          <button className="primary-button">Verify</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ScheduleDetailModal({ target, onClose, onRevoke }) {
+  return (
+    <Modal title="Reservation details" onClose={onClose}>
+      <div className="schedule-detail">
+        <div className="revoke-summary">
+          <strong>{target.label}</strong>
+          <span>{timeLabel(target.start)} - {timeLabel(target.end)}</span>
+        </div>
+        <div className="detail-row">
+          <span>GPUs</span>
+          <strong>{target.gpus?.length ? target.gpus.join(", ") : "Unknown"}</strong>
+        </div>
+        {target.holder && (
+          <div className="detail-row">
+            <span>Name</span>
+            <strong>{target.holder}</strong>
+          </div>
+        )}
+        {target.purpose && (
+          <div className="detail-row">
+            <span>Purpose</span>
+            <strong>{target.purpose}</strong>
+          </div>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose}>Close</button>
+          <button type="button" className="danger-button" onClick={onRevoke}>Revoke</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function RevokeModal({ target, onClose, onSubmit }) {
+  const isKey = target.kind === "key";
+  const targetLabel = !isKey && target.gpus?.length
+    ? `${target.label} · GPU ${target.gpus.join(", ")}`
+    : target.label;
+  return (
+    <Modal title={isKey ? "Revoke key" : "Revoke reservation"} onClose={onClose}>
+      <form
+        className="modal-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <div className="revoke-summary">
+          <strong>{isKey ? target.name || "Key ..." : targetLabel}</strong>
+          <span>
+            {isKey
+              ? `${target.mode} · ${new Date(target.created_at).toLocaleDateString()}`
+              : `${timeLabel(target.start)} - ${timeLabel(target.end)}`}
+          </span>
+        </div>
+        <p className="muted">
+          {isKey
+            ? "This will revoke the key and remove any related reservations or claims."
+            : "This will remove this job from every GPU in the reservation."}
+        </p>
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose}>Cancel</button>
+          <button className="danger-button">Revoke</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ReserveHintModal({ title, message, onClose }) {
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="modal-note">
+        <p className="muted">{message}</p>
+        <div className="modal-actions">
+          <button type="button" className="primary-button" onClick={onClose}>OK</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function SuccessKey({ token, onClose }) {
+  return (
+    <div className="success-panel">
+      <h2>Reserve Success</h2>
+      <p>Your key</p>
+      <div className="copy-row">
+        <input className="key-output" readOnly spellCheck="false" value={token || "rg ..."} aria-label="Reserved API key" />
+        <button type="button" className="small-button" onClick={() => navigator.clipboard?.writeText(token)}>Copy</button>
+      </div>
+      <button className="primary-button" onClick={onClose}>Done</button>
+    </div>
+  );
+}
+
+function Modal({ title, children, onClose }) {
+  return (
+    <div className="modal-backdrop">
+      <section className="modal">
+        <header>
+          <h2>{title}</h2>
+          <button className="plain-button" onClick={onClose}>Close</button>
+        </header>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const err = new Error(data.error || response.statusText);
+    err.status = response.status;
+    throw err;
+  }
+  return data;
+}
+
+function defaultWindow() {
+  const start = new Date(Date.now() + 60 * 60 * 1000);
+  start.setMinutes(0, 0, 0);
+  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  return { start: datetimeLocal(start), end: datetimeLocal(end) };
+}
+
+function reservationDetailsComplete(values) {
+  return Boolean(
+    values.name?.trim() &&
+      values.purpose?.trim() &&
+      values.start &&
+      values.end,
+  );
+}
+
+function reservationConflict(selected, reservations = [], values) {
+  if (selected.length === 0) {
+    return null;
+  }
+  const start = new Date(values.start);
+  const end = new Date(values.end);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start >= end) {
+    return null;
+  }
+  const selectedSet = new Set(selected);
+  const conflicts = [];
+  for (const reservation of reservations) {
+    if (!selectedSet.has(reservation.gpu)) {
+      continue;
+    }
+    const reservationStart = new Date(reservation.starts_at || reservation.created_at);
+    const reservationEnd = new Date(reservation.expires_at);
+    if (
+      Number.isFinite(reservationStart.getTime()) &&
+      Number.isFinite(reservationEnd.getTime()) &&
+      reservationStart < end &&
+      start < reservationEnd
+    ) {
+      conflicts.push({ gpu: reservation.gpu, start: reservationStart, end: reservationEnd });
+    }
+  }
+  if (conflicts.length === 0) {
+    return null;
+  }
+  conflicts.sort((left, right) => left.start - right.start || left.gpu - right.gpu);
+  const first = conflicts[0];
+  return {
+    gpus: Array.from(new Set(conflicts.map((item) => item.gpu))).sort((left, right) => left - right),
+    start: first.start,
+    end: first.end,
+  };
+}
+
+function datetimeLocal(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function dateInputValue(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function parseDateInput(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function startOfHour(date) {
+  const out = new Date(date);
+  out.setMinutes(0, 0, 0);
+  return out;
+}
+
+function formatHour(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function groupScheduleReservations(reservations) {
+  const groups = new Map();
+  for (const reservation of reservations) {
+    const key = reservation.group_id || reservationGroupFallbackKey(reservation);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.reservations.push(reservation);
+      existing.gpus.push(reservation.gpu);
+      continue;
+    }
+    groups.set(key, {
+      id: reservation.group_id || reservation.id,
+      label: reservation.purpose || reservation.holder || "Reserved",
+      holder: reservation.holder || "",
+      purpose: reservation.purpose || "",
+      starts_at: reservation.starts_at || reservation.created_at,
+      expires_at: reservation.expires_at,
+      created_at: reservation.created_at,
+      reservations: [reservation],
+      gpus: [reservation.gpu],
+    });
+  }
+  return Array.from(groups.values()).map((job) => ({
+    ...job,
+    gpus: Array.from(new Set(job.gpus)).sort((left, right) => left - right),
+  }));
+}
+
+function reservationGroupFallbackKey(reservation) {
+  return [
+    reservation.holder || "",
+    reservation.purpose || "",
+    reservation.starts_at || reservation.created_at || "",
+    reservation.expires_at || "",
+    reservation.created_at || "",
+  ].join("|");
+}
+
+function scheduleBlock(job, dayStart, dayEnd) {
+  const start = new Date(job.starts_at || job.created_at);
+  const end = new Date(job.expires_at);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start >= dayEnd || end <= dayStart) {
+    return null;
+  }
+  const visibleStart = new Date(Math.max(start.getTime(), dayStart.getTime()));
+  const visibleEnd = new Date(Math.min(end.getTime(), dayEnd.getTime()));
+  const startMinutes = (visibleStart.getTime() - dayStart.getTime()) / 60000;
+  const endMinutes = (visibleEnd.getTime() - dayStart.getTime()) / 60000;
+  const durationMinutes = Math.max((visibleEnd.getTime() - visibleStart.getTime()) / 60000, 15);
+  const compact = durationMinutes <= 45;
+  return {
+    id: job.id,
+    gpus: job.gpus,
+    holder: job.holder,
+    purpose: job.purpose,
+    reservations: job.reservations,
+    start: visibleStart,
+    end: visibleEnd,
+    startMinutes,
+    endMinutes,
+    top: `${(startMinutes / 60) * calendarHourHeight}px`,
+    height: `${Math.max((durationMinutes / 60) * calendarHourHeight, compact ? 36 : 54)}px`,
+    compact,
+    label: job.label,
+  };
+}
+
+function layoutScheduleBlocks(blocks) {
+  const sorted = [...blocks].sort((left, right) => left.startMinutes - right.startMinutes || left.endMinutes - right.endMinutes);
+  const groups = [];
+  let group = [];
+  let groupEnd = -1;
+
+  for (const block of sorted) {
+    if (group.length > 0 && block.startMinutes >= groupEnd) {
+      groups.push(group);
+      group = [];
+      groupEnd = -1;
+    }
+    group.push(block);
+    groupEnd = Math.max(groupEnd, block.endMinutes);
+  }
+  if (group.length > 0) {
+    groups.push(group);
+  }
+
+  return groups.flatMap(layoutScheduleGroup);
+}
+
+function layoutScheduleGroup(group) {
+  const laneEnds = [];
+  const assigned = group.map((block) => {
+    let lane = laneEnds.findIndex((end) => end <= block.startMinutes);
+    if (lane === -1) {
+      lane = laneEnds.length;
+    }
+    laneEnds[lane] = block.endMinutes;
+    return { ...block, lane };
+  });
+  const lanes = Math.max(laneEnds.length, 1);
+  const laneWidths = Array.from({ length: lanes }, () => 0);
+  for (const block of assigned) {
+    laneWidths[block.lane] = Math.max(laneWidths[block.lane], estimateScheduleBlockWidth(block, lanes));
+  }
+  const laneOffsets = laneWidths.map((_, index) => (
+    laneWidths.slice(0, index).reduce((sum, width) => sum + width, 0) + index * scheduleLaneGap
+  ));
+  const timelineWidth = laneWidths.reduce((sum, width) => sum + width, 0) + (lanes - 1) * scheduleLaneGap;
+
+  return assigned.map((block) => ({
+    ...block,
+    laneCount: lanes,
+    compact: block.compact || lanes > 1,
+    left: lanes === 1 ? "0" : `${laneOffsets[block.lane]}px`,
+    width: lanes === 1 ? `${laneWidths[block.lane]}px` : `${laneWidths[block.lane]}px`,
+    timelineWidth,
+  }));
+}
+
+function estimateScheduleBlockWidth(block, laneCount) {
+  const label = block.label || "";
+  const time = `${timeLabel(block.start)} - ${timeLabel(block.end)}`;
+  if (block.compact || laneCount > 1) {
+    return clamp(estimateTextWidth(`${label} · ${time}`, 11) + 36, 120, 260);
+  }
+  return clamp(Math.max(estimateTextWidth(label, 12), estimateTextWidth(time, 11)) + 28, 130, 280);
+}
+
+function estimateTextWidth(text, fontSize) {
+  return text.length * fontSize * 0.58;
+}
+
+function memoryMetric(gpu) {
+  const used = numberOrNull(gpu.memory_used_bytes) ?? processMemoryBytes(gpu.processes);
+  const total = numberOrNull(gpu.memory_total_bytes);
+  const hasUsed = used !== null;
+  const hasTotal = total !== null && total > 0;
+  const label = formatMemoryLabel(hasUsed ? used : null, hasTotal ? total : null);
+  const percent = hasUsed && hasTotal ? clamp((used / total) * 100, 0, 100) : 0;
+  return { label, percent };
+}
+
+function utilizationMetric(gpu) {
+  const utilization = numberOrNull(gpu.utilization_percent);
+  return {
+    label: utilization === null ? "--" : `${Math.round(clamp(utilization, 0, 100))}%`,
+    percent: utilization === null ? 0 : clamp(utilization, 0, 100),
+  };
+}
+
+function metricTone(percent) {
+  if (percent >= 85) {
+    return "high";
+  }
+  if (percent >= 50) {
+    return "medium";
+  }
+  return "low";
+}
+
+function numberOrNull(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function processMemoryBytes(processes = []) {
+  const total = processes.reduce((sum, process) => sum + (Number.isFinite(process.mem_bytes) ? process.mem_bytes : 0), 0);
+  return total > 0 ? total : null;
+}
+
+function formatMemoryLabel(used, total) {
+  if (used === null && total === null) {
+    return "--";
+  }
+  if (used !== null && total !== null) {
+    return `${formatBytes(used)} / ${formatBytes(total)}`;
+  }
+  if (used !== null) {
+    return formatBytes(used);
+  }
+  return `-- / ${formatBytes(total)}`;
+}
+
+function formatBytes(value) {
+  const gib = value / (1024 ** 3);
+  if (gib >= 10) {
+    return `${Math.round(gib)} GB`;
+  }
+  if (gib >= 1) {
+    return `${gib.toFixed(1)} GB`;
+  }
+  return `${Math.round(value / (1024 ** 2))} MB`;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function timeLabel(value) {
+  return new Date(value).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+createRoot(document.getElementById("root")).render(<App />);
