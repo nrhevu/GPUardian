@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"rocguardd/internal/model"
+	"rocguard/internal/model"
 )
 
 type Reader interface {

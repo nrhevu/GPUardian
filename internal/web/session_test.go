@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"rocguardd/internal/config"
+	"rocguard/internal/config"
 )
 
 func TestSessionLoginProtectsAPIWithoutBasicPopup(t *testing.T) {

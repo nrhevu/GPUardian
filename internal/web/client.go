@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"rocguardd/internal/model"
-	"rocguardd/internal/protocol"
+	"rocguard/internal/model"
+	"rocguard/internal/protocol"
 )
 
 type NodeClient struct {

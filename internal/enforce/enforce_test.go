@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"rocguardd/internal/model"
+	"rocguard/internal/model"
 )
 
 type fakeProc struct {

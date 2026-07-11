@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"rocguardd/internal/model"
+	"rocguard/internal/model"
 )
 
 func TestWriteMessageToPipeStderrPath(t *testing.T) {

@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"rocguardd/internal/config"
-	"rocguardd/internal/model"
-	"rocguardd/internal/protocol"
-	"rocguardd/internal/store"
+	"rocguard/internal/config"
+	"rocguard/internal/model"
+	"rocguard/internal/protocol"
+	"rocguard/internal/store"
 )
 
 type fakeAMD struct {

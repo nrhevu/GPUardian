@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"rocguardd/internal/model"
+	"rocguard/internal/model"
 )
 
 type Provider interface {

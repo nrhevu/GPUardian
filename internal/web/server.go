@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"rocguardd/internal/config"
-	"rocguardd/internal/model"
-	"rocguardd/internal/protocol"
+	"rocguard/internal/config"
+	"rocguard/internal/model"
+	"rocguard/internal/protocol"
 )
 
 type Server struct {

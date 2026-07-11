@@ -6,7 +6,7 @@ root-authorized reserved or claimed-mode keys.
 
 The enforcement model is intentionally simple:
 
-- `rocguardd` monitors AMD GPU process ownership with `amd-smi process --json`.
+- `rocguard` monitors AMD GPU process ownership with `amd-smi process --json`.
 - Rocguard only treats a PID as active GPU usage when AMD SMI reports non-zero
   GPU memory for that PID. Parent launcher processes that do not hold GPU memory
   are ignored and are not killed.
@@ -41,6 +41,130 @@ go build -buildvcs=false -o rocguard ./cmd/rocguard
 
 The `-buildvcs=false` flag is useful in restricted worktrees where Git metadata
 may not be fully available.
+
+## System-wide Install
+
+Use this layout when one root-owned daemon should serve every local user and the
+web gateway should manage one or more Rocguard nodes.
+
+Build the binary and the production UI:
+
+```bash
+npm --prefix web/ui install
+npm --prefix web/ui run build
+go build -buildvcs=false -o /tmp/rocguard ./cmd/rocguard
+```
+
+Install the binary, UI assets, and root-owned state directories:
+
+```bash
+sudo install -o root -g root -m 0755 /tmp/rocguard /usr/local/bin/rocguard
+sudo install -d -o root -g root -m 0755 /etc/rocguard
+sudo install -d -o root -g root -m 0755 /var/lib/rocguard
+sudo install -d -o root -g root -m 0755 /var/log/rocguard
+sudo install -d -o root -g root -m 0755 /usr/local/share/rocguard/ui
+sudo cp -a web/ui/dist/. /usr/local/share/rocguard/ui/
+```
+
+Create a root key if the host does not have one yet:
+
+```bash
+sudo sh -c 'test -f /var/lib/rocguard/root.key || openssl rand -hex 32 > /var/lib/rocguard/root.key'
+sudo chmod 600 /var/lib/rocguard/root.key
+```
+
+Install the node daemon as `/etc/systemd/system/rocguard.service`:
+
+```ini
+[Unit]
+Description=Rocguard daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=ROCGUARD_SOCKET=/run/rocguard.sock
+Environment=ROCGUARD_STATE=/var/lib/rocguard/state.json
+Environment=ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
+Environment=ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
+Environment=ROCGUARD_NODE_ADDR=0.0.0.0:8192
+ExecStart=/usr/local/bin/rocguard daemon
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The node API requires `Authorization: Bearer <root-key>` for every request. Use
+TLS for non-local deployments by setting `ROCGUARD_NODE_TLS_CERT` and
+`ROCGUARD_NODE_TLS_KEY` in the service. Without those settings, bind the node API
+only on trusted networks or localhost.
+
+Create `/etc/rocguard/web.env` for the web login password:
+
+```bash
+sudo sh -c 'printf "ROCGUARD_WEB_PASSWORD=%s\n" "change-me" > /etc/rocguard/web.env'
+sudo chmod 600 /etc/rocguard/web.env
+```
+
+Install the gateway as `/etc/systemd/system/rocguard-web.service`:
+
+```ini
+[Unit]
+Description=Rocguard web gateway
+After=network-online.target rocguard.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/rocguard/web.env
+Environment=ROCGUARD_WEB_ADDR=0.0.0.0:16384
+Environment=ROCGUARD_WEB_USER=admin
+Environment=ROCGUARD_WEB_REGISTRY=/var/lib/rocguard/web-servers.json
+Environment=ROCGUARD_WEB_UI_DIR=/usr/local/share/rocguard/ui
+ExecStart=/usr/local/bin/rocguard web
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable both services:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rocguard
+sudo systemctl enable --now rocguard-web
+```
+
+All local users can run the installed CLI:
+
+```bash
+rocguard status
+KEY=rg_xxx rocguard run -- python train.py
+```
+
+By default the daemon creates `/run/rocguard.sock` with mode `0666`, so local
+users can call the daemon without sudo. Admin commands still require the root
+key via `ROOT_KEY` or an interactive prompt. Do not share the root key with
+regular users; let the web gateway store node credentials and expose normal
+reserve/create-key flows through its login session.
+
+For the web UI, open `http://<gateway-host>:8080`, sign in, then add nodes with:
+
+```text
+Endpoint API: http://127.0.0.1:8443
+Root key: the contents of /var/lib/rocguard/root.key on that node
+```
+
+For a remote GPU host, install `rocguard` on that host too and use its node API
+endpoint, for example `https://gpu-node-01:8443`.
 
 ## Quick Start
 

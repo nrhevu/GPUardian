@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"rocguardd/internal/config"
-	"rocguardd/internal/model"
+	"rocguard/internal/config"
+	"rocguard/internal/model"
 )
 
 func TestWritePSRowsFormatsTable(t *testing.T) {

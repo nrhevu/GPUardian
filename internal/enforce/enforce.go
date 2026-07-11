@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"rocguardd/internal/model"
-	"rocguardd/internal/proc"
-	"rocguardd/internal/runtime"
+	"rocguard/internal/model"
+	"rocguard/internal/proc"
+	"rocguard/internal/runtime"
 )
 
 type Killer interface {

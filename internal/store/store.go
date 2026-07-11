@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"rocguardd/internal/config"
-	"rocguardd/internal/model"
+	"rocguard/internal/config"
+	"rocguard/internal/model"
 )
 
 const (

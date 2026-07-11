@@ -18,11 +18,11 @@ import (
 	"time"
 	"unsafe"
 
-	"rocguardd/internal/config"
-	"rocguardd/internal/daemon"
-	"rocguardd/internal/model"
-	"rocguardd/internal/protocol"
-	webserver "rocguardd/internal/web"
+	"rocguard/internal/config"
+	"rocguard/internal/daemon"
+	"rocguard/internal/model"
+	"rocguard/internal/protocol"
+	webserver "rocguard/internal/web"
 )
 
 func main() {

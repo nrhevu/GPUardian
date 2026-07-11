@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"rocguardd/internal/model"
-	"rocguardd/internal/protocol"
-	"rocguardd/internal/store"
+	"rocguard/internal/model"
+	"rocguard/internal/protocol"
+	"rocguard/internal/store"
 )
 
 func (s *Server) startNodeHTTP(ctx context.Context) (func(), error) {

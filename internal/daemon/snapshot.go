@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"rocguardd/internal/amdsmi"
-	"rocguardd/internal/model"
+	"rocguard/internal/amdsmi"
+	"rocguard/internal/model"
 )
 
 func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapshot, error) {

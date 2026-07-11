@@ -19,14 +19,14 @@ import (
 	"syscall"
 	"time"
 
-	"rocguardd/internal/amdsmi"
-	"rocguardd/internal/config"
-	"rocguardd/internal/enforce"
-	"rocguardd/internal/model"
-	"rocguardd/internal/proc"
-	"rocguardd/internal/protocol"
-	"rocguardd/internal/runtime"
-	"rocguardd/internal/store"
+	"rocguard/internal/amdsmi"
+	"rocguard/internal/config"
+	"rocguard/internal/enforce"
+	"rocguard/internal/model"
+	"rocguard/internal/proc"
+	"rocguard/internal/protocol"
+	"rocguard/internal/runtime"
+	"rocguard/internal/store"
 )
 
 type Server struct {
