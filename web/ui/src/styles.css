@@ -760,11 +760,11 @@ h2 {
   align-content: stretch;
   gap: 1px;
   overflow: hidden;
-  border: 1px solid #fecaca;
+  border: 1px solid var(--booking-border, #fecaca);
   border-radius: 8px;
   padding: 5px 8px;
-  color: #991b1b;
-  background: #fee2e2;
+  color: var(--booking-text, #991b1b);
+  background: var(--booking-bg, #fee2e2);
   box-shadow: 0 1px 2px rgba(153, 27, 27, 0.08);
   text-align: left;
 }
@@ -787,12 +787,12 @@ h2 {
 }
 
 .booking-block:hover {
-  border-color: #dc2626;
-  background: #fecaca;
+  border-color: var(--booking-text, #dc2626);
+  background: var(--booking-hover, #fecaca);
 }
 
 .booking-block:focus-visible {
-  outline: 3px solid rgba(220, 38, 38, 0.18);
+  outline: 3px solid var(--booking-focus, rgba(220, 38, 38, 0.18));
   outline-offset: 2px;
 }
 
@@ -829,7 +829,7 @@ h2 {
 .booking-block .booking-time {
   align-self: end;
   min-width: max-content;
-  color: #b91c1c;
+  color: var(--booking-text, #b91c1c);
   font-size: 11px;
   line-height: 1.15;
   white-space: nowrap;
@@ -844,7 +844,7 @@ h2 {
 .booking-block .booking-holder {
   max-width: none;
   overflow: visible;
-  color: #991b1b;
+  color: var(--booking-text, #991b1b);
   font-size: 9px;
   font-weight: 600;
   line-height: 1.15;

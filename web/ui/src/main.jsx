@@ -153,7 +153,7 @@ function App() {
   function showReservationDetailsHint() {
     setReserveHint({
       title: "Complete reservation",
-      message: "Fill Name, Purpose, Start, and End before submitting a reservation.",
+      message: "Fill User, Purpose, Start, and End before submitting a reservation.",
     });
   }
 
@@ -529,6 +529,7 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
       .map((job) => scheduleBlock(job, timelineStart, timelineEnd))
       .filter(Boolean),
   );
+  const colorByUser = reservationColorMap(blocks);
   const timelineWidth = Math.max(...blocks.map((block) => block.timelineWidth || 0), 0);
   const emptyLabel = selected.length === 0
     ? "All GPUs available all day"
@@ -575,32 +576,47 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
           ))}
           <div className="timeline-events" style={{ height: `${hourSlots.length * calendarHourHeight}px` }}>
             {blocks.map((block) => (
-              <button
-                type="button"
-                className={`booking-block ${block.compact ? "compact" : ""} ${block.holder ? "has-holder" : ""}`}
+              <ScheduleBlockButton
                 key={block.id}
-                title={`${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)}`}
-                style={{
-                  top: block.top,
-                  height: block.height,
-                  left: block.left,
-                  width: block.width,
-                  "--holder-space": block.holder ? `${Math.ceil(estimateTextWidth(block.holder, 9) + 12)}px` : "0px",
-                }}
-                onClick={() => onOpen(block)}
-              >
-                <div className="booking-topline">
-                  <strong>{block.label}</strong>
-                  {block.holder && <span className="booking-holder">{block.holder}</span>}
-                </div>
-                <span className="booking-time">{timeLabel(block.start)} - {timeLabel(block.end)}</span>
-              </button>
+                block={block}
+                colors={colorByUser.get(reservationColorKey(block))}
+                onOpen={onOpen}
+              />
             ))}
           </div>
           {blocks.length === 0 && <div className="timeline-empty">{emptyLabel}</div>}
         </div>
       </div>
     </section>
+  );
+}
+
+function ScheduleBlockButton({ block, colors = reservationPalette[0], onOpen }) {
+  return (
+    <button
+      type="button"
+      className={`booking-block ${block.compact ? "compact" : ""} ${block.holder ? "has-holder" : ""}`}
+      title={`${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)}`}
+      style={{
+        top: block.top,
+        height: block.height,
+        left: block.left,
+        width: block.width,
+        "--booking-bg": colors.bg,
+        "--booking-border": colors.border,
+        "--booking-hover": colors.hover,
+        "--booking-text": colors.text,
+        "--booking-focus": colors.focus,
+        "--holder-space": block.holder ? `${Math.ceil(estimateTextWidth(block.holder, 9) + 12)}px` : "0px",
+      }}
+      onClick={() => onOpen(block)}
+    >
+      <div className="booking-topline">
+        <strong>{block.label}</strong>
+        {block.holder && <span className="booking-holder">{block.holder}</span>}
+      </div>
+      <span className="booking-time">{timeLabel(block.start)} - {timeLabel(block.end)}</span>
+    </button>
   );
 }
 
@@ -647,7 +663,7 @@ function ReserveForm({ selected, gpus, reservations, onMissingSelection, onMissi
       }}
     >
       <h3>Reserve GPU{targetLabel}</h3>
-      <label>Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Research team" /></label>
+      <label>User<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Research team" /></label>
       <label>Purpose<input value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value })} placeholder="Training" /></label>
       <label>Start<input type="datetime-local" value={form.start} onChange={(event) => setForm({ ...form, start: event.target.value })} /></label>
       <label>End<input type="datetime-local" value={form.end} onChange={(event) => setForm({ ...form, end: event.target.value })} /></label>
@@ -784,7 +800,7 @@ function ScheduleDetailModal({ target, onClose, onRevoke }) {
         </div>
         {target.holder && (
           <div className="detail-row">
-            <span>Name</span>
+            <span>User</span>
             <strong>{target.holder}</strong>
           </div>
         )}
@@ -1052,6 +1068,55 @@ function reservationGroupFallbackKey(reservation) {
     reservation.expires_at || "",
     reservation.created_at || "",
   ].join("|");
+}
+
+const reservationPalette = [
+  { bg: "#fee2e2", border: "#fca5a5", hover: "#fecaca", text: "#991b1b", focus: "rgba(220, 38, 38, 0.2)" },
+  { bg: "#ffedd5", border: "#fdba74", hover: "#fed7aa", text: "#9a3412", focus: "rgba(234, 88, 12, 0.2)" },
+  { bg: "#fef3c7", border: "#fcd34d", hover: "#fde68a", text: "#854d0e", focus: "rgba(217, 119, 6, 0.22)" },
+  { bg: "#dcfce7", border: "#86efac", hover: "#bbf7d0", text: "#166534", focus: "rgba(22, 163, 74, 0.22)" },
+  { bg: "#dbeafe", border: "#93c5fd", hover: "#bfdbfe", text: "#1d4ed8", focus: "rgba(37, 99, 235, 0.22)" },
+  { bg: "#e0e7ff", border: "#a5b4fc", hover: "#c7d2fe", text: "#3730a3", focus: "rgba(79, 70, 229, 0.22)" },
+  { bg: "#fce7f3", border: "#f9a8d4", hover: "#fbcfe8", text: "#9d174d", focus: "rgba(219, 39, 119, 0.2)" },
+  { bg: "#ccfbf1", border: "#5eead4", hover: "#99f6e4", text: "#0f766e", focus: "rgba(13, 148, 136, 0.22)" },
+  { bg: "#ede9fe", border: "#c4b5fd", hover: "#ddd6fe", text: "#6d28d9", focus: "rgba(124, 58, 237, 0.22)" },
+  { bg: "#e0f2fe", border: "#7dd3fc", hover: "#bae6fd", text: "#0369a1", focus: "rgba(2, 132, 199, 0.22)" },
+  { bg: "#ecfccb", border: "#bef264", hover: "#d9f99d", text: "#4d7c0f", focus: "rgba(101, 163, 13, 0.22)" },
+  { bg: "#fae8ff", border: "#f0abfc", hover: "#f5d0fe", text: "#a21caf", focus: "rgba(192, 38, 211, 0.2)" },
+];
+
+function reservationColorMap(blocks) {
+  const keys = Array.from(new Set(blocks.map(reservationColorKey))).sort((left, right) => {
+    return hashString(left) - hashString(right) || left.localeCompare(right);
+  });
+  const colors = new Map();
+  const used = new Set();
+  for (const key of keys) {
+    const start = hashString(key) % reservationPalette.length;
+    let index = start;
+    for (let offset = 0; offset < reservationPalette.length; offset += 1) {
+      const candidate = (start + offset) % reservationPalette.length;
+      if (!used.has(candidate)) {
+        index = candidate;
+        break;
+      }
+    }
+    colors.set(key, reservationPalette[index]);
+    used.add(index);
+  }
+  return colors;
+}
+
+function reservationColorKey(block) {
+  return block.holder || "Unknown user";
+}
+
+function hashString(value) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
 function scheduleBlock(job, dayStart, dayEnd) {
