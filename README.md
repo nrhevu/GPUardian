@@ -1,64 +1,150 @@
-# Rocguard
+# RocGuard
 
-Rocguard is a local AMD GPU guard for shared Linux servers. It provides a root
-daemon plus a small CLI wrapper so users can run GPU workloads through
-root-authorized reserved or claimed-mode keys.
+RocGuard is a lightweight AMD GPU reservation and enforcement tool for shared
+Linux servers.
 
-The enforcement model is intentionally simple:
+It provides:
 
-- `rocguard` monitors AMD GPU process ownership with `amd-smi process --json`.
-- Rocguard only treats a PID as active GPU usage when AMD SMI reports non-zero
-  GPU memory for that PID. Parent launcher processes that do not hold GPU memory
-  are ignored and are not killed.
-- `reserved` registration reserves a GPU before use. While the reservation is
-  active, non-bypassed processes on that GPU must match an authorization for
-  the reservation token.
-- `claimed` registration creates a non-expiring key. A claimed-mode
-  authorization claims any GPU where an authorized process is observed using
-  non-zero GPU memory.
-- If that GPU already has a non-authorized process using GPU memory before the
-  claim is created, Rocguard rejects the new claimed process and leaves the
-  existing workload alone.
-- Once a GPU is claimed, non-bypassed processes on that GPU must match the
-  claiming authorization token or they are killed.
+- a root daemon: `rocguard daemon`
+- a user CLI: `rocguard run`, `rocguard allow`, `rocguard status`
+- an optional web gateway: `rocguard web`
+- scheduled reservation keys and flexible claim keys
 
-This is monitor-kill enforcement, not kernel device isolation. Users with root,
-sudo, or root-equivalent Docker access can bypass it.
+RocGuard is monitor-kill enforcement, not kernel device isolation. Users with
+root, sudo, or root-equivalent Docker access can bypass it.
 
 ## Requirements
 
-- Linux with cgroup v2.
-- AMD ROCm tooling with `amd-smi`.
-- Go 1.22+ to build from source.
-- Root access to run the daemon.
-- Optional: `docker`, `crictl`, or `kubectl` for Docker/Kubernetes modes.
+- Linux with cgroup v2
+- AMD ROCm tooling with `amd-smi`
+- Go 1.22+
+- Root access for the daemon
+- Optional: Docker, `crictl`, or `kubectl` for container scopes
 
 ## Build
 
 ```bash
+npm --prefix web/ui install
+npm --prefix web/ui run build
 go build -buildvcs=false -o rocguard ./cmd/rocguard
 ```
 
-The `-buildvcs=false` flag is useful in restricted worktrees where Git metadata
-may not be fully available.
+## Core Ideas
 
-## System-wide Install
+### Reserve
 
-Use this layout when one root-owned daemon should serve every local user and the
-web gateway should manage one or more Rocguard nodes.
+Use a reserved key when you know the GPU and time window in advance.
 
-Build the binary and the production UI:
+- Pick one or more GPUs.
+- Pick `Start` and `End`.
+- RocGuard returns a key.
+- The key only works during that reservation window.
+- Max reservation duration is 8 hours.
+
+Run with:
 
 ```bash
-npm --prefix web/ui install
-npm --prefix web/ui run build
-go build -buildvcs=false -o /tmp/rocguard ./cmd/rocguard
+KEY=rg_xxx rocguard run -- python train.py
 ```
 
-Install the binary, UI assets, and root-owned state directories:
+### Claim
+
+Use a claim key for flexible workflows without a fixed schedule.
+
+- The key does not expire by schedule.
+- When an authorized process starts using GPU memory, RocGuard claims that GPU.
+- Other unauthorized processes on the claimed GPU are killed.
+- If the GPU is already busy before the claim starts, RocGuard rejects the new
+  claimed process and leaves the existing workload alone.
+
+### Run vs Allow
+
+Use `rocguard run` for normal commands:
 
 ```bash
-sudo install -o root -g root -m 0755 /tmp/rocguard /usr/local/bin/rocguard
+KEY=rg_xxx rocguard run -- torchrun --nproc_per_node=8 train.py
+```
+
+Use `rocguard allow` when another system starts the workload:
+
+```bash
+KEY=rg_xxx rocguard allow docker --container trainer
+KEY=rg_xxx rocguard allow k8s --namespace training
+KEY=rg_xxx rocguard allow user --name alice
+```
+
+Do not rely on `rocguard run -- docker run ...` for Docker workloads. Docker
+puts the real workload in a different container cgroup, so use
+`rocguard allow docker` instead.
+
+## Root Key
+
+The root key is the admin secret for the local daemon. Regular users should not
+need it.
+
+Default path:
+
+```text
+/var/lib/rocguard/root.key
+```
+
+Create it once:
+
+```bash
+sudo install -d -o root -g root -m 0755 /var/lib/rocguard
+sudo sh -c 'test -f /var/lib/rocguard/root.key || openssl rand -hex 32 > /var/lib/rocguard/root.key'
+sudo chmod 600 /var/lib/rocguard/root.key
+```
+
+Read it as an admin:
+
+```bash
+sudo cat /var/lib/rocguard/root.key
+```
+
+If `ROCGUARD_ROOT_KEY` is set, use that file path instead.
+
+## Quick Start
+
+Start the daemon:
+
+```bash
+sudo ./rocguard daemon
+```
+
+Register a scheduled reservation key:
+
+```bash
+./rocguard register --reserved
+```
+
+Register a claim key:
+
+```bash
+./rocguard register --claimed
+```
+
+Run a command:
+
+```bash
+KEY=rg_xxx ./rocguard run -- python train.py
+```
+
+Check state:
+
+```bash
+./rocguard status
+./rocguard ps
+KEY=rg_xxx ./rocguard token info
+ROOT_KEY=rk_xxx ./rocguard show-keys
+```
+
+## System-Wide Install
+
+Install one root-owned binary for all users:
+
+```bash
+sudo install -o root -g root -m 0755 rocguard /usr/local/bin/rocguard
 sudo install -d -o root -g root -m 0755 /etc/rocguard
 sudo install -d -o root -g root -m 0755 /var/lib/rocguard
 sudo install -d -o root -g root -m 0755 /var/log/rocguard
@@ -66,18 +152,11 @@ sudo install -d -o root -g root -m 0755 /usr/local/share/rocguard/ui
 sudo cp -a web/ui/dist/. /usr/local/share/rocguard/ui/
 ```
 
-Create a root key if the host does not have one yet:
-
-```bash
-sudo sh -c 'test -f /var/lib/rocguard/root.key || openssl rand -hex 32 > /var/lib/rocguard/root.key'
-sudo chmod 600 /var/lib/rocguard/root.key
-```
-
-Install the node daemon as `/etc/systemd/system/rocguard.service`:
+Create `/etc/systemd/system/rocguard.service`:
 
 ```ini
 [Unit]
-Description=Rocguard daemon
+Description=RocGuard daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -98,23 +177,46 @@ RestartSec=2
 WantedBy=multi-user.target
 ```
 
-The node API requires `Authorization: Bearer <root-key>` for every request. Use
-TLS for non-local deployments by setting `ROCGUARD_NODE_TLS_CERT` and
-`ROCGUARD_NODE_TLS_KEY` in the service. Without those settings, bind the node API
-only on trusted networks or localhost.
-
-Create `/etc/rocguard/web.env` for the web login password:
+Enable it:
 
 ```bash
-sudo sh -c 'printf "ROCGUARD_WEB_PASSWORD=%s\n" "change-me" > /etc/rocguard/web.env'
+sudo systemctl daemon-reload
+sudo systemctl enable --now rocguard
+```
+
+Local users can then run:
+
+```bash
+rocguard status
+KEY=rg_xxx rocguard run -- python train.py
+```
+
+By default the local socket is `/run/rocguard.sock`. Admin operations still
+require the root key.
+
+## Web Gateway
+
+The browser talks only to `rocguard web`. The gateway stores node endpoint and
+root-key records locally, then calls each node daemon from the server side.
+
+Create `/etc/rocguard/web.env`:
+
+```bash
+sudo sh -c 'printf "%s\n" "ROCGUARD_WEB_PASSWORD=\"change-me\"" > /etc/rocguard/web.env'
 sudo chmod 600 /etc/rocguard/web.env
 ```
 
-Install the gateway as `/etc/systemd/system/rocguard-web.service`:
+Example password with spaces:
+
+```bash
+sudo sh -c 'printf "%s\n" "ROCGUARD_WEB_PASSWORD=\"nexus titan\"" > /etc/rocguard/web.env'
+```
+
+Create `/etc/systemd/system/rocguard-web.service`:
 
 ```ini
 [Unit]
-Description=Rocguard web gateway
+Description=RocGuard web gateway
 After=network-online.target rocguard.service
 Wants=network-online.target
 
@@ -123,7 +225,7 @@ Type=simple
 User=root
 Group=root
 EnvironmentFile=/etc/rocguard/web.env
-Environment=ROCGUARD_WEB_ADDR=0.0.0.0:16384
+Environment=ROCGUARD_WEB_ADDR=0.0.0.0:8080
 Environment=ROCGUARD_WEB_USER=admin
 Environment=ROCGUARD_WEB_REGISTRY=/var/lib/rocguard/web-servers.json
 Environment=ROCGUARD_WEB_UI_DIR=/usr/local/share/rocguard/ui
@@ -135,166 +237,92 @@ RestartSec=2
 WantedBy=multi-user.target
 ```
 
-Enable both services:
+Enable it:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now rocguard
 sudo systemctl enable --now rocguard-web
 ```
 
-All local users can run the installed CLI:
-
-```bash
-rocguard status
-KEY=rg_xxx rocguard run -- python train.py
-```
-
-By default the daemon creates `/run/rocguard.sock` with mode `0666`, so local
-users can call the daemon without sudo. Admin commands still require the root
-key via `ROOT_KEY` or an interactive prompt. Do not share the root key with
-regular users; let the web gateway store node credentials and expose normal
-reserve/create-key flows through its login session.
-
-For the web UI, open `http://<gateway-host>:8080`, sign in, then add nodes with:
+Open:
 
 ```text
-Endpoint API: http://127.0.0.1:8443
-Root key: the contents of /var/lib/rocguard/root.key on that node
+http://<gateway-host>:8080
 ```
 
-For a remote GPU host, install `rocguard` on that host too and use its node API
-endpoint, for example `https://gpu-node-01:8443`.
+Default login user is `admin`.
 
-## Quick Start
-
-Start the daemon as root:
-
-```bash
-sudo ./rocguard daemon
-```
-
-To expose a node API for the web gateway, configure the daemon with an address
-and TLS certificate paths:
-
-```bash
-sudo ROCGUARD_NODE_ADDR=:8443 \
-  ROCGUARD_NODE_TLS_CERT=/etc/rocguard/tls.crt \
-  ROCGUARD_NODE_TLS_KEY=/etc/rocguard/tls.key \
-  ./rocguard daemon
-```
-
-The node API requires `Authorization: Bearer <root-key>` on every endpoint. Do
-not expose it without TLS outside local development.
-
-In another terminal, get the root key from the root-owned key file. By default
-that file is `/var/lib/rocguard/root.key`; if `ROCGUARD_ROOT_KEY` is set, use
-that path instead. There is intentionally no Rocguard CLI command that prints
-the root key.
-
-Register a claimed-mode key:
-
-```bash
-./rocguard register --claimed
-```
-
-The command prompts for:
+Add a node in the UI:
 
 ```text
-Root key:
-Name:
+Endpoint API: http://<node-host>:8192
+Root key: contents of /var/lib/rocguard/root.key on that node
 ```
 
-Or reserve one or more GPUs with a reserved key:
-
-```bash
-./rocguard register --reserved
-```
-
-Reserved registration prompts for:
+For non-local deployments, use HTTPS for the node API:
 
 ```text
-Root key:
-Name:
-GPUs:
-TTL [2h]:
+ROCGUARD_NODE_TLS_CERT=/etc/rocguard/tls.crt
+ROCGUARD_NODE_TLS_KEY=/etc/rocguard/tls.key
 ```
 
-Use a comma-separated list such as `0,1` to reserve more than one GPU with the
-same token and TTL.
+The gateway registry is written with mode `0600` because it contains node root
+keys.
 
-Reserved TTL is capped at 8 hours.
-Only `--reserved` and `--claimed` are valid registration modes.
+## Docker, Kubernetes, and User Scopes
 
-Use the returned token to run a GPU command:
+Docker:
 
 ```bash
-KEY=rg_xxx ./rocguard run -- python train.py
+KEY=rg_xxx rocguard allow docker --container trainer
+KEY=rg_xxx rocguard allow docker --container 'trainer-*'
 ```
 
-Rocguard does not set `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, or similar
-GPU visibility variables for the wrapped command.
+For exact Docker names, the container must already exist so RocGuard can resolve
+it to an immutable container ID. Wildcards are matched against container names
+during enforcement.
 
-Check current state:
+Kubernetes:
 
 ```bash
-./rocguard status
-./rocguard ps
-KEY=rg_xxx ./rocguard token info
-ROOT_KEY=rk_xxx ./rocguard show-keys
+KEY=rg_xxx rocguard allow k8s --namespace training
+KEY=rg_xxx rocguard allow k8s --namespace 'training-*'
 ```
 
-`rocguard ps` prints a table with `id`, `gpu`, `user`, and `command`. A
-multi-GPU process is shown once with a comma-separated GPU list such as `0,1`.
-Idle reserved GPU reservations appear as `reserved until <timestamp>`.
-
-Admin commands that need the root key read it from `ROOT_KEY` or prompt for it.
-`show-keys` includes the stored `key` for tokens created by current Rocguard
-versions. Older tokens that were created before Rocguard stored token secrets
-show `key_status: "not_stored"`; those keys cannot be recovered from their hashes
-and should be re-registered if the secret was lost.
-Expired tokens and their related reservations, authorizations, claims, leases,
-and bypasses are pruned from `status` and `show-keys`.
-
-## Web Gateway
-
-The web UI uses a central gateway. Browsers talk only to `rocguard web`; the
-gateway stores node endpoint/root-key records locally and calls each daemon's
-authenticated node API.
-
-Build the React UI:
+User:
 
 ```bash
-cd web/ui
-npm install
-npm run build
+KEY=rg_xxx rocguard allow user --name alice
+KEY=rg_xxx rocguard allow user --name 'team-*'
 ```
 
-Start the gateway:
+Keep `allow` scopes as narrow as possible.
+
+## Admin Commands
+
+Show stored keys:
 
 ```bash
-ROCGUARD_WEB_PASSWORD=<password> ./rocguard web
+ROOT_KEY=rk_xxx rocguard show-keys
 ```
 
-Open the gateway in a browser and sign in with `ROCGUARD_WEB_USER` and
-`ROCGUARD_WEB_PASSWORD`. The gateway stores a signed `HttpOnly` session cookie,
-so refreshing the page does not prompt for credentials again.
+Revoke a token, reservation, authorization, or bypass:
 
-Useful gateway settings:
+```bash
+ROOT_KEY=rk_xxx rocguard revoke <id>
+```
 
-- `ROCGUARD_WEB_ADDR` defaults to `127.0.0.1:8080`.
-- `ROCGUARD_WEB_USER` defaults to `admin`.
-- `ROCGUARD_WEB_PASSWORD` is required for the web login screen.
-- `ROCGUARD_WEB_REGISTRY` defaults to `/var/lib/rocguard/web-servers.json`.
-- `ROCGUARD_WEB_UI_DIR` defaults to `web/ui/dist`.
+Bypass a trusted PID:
 
-The registry file is written with mode `0600` because it contains node root
-keys. Add server in the UI requires `Endpoint API` and `Root key`; reserve and
-create-claim-key actions use the stored credential server-side. Showing stored
-keys prompts for the root key again.
+```bash
+ROOT_KEY=rk_xxx rocguard bypass add --pid 1234 --ttl 24h --reason gpuagent
+```
 
-`allow` scope values support `*` as a wildcard. For example, `codex*` matches
-`codex`, `codex-1`, and `codex-worker`.
+Bypass a trusted command for one UID:
+
+```bash
+ROOT_KEY=rk_xxx rocguard bypass add --command /usr/bin/gpuagent --uid 0 --ttl 24h --reason gpuagent
+```
 
 ## Command Reference
 
@@ -312,144 +340,38 @@ rocguard ps
 KEY=... rocguard token info
 ROOT_KEY=... rocguard show-keys
 ROOT_KEY=... rocguard bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>
-ROOT_KEY=... rocguard revoke <token-or-reservation-or-authorization-or-bypass-id>
+ROOT_KEY=... rocguard revoke <id>
 ```
 
-## Docker Mode
+## Configuration
 
-Authorize a specific Docker container:
-
-```bash
-KEY=rg_xxx ./rocguard allow docker --container trainer
-```
-
-For exact container names, Rocguard resolves the container name to an immutable
-container ID at authorization time. The mutable container name is not trusted
-during enforcement. Wildcard container values such as `codex*` are matched
-dynamically against Docker container names during enforcement.
-
-For this to be meaningful, regular users should not have direct access to the
-Docker socket. Membership in the `docker` group is effectively root-equivalent.
-
-Build a small Docker image for `scripts/hold_gpu.py`:
-
-```bash
-docker build -f Dockerfile.hold-gpu -t rocguard-hold-gpu .
-```
-
-If you need a specific ROCm/PyTorch tag:
-
-```bash
-docker build \
-  --build-arg BASE_IMAGE=<rocm-pytorch-image> \
-  -f Dockerfile.hold-gpu \
-  -t rocguard-hold-gpu .
-```
-
-Run a claimed-mode Docker smoke test. Use an idle GPU unless the daemon is in
-dry-run mode:
-
-```bash
-KEY=rg_xxx ./rocguard allow docker --container 'rocguard-hold-gpu*'
-
-docker run --rm \
-  --name rocguard-hold-gpu-2 \
-  --device=/dev/kfd \
-  --device=/dev/dri \
-  --group-add video \
-  --group-add render \
-  --ipc=host \
-  --security-opt seccomp=unconfined \
-  rocguard-hold-gpu \
-  --gpus 2 \
-  --mem-mb 256 \
-  --duration 60 \
-  --matrix 512 \
-  --sleep 0.2
-```
-
-## Kubernetes Mode
-
-Authorize a Kubernetes namespace:
-
-```bash
-KEY=rg_xxx ./rocguard allow k8s --namespace training
-```
-
-Rocguard maps GPU PIDs to container IDs and then to Kubernetes namespaces using
-`crictl inspect` first, with `kubectl get pod -A -o json` as a fallback.
-Namespace values support wildcards such as `training-*`.
-
-Namespace-level authorization is broad: any pod in that namespace can match the
-authorization.
-
-## User Mode
-
-Authorize all processes for one Linux user:
-
-```bash
-KEY=rg_xxx ./rocguard allow user --name alice
-```
-
-User values support wildcards such as `codex*`.
-
-## Bypass Rules
-
-Bypass rules are intended for trusted host agents such as GPU metrics daemons.
-
-Bypass one PID:
-
-```bash
-ROOT_KEY=rk_xxx ./rocguard bypass add --pid 1234 --ttl 24h --reason gpuagent
-```
-
-Bypass a command path for a specific UID:
-
-```bash
-ROOT_KEY=rk_xxx ./rocguard bypass add --command /usr/bin/gpuagent --uid 0 --ttl 24h --reason gpuagent
-```
-
-Bypasses expire automatically when their TTL ends.
-
-## Revoke
-
-Revoke a token, reservation, authorization, or bypass ID:
-
-```bash
-ROOT_KEY=rk_xxx ./rocguard revoke <id>
-```
-
-Revoked objects are deleted from state and no longer appear in `status` or
-`show-keys`. Revoking a token also deletes reservations, authorizations, and
-claimed GPUs created by that token.
-
-## Runtime Paths
-
-Defaults:
+Common environment variables:
 
 ```text
-/run/rocguard.sock
-/var/lib/rocguard/state.json
-/var/lib/rocguard/root.key
-/var/log/rocguard/audit.log
-/sys/fs/cgroup/rocguard/auth_<id>
+ROCGUARD_SOCKET=/run/rocguard.sock
+ROCGUARD_STATE=/var/lib/rocguard/state.json
+ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
+ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
+ROCGUARD_NODE_ADDR=
+ROCGUARD_NODE_TLS_CERT=
+ROCGUARD_NODE_TLS_KEY=
+ROCGUARD_WEB_ADDR=127.0.0.1:8080
+ROCGUARD_WEB_USER=admin
+ROCGUARD_WEB_PASSWORD=
+ROCGUARD_WEB_REGISTRY=/var/lib/rocguard/web-servers.json
+ROCGUARD_WEB_UI_DIR=web/ui/dist
+ROCGUARD_GPU_COUNT=0
+ROCGUARD_DRY_RUN=0
 ```
 
-Environment overrides:
+Development-only overrides:
 
 ```text
-ROCGUARD_SOCKET
-ROCGUARD_STATE
-ROCGUARD_ROOT_KEY
-ROCGUARD_AUDIT_LOG
 ROCGUARD_CGROUP_ROOT
 ROCGUARD_PROC_ROOT
-ROCGUARD_DRY_RUN
 ```
 
-These are useful for local testing without writing to `/var` or `/run`.
-
-## Local Development
+## Development
 
 Run tests:
 
@@ -457,88 +379,23 @@ Run tests:
 GOCACHE=/tmp/rocguard-go-build go test ./...
 ```
 
-Build:
+Build the UI:
+
+```bash
+npm --prefix web/ui run build
+```
+
+Build the CLI:
 
 ```bash
 GOCACHE=/tmp/rocguard-go-build go build -buildvcs=false -o rocguard ./cmd/rocguard
 ```
 
-Run a root-key smoke test with temporary paths by provisioning the key file
-directly:
-
-```bash
-mkdir -p /tmp/rocguard
-printf 'rk_dev_only\n' > /tmp/rocguard/root.key
-chmod 600 /tmp/rocguard/root.key
-ROCGUARD_ROOT_KEY=/tmp/rocguard/root.key \
-ROCGUARD_STATE=/tmp/rocguard/state.json \
-ROCGUARD_AUDIT_LOG=/tmp/rocguard/audit.log \
-ROOT_KEY=rk_dev_only ./rocguard show-keys
-```
-
-Run light bare-metal integration tests:
-
-```bash
-KEY=rg_xxx ROOT_KEY=rk_xxx ./scripts/integration_test.py --gpus 2,3
-```
-
-The integration runner:
-
-- auto-bypasses pre-existing AMD SMI PIDs on the selected GPUs;
-- uses small allocations and sleeps between compute iterations;
-- tests multi-GPU `hold_gpu.py`;
-- tests child GPU processes with `hold_gpu.py --children` staying authorized
-  inside the Rocguard cgroup.
-
-Optional Docker test, using a ROCm/PyTorch image that already has Python and
-Torch:
-
-```bash
-KEY=rg_xxx ROOT_KEY=rk_xxx ./scripts/integration_test.py \
-  --gpus 2 \
-  --docker-image <rocm-pytorch-image>
-```
-
-Optional Kubernetes test:
-
-```bash
-KEY=rg_xxx ROOT_KEY=rk_xxx ./scripts/integration_test.py \
-  --gpus 2 \
-  --k8s-namespace training \
-  --k8s-image <rocm-pytorch-image> \
-  --k8s-gpu-resource amd.com/gpu
-```
-
-The script needs `ROOT_KEY` for auto-bypass setup and cleanup revoke calls.
-Pass `--no-auto-bypass` only when you have already confirmed the selected GPUs
-have no unrelated workloads or you intentionally want to skip that safety step.
-
 ## Safety Notes
 
-Do not test Rocguard on a production GPU with active workloads unless you are
-ready for unauthorized processes on a reserved or claimed GPU to be killed.
-
-The safest first test is:
-
-1. Pick an idle GPU.
-2. Start the daemon in dry-run mode with temporary paths:
-
-   ```bash
-   sudo env \
-     ROCGUARD_SOCKET=/tmp/rocguard.sock \
-     ROCGUARD_STATE=/tmp/rocguard/state.json \
-     ROCGUARD_ROOT_KEY=/tmp/rocguard/root.key \
-     ROCGUARD_AUDIT_LOG=/tmp/rocguard/audit.log \
-     ROCGUARD_CGROUP_ROOT=/tmp/rocguard/cgroup \
-     ./rocguard daemon --dry-run
-   ```
-
-3. Register a short-lived reserved token for that idle GPU.
-4. Run one known command with `KEY=... ./rocguard run -- ...`.
-5. Confirm `./rocguard ps` and audit output.
-6. Restart the daemon without `--dry-run` only after the dry-run decisions look
-   correct.
-
-Rocguard does not currently configure Linux device permissions, ROCm device
-ACLs, or container runtime isolation. It detects and kills unauthorized GPU
-users after they appear in AMD SMI.
+- Do not test on production GPUs with active workloads unless you are ready for
+  unauthorized processes to be killed.
+- Keep Docker socket access restricted. The `docker` group is effectively
+  root-equivalent.
+- Do not share the root key with regular users.
+- Revoke keys and reservations that are no longer needed.
