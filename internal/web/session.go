@@ -51,7 +51,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.Users.Authenticate(req.Username, req.Password)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid username or password")
+		writeJSONError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 	expires := time.Now().Add(sessionTTL)

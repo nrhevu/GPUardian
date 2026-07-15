@@ -402,11 +402,13 @@ function App() {
             <button
               type="button"
               className="settings-button"
+              aria-label="Settings"
               aria-expanded={settingsOpen}
               aria-haspopup="menu"
+              title="Settings"
               onClick={() => setSettingsOpen((open) => !open)}
             >
-              Settings
+              <SettingsIcon />
             </button>
             {settingsOpen && (
               <div className="settings-popover" role="menu">
@@ -687,6 +689,30 @@ function BrandLockup({ className, showMark = true }) {
       {showMark && <img className="brand-mark" src="/rocguard-icon.svg" alt="" />}
       <span>RocGuard</span>
     </div>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg
+      className="settings-icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"
+        fill="none"
+      />
+      <path
+        d="M19.4 13.5c.08-.49.1-.99.06-1.5.04-.51.02-1.01-.06-1.5l2.04-1.56-2-3.46-2.43.98a8.6 8.6 0 0 0-2.57-1.49L14.08 2h-4.16l-.36 2.97a8.6 8.6 0 0 0-2.57 1.49l-2.43-.98-2 3.46L4.6 10.5c-.08.49-.1.99-.06 1.5-.04.51-.02 1.01.06 1.5l-2.04 1.56 2 3.46 2.43-.98a8.6 8.6 0 0 0 2.57 1.49l.36 2.97h4.16l.36-2.97a8.6 8.6 0 0 0 2.57-1.49l2.43.98 2-3.46-2.04-1.56Z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
   );
 }
 

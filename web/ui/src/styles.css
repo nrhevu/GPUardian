@@ -175,14 +175,15 @@ button {
 }
 
 .settings-button {
-  min-height: 28px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 6px;
-  padding: 0 8px;
+  padding: 0;
   background: transparent;
   color: #cbd5e1;
-  font-size: 11px;
-  font-weight: 500;
 }
 
 .settings-button:hover,
@@ -190,6 +191,11 @@ button {
   border-color: rgba(255, 255, 255, 0.28);
   background: rgba(255, 255, 255, 0.07);
   color: #fff;
+}
+
+.settings-icon {
+  width: 16px;
+  height: 16px;
 }
 
 .settings-popover {
