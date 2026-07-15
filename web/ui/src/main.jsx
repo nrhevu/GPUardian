@@ -35,6 +35,7 @@ function App() {
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [scheduleTarget, setScheduleTarget] = useState(null);
   const [reserveHint, setReserveHint] = useState(null);
+  const [reservationSuccess, setReservationSuccess] = useState(null);
   const [successKey, setSuccessKey] = useState("");
   const [error, setError] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -154,6 +155,7 @@ function App() {
       setPasswordOpen(false);
       setSettingsOpen(false);
       setDeleteUserTarget(null);
+      setReservationSuccess(null);
       setSuccessKey("");
     }
   }
@@ -208,6 +210,9 @@ function App() {
   const reservations = current?.snapshot?.reservations || [];
   const authorizations = current?.snapshot?.authorizations || [];
   const isAdmin = auth.role === "admin";
+  const scheduleToken = scheduleTarget
+    ? tokens.find((token) => token.id === scheduleTarget.id && token.mode === "reserved")
+    : null;
   const selectedGPUList = Array.from(selectedGPUs).sort((a, b) => a - b);
   const allGPUIds = gpus.map((gpu) => gpu.id);
   const availableGPUIds = gpus
@@ -221,6 +226,7 @@ function App() {
     setSelectedServerId(id);
     setSelectedGPUs(new Set());
     setActiveGPU(null);
+    setReservationSuccess(null);
     setSuccessKey("");
   }
 
@@ -309,7 +315,20 @@ function App() {
           expires_at: new Date(values.end).toISOString(),
         }),
       });
-      setSuccessKey(result.token || "");
+      setReservationSuccess({
+        id: result.token_id,
+        token: {
+          id: result.token_id,
+          name: auth.user,
+          mode: result.mode || "reserved",
+        },
+        label: values.purpose || "Reservation",
+        holder: auth.user,
+        purpose: values.purpose,
+        gpus: result.gpus?.length ? result.gpus : targets,
+        start: new Date(result.starts_at || values.start),
+        end: new Date(result.expires_at || values.end),
+      });
       setSelectedGPUs(new Set());
       await refresh();
     } catch (err) {
@@ -338,8 +357,10 @@ function App() {
       });
       const token = (status.tokens || []).find((item) => item.id === tokenId);
       setSuccessKey(token?.key || "");
+      return Boolean(token?.key);
     } catch (err) {
       setError(err.message);
+      return false;
     }
   }
 
@@ -397,6 +418,7 @@ function App() {
       setError("");
       setRevokeTarget(null);
       setScheduleTarget(null);
+      setReservationSuccess(null);
       await refresh();
     } catch (err) {
       setError(err.message);
@@ -613,11 +635,29 @@ function App() {
       {scheduleTarget && !revokeTarget && (
         <ScheduleDetailModal
           target={scheduleTarget}
+          canAuthorize={Boolean(scheduleToken) && (isAdmin || sameText(scheduleTarget.holder, auth.user))}
           canRevoke={isAdmin || sameText(scheduleTarget.holder, auth.user)}
           onClose={() => setScheduleTarget(null)}
+          onAuthorize={() => {
+            setScheduleTarget(null);
+            setAllowTarget(scheduleToken);
+          }}
           onRevoke={() => {
             setRevokeTarget(scheduleTarget);
           }}
+        />
+      )}
+      {reservationSuccess && !allowTarget && !revokeTarget && !successKey && (
+        <ScheduleDetailModal
+          title="Reservation created"
+          target={reservationSuccess}
+          canAuthorize={Boolean(reservationSuccess.id)}
+          canShowKey={Boolean(reservationSuccess.id)}
+          canRevoke={Boolean(reservationSuccess.id)}
+          onClose={() => setReservationSuccess(null)}
+          onAuthorize={() => setAllowTarget(reservationSuccess.token)}
+          onShowKey={() => showKey(reservationSuccess.id)}
+          onRevoke={() => setRevokeTarget(reservationSuccess)}
         />
       )}
       {reserveHint && (
@@ -1003,9 +1043,9 @@ function KeysView({ tokens, onCreate, onAllow, onShow, onRevoke }) {
               <span>{token.mode} · {new Date(token.created_at).toLocaleDateString()}</span>
             </div>
             <div className="key-actions">
-              <button className="small-button" onClick={() => onAllow(token)}>Authorize</button>
-              <button className="small-button" onClick={() => onShow(token.id)}>Show key</button>
-              <button type="button" className="small-danger-button" onClick={() => onRevoke(token)}>Revoke</button>
+              <button className="primary-button" onClick={() => onAllow(token)}>Authorize</button>
+              <button className="key-button" onClick={() => onShow(token.id)}>Show key</button>
+              <button type="button" className="danger-button" onClick={() => onRevoke(token)}>Revoke</button>
             </div>
           </div>
         ))}
@@ -1063,8 +1103,9 @@ function AllowKeyModal({ token, rules, onClose, onSubmit, onRemove }) {
         </div>
         <div className="rules-table">
           <div className="rules-table-header">
-            <span>Rule</span>
-            <span>Type</span>
+            <span>Scope</span>
+            <span>By</span>
+            <span>Value</span>
           </div>
           <div className="rules-table-body" role="listbox" aria-label="Authorization rules">
             {visibleRules.map((rule) => (
@@ -1076,8 +1117,9 @@ function AllowKeyModal({ token, rules, onClose, onSubmit, onRemove }) {
                 aria-selected={selectedRuleId === rule.id}
                 onClick={() => setSelectedRuleId(rule.id)}
               >
+                <span>{authorizationRuleScope(rule.mode)}</span>
+                <span>{authorizationRuleBy(rule.mode)}</span>
                 <strong title={authorizationRuleValue(rule)}>{authorizationRuleValue(rule)}</strong>
-                <span>{authorizationRuleLabel(rule.mode)}</span>
               </button>
             ))}
             {visibleRules.length === 0 && <div className="rules-empty">No rules yet.</div>}
@@ -1123,9 +1165,9 @@ function AddRuleModal({ onClose, onSubmit }) {
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const modeFields = {
-    docker: { label: "Container", placeholder: "trainer or trainer-*", key: "container" },
-    k8s: { label: "Namespace", placeholder: "training or training-*", key: "namespace" },
-    user: { label: "User", placeholder: "alice or team-*", key: "user" },
+    docker: { by: "Container name", placeholder: "trainer or trainer-*", key: "container" },
+    k8s: { by: "Namespace", placeholder: "training or training-*", key: "namespace" },
+    user: { by: "User", placeholder: "alice or team-*", key: "user" },
   };
   const field = modeFields[form.mode] || modeFields.docker;
 
@@ -1133,7 +1175,7 @@ function AddRuleModal({ onClose, onSubmit }) {
     event.preventDefault();
     const value = form.value.trim();
     if (!value) {
-      setError(`${field.label} is required`);
+      setError("Value is required");
       return;
     }
     setPending(true);
@@ -1149,29 +1191,35 @@ function AddRuleModal({ onClose, onSubmit }) {
   return (
     <Modal title="Add rule" onClose={onClose} hideClose className="add-rule-modal">
       <form className="modal-form" onSubmit={submit}>
-        <label>
-          Type
-          <select
-            value={form.mode}
-            onChange={(event) => {
-              setError("");
-              setForm({ mode: event.target.value, value: "" });
-            }}
-          >
-            <option value="docker">Docker container</option>
-            <option value="k8s">Kubernetes namespace</option>
-            <option value="user">Linux user</option>
-          </select>
-        </label>
-        <label>
-          {field.label}
-          <input
-            value={form.value}
-            onChange={(event) => setForm({ ...form, value: event.target.value })}
-            placeholder={field.placeholder}
-            autoFocus
-          />
-        </label>
+        <div className="add-rule-fields">
+          <label>
+            Scope
+            <select
+              value={form.mode}
+              onChange={(event) => {
+                setError("");
+                setForm({ mode: event.target.value, value: "" });
+              }}
+            >
+              <option value="docker">Docker</option>
+              <option value="k8s">Kubernetes</option>
+              <option value="user">Linux</option>
+            </select>
+          </label>
+          <label>
+            By
+            <input value={field.by} readOnly />
+          </label>
+          <label>
+            Value
+            <input
+              value={form.value}
+              onChange={(event) => setForm({ ...form, value: event.target.value })}
+              placeholder={field.placeholder}
+              autoFocus
+            />
+          </label>
+        </div>
         {error && <div className="form-warning">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="small-button" onClick={onClose} disabled={pending}>Cancel</button>
@@ -1182,13 +1230,22 @@ function AddRuleModal({ onClose, onSubmit }) {
   );
 }
 
-function authorizationRuleLabel(mode) {
+function authorizationRuleScope(mode) {
   return {
-    docker: "Docker container",
-    k8s: "Kubernetes namespace",
-    user: "Linux user",
+    docker: "Docker",
+    k8s: "Kubernetes",
+    user: "Linux",
     bare: "Process",
   }[mode] || mode;
+}
+
+function authorizationRuleBy(mode) {
+  return {
+    docker: "Container name",
+    k8s: "Namespace",
+    user: "User",
+    bare: "Command",
+  }[mode] || "";
 }
 
 function mergeRules(current, incoming) {
@@ -1399,9 +1456,19 @@ function ClaimKeyModal({ owner, onClose, onSubmit }) {
   );
 }
 
-function ScheduleDetailModal({ target, canRevoke, onClose, onRevoke }) {
+function ScheduleDetailModal({
+  title = "Reservation details",
+  target,
+  canAuthorize,
+  canShowKey,
+  canRevoke,
+  onClose,
+  onAuthorize,
+  onShowKey,
+  onRevoke,
+}) {
   return (
-    <Modal title="Reservation details" onClose={onClose} hideClose>
+    <Modal title={title} onClose={onClose} hideClose>
       <div className="schedule-detail">
         <div className="revoke-summary">
           <strong>{target.label}</strong>
@@ -1425,6 +1492,8 @@ function ScheduleDetailModal({ target, canRevoke, onClose, onRevoke }) {
         )}
         <div className="modal-actions">
           <button type="button" className="small-button" onClick={onClose}>Close</button>
+          {canAuthorize && <button type="button" className="primary-button" onClick={onAuthorize}>Authorize</button>}
+          {canShowKey && <button type="button" className="key-button" onClick={onShowKey}>Show key</button>}
           {canRevoke && <button type="button" className="danger-button" onClick={onRevoke}>Revoke</button>}
         </div>
       </div>

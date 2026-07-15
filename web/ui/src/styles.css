@@ -381,6 +381,7 @@ h2 {
 .small-button,
 .plain-button,
 .primary-button,
+.key-button,
 .danger-button {
   min-height: 38px;
   border: 1px solid var(--line-strong);
@@ -423,6 +424,17 @@ h2 {
   background: #e2e8f0;
   color: #94a3b8;
   cursor: not-allowed;
+}
+
+.key-button {
+  border-color: #c2410c;
+  background: #c2410c;
+  color: #fff;
+}
+
+.key-button:hover {
+  border-color: #9a3412;
+  background: #9a3412;
 }
 
 .danger-button {
@@ -1236,7 +1248,7 @@ select:focus {
 }
 
 .rules-modal {
-  width: min(500px, calc(100vw - 32px));
+  width: min(620px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   overflow: hidden;
 }
@@ -1252,7 +1264,23 @@ select:focus {
 }
 
 .add-rule-modal {
-  width: min(420px, calc(100vw - 32px));
+  width: min(680px, calc(100vw - 32px));
+}
+
+.add-rule-fields {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1fr) minmax(220px, 1.5fr);
+  align-items: end;
+  gap: 12px;
+}
+
+.add-rule-fields label {
+  min-width: 0;
+}
+
+.add-rule-fields input[readonly] {
+  background: #f8fafc;
+  color: var(--muted);
 }
 
 .rules-table {
@@ -1265,7 +1293,7 @@ select:focus {
 .rules-table-header,
 .rules-table-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px;
+  grid-template-columns: 100px 140px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   padding: 0 12px;
@@ -1499,7 +1527,12 @@ select:focus {
 
   .rules-table-header,
   .rules-table-row {
-    grid-template-columns: minmax(0, 1fr) 120px;
+    grid-template-columns: 72px 92px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .add-rule-fields {
+    grid-template-columns: 1fr;
   }
 
   .dashboard-grid,
