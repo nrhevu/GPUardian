@@ -1185,24 +1185,56 @@ select:focus {
 
 .key-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   min-height: 72px;
   border-bottom: 1px solid var(--line);
+  padding: 16px 0;
 }
 
-.key-row span {
+.key-summary {
+  min-width: 0;
+  flex: 1;
+}
+
+.key-subtitle {
   display: block;
   margin-top: 5px;
   color: var(--muted);
   font-size: 13px;
 }
 
+.reserved-key-details {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.25fr) repeat(2, minmax(160px, 1fr)) minmax(70px, 0.5fr);
+  gap: 12px 20px;
+  margin-top: 14px;
+}
+
+.reserved-key-detail {
+  min-width: 0;
+}
+
+.reserved-key-detail span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reserved-key-detail strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .key-actions {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .empty {
@@ -1533,6 +1565,18 @@ select:focus {
 
   .add-rule-fields {
     grid-template-columns: 1fr;
+  }
+
+  .key-row {
+    flex-direction: column;
+  }
+
+  .reserved-key-details {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .key-actions {
+    flex-wrap: wrap;
   }
 
   .dashboard-grid,

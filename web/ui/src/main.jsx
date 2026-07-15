@@ -590,6 +590,7 @@ function App() {
         ) : view === "keys" ? (
           <KeysView
             tokens={tokens}
+            reservations={reservations}
             onCreate={() => setClaimOpen(true)}
             onAllow={setAllowTarget}
             onShow={showKey}
@@ -1025,7 +1026,10 @@ function ReserveForm({ owner, selected, gpus, reservations, onMissingSelection, 
   );
 }
 
-function KeysView({ tokens, onCreate, onAllow, onShow, onRevoke }) {
+function KeysView({ tokens, reservations, onCreate, onAllow, onShow, onRevoke }) {
+  const reservationsByToken = new Map(
+    groupScheduleReservations(reservations).map((reservation) => [reservation.id, reservation]),
+  );
   return (
     <section className="keys-panel">
       <div className="section-heading">
@@ -1036,22 +1040,42 @@ function KeysView({ tokens, onCreate, onAllow, onShow, onRevoke }) {
         <button className="primary-button" onClick={onCreate}>Create claim key</button>
       </div>
       <div className="key-list">
-        {tokens.map((token) => (
-          <div className="key-row" key={token.id}>
-            <div>
-              <strong>{token.name || "Key ..."}</strong>
-              <span>{token.mode} · {new Date(token.created_at).toLocaleDateString()}</span>
+        {tokens.map((token) => {
+          const reservation = token.mode === "reserved" ? reservationsByToken.get(token.id) : null;
+          return (
+            <div className="key-row" key={token.id}>
+              <div className="key-summary">
+                <strong>{token.name || "Key ..."}</strong>
+                <span className="key-subtitle">{token.mode} · {new Date(token.created_at).toLocaleDateString()}</span>
+                {token.mode === "reserved" && (
+                  <div className="reserved-key-details">
+                    <KeyDetail label="Purpose" value={reservation?.purpose || "--"} />
+                    <KeyDetail label="Start" value={reservation ? dateTimeLabel(reservation.starts_at) : "--"} />
+                    <KeyDetail label="End" value={reservation ? dateTimeLabel(reservation.expires_at) : "--"} />
+                    <KeyDetail label="GPUs" value={reservation?.gpus?.length ? reservation.gpus.join(", ") : "--"} />
+                  </div>
+                )}
+              </div>
+              <div className="key-actions">
+                <button className="primary-button" onClick={() => onAllow(token)}>Authorize</button>
+                <button className="key-button" onClick={() => onShow(token.id)}>Show key</button>
+                <button type="button" className="danger-button" onClick={() => onRevoke(token)}>Revoke</button>
+              </div>
             </div>
-            <div className="key-actions">
-              <button className="primary-button" onClick={() => onAllow(token)}>Authorize</button>
-              <button className="key-button" onClick={() => onShow(token.id)}>Show key</button>
-              <button type="button" className="danger-button" onClick={() => onRevoke(token)}>Revoke</button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {tokens.length === 0 && <div className="empty">No keys yet.</div>}
       </div>
     </section>
+  );
+}
+
+function KeyDetail({ label, value }) {
+  return (
+    <div className="reserved-key-detail">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -2002,6 +2026,16 @@ function sameText(left, right) {
 
 function timeLabel(value) {
   return new Date(value).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function dateTimeLabel(value) {
+  return new Date(value).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 createRoot(document.getElementById("root")).render(<App />);
