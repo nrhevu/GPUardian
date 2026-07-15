@@ -126,7 +126,7 @@ func TestHardRegisterCreatesReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	register := result.(model.RegisterResult)
-	if register.Token == "" || len(register.ReservationIDs) != 1 || len(register.GPUs) != 1 || register.GPUs[0] != 2 {
+	if register.Token == "" || register.TokenID == "" || len(register.ReservationIDs) != 1 || len(register.GPUs) != 1 || register.GPUs[0] != 2 {
 		t.Fatalf("unexpected register result: %+v", register)
 	}
 	status, err := server.Store.Status(time.Now())
@@ -150,7 +150,7 @@ func TestHardRegisterCreatesMultipleReservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	register := result.(model.RegisterResult)
-	if register.Token == "" || len(register.ReservationIDs) != 2 || len(register.GPUs) != 2 || register.GPUs[0] != 0 || register.GPUs[1] != 1 {
+	if register.Token == "" || register.TokenID == "" || len(register.ReservationIDs) != 2 || len(register.GPUs) != 2 || register.GPUs[0] != 0 || register.GPUs[1] != 1 {
 		t.Fatalf("unexpected register result: %+v", register)
 	}
 	status, err := server.Store.Status(time.Now())

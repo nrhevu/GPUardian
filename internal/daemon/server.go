@@ -179,7 +179,7 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 				ids = append(ids, reservation.ID)
 				gpus = append(gpus, reservation.GPU)
 			}
-			return model.RegisterResult{Token: secret, Mode: token.Mode, ReservationIDs: ids, GPUs: gpus, StartsAt: timePtrIfSet(startsAt), ExpiresAt: timePtrIfSet(token.ExpiresAt)}, nil
+			return model.RegisterResult{Token: secret, TokenID: token.ID, Mode: token.Mode, ReservationIDs: ids, GPUs: gpus, StartsAt: timePtrIfSet(startsAt), ExpiresAt: timePtrIfSet(token.ExpiresAt)}, nil
 		case model.TokenModeClaimed:
 			secret, token, err := s.Store.RegisterSoftToken(args.RootKey, args.Name, now)
 			if err != nil {

@@ -238,7 +238,13 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if result.TokenID == "" {
+			if status, statusErr := s.Client.ShowKeys(r.Context(), record, record.RootKey); statusErr == nil {
+				result.TokenID = reservationTokenID(result, status)
+			}
+		}
 		s.clearFleetCache()
+		result.Token = ""
 		writeJSON(w, http.StatusCreated, result)
 	case action == "claim-keys" && r.Method == http.MethodPost:
 		var args protocol.RegisterArgs
@@ -542,6 +548,26 @@ func findToken(tokens []model.TokenView, id string) (model.TokenView, bool) {
 		}
 	}
 	return model.TokenView{}, false
+}
+
+func reservationTokenID(result model.RegisterResult, status model.KeyStatus) string {
+	if result.Token != "" {
+		for _, token := range status.Tokens {
+			if token.Key == result.Token {
+				return token.ID
+			}
+		}
+	}
+	reservationIDs := make(map[string]struct{}, len(result.ReservationIDs))
+	for _, id := range result.ReservationIDs {
+		reservationIDs[id] = struct{}{}
+	}
+	for _, reservation := range status.Reservations {
+		if _, ok := reservationIDs[reservation.ID]; ok && reservation.GroupID != "" {
+			return reservation.GroupID
+		}
+	}
+	return ""
 }
 
 func findReservation(reservations []model.ReservationView, id string) (model.ReservationView, bool) {

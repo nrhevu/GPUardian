@@ -17,13 +17,14 @@ import (
 )
 
 type authzNodeClient struct {
-	mu              sync.Mutex
-	snapshot        model.NodeSnapshot
-	keys            model.KeyStatus
-	lastReservation protocol.RegisterArgs
-	lastClaim       protocol.RegisterArgs
-	allowed         []protocol.AllowArgs
-	revoked         []string
+	mu                sync.Mutex
+	snapshot          model.NodeSnapshot
+	keys              model.KeyStatus
+	lastReservation   protocol.RegisterArgs
+	lastClaim         protocol.RegisterArgs
+	reservationResult model.RegisterResult
+	allowed           []protocol.AllowArgs
+	revoked           []string
 }
 
 func (c *authzNodeClient) Health(context.Context, ServerRecord, string) error {
@@ -40,7 +41,10 @@ func (c *authzNodeClient) CreateReservation(_ context.Context, _ ServerRecord, a
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lastReservation = args
-	return model.RegisterResult{Token: "rg_reserved"}, nil
+	if c.reservationResult.Mode != "" {
+		return c.reservationResult, nil
+	}
+	return model.RegisterResult{Token: "rg_reserved", TokenID: "tok_reserved", Mode: model.TokenModeReserved}, nil
 }
 
 func (c *authzNodeClient) CreateClaimKey(_ context.Context, _ ServerRecord, args protocol.RegisterArgs) (model.RegisterResult, error) {
@@ -109,9 +113,29 @@ func TestGatewayRoleAuthorization(t *testing.T) {
 		t.Fatalf("deleted user found=%v, err=%v", found, err)
 	}
 
+	client.mu.Lock()
+	client.reservationResult = model.RegisterResult{
+		Token:          "rg_reserved",
+		Mode:           model.TokenModeReserved,
+		ReservationIDs: []string{"res_reserved"},
+	}
+	client.keys.Tokens = append(client.keys.Tokens, model.TokenView{
+		ID: "tok_reserved", Key: "rg_reserved", Name: "alice", Mode: model.TokenModeReserved,
+	})
+	client.keys.Reservations = append(client.keys.Reservations, model.ReservationView{
+		ID: "res_reserved", GroupID: "tok_reserved", GPU: 0, Holder: "alice", Active: true,
+	})
+	client.mu.Unlock()
 	reserve := requestJSON(handler, http.MethodPost, "/api/servers/"+serverID+"/reservations", `{"name":"mallory","purpose":"test","gpus":[0]}`, userCookie)
 	if reserve.Code != http.StatusCreated {
 		t.Fatalf("reserve status = %d, body=%s", reserve.Code, reserve.Body.String())
+	}
+	var reserveResult model.RegisterResult
+	if err := json.Unmarshal(reserve.Body.Bytes(), &reserveResult); err != nil {
+		t.Fatal(err)
+	}
+	if reserveResult.Token != "" || reserveResult.TokenID != "tok_reserved" {
+		t.Fatalf("reserve result = %+v, want token ID without secret", reserveResult)
 	}
 	client.mu.Lock()
 	gotOwner := client.lastReservation.Name

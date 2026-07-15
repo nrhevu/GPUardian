@@ -268,6 +268,7 @@ type KeyStatus struct {
 
 type RegisterResult struct {
 	Token          string     `json:"token"`
+	TokenID        string     `json:"token_id,omitempty"`
 	Mode           string     `json:"mode"`
 	ReservationIDs []string   `json:"reservation_ids,omitempty"`
 	GPUs           []int      `json:"gpus,omitempty"`
