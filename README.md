@@ -18,13 +18,14 @@ root, sudo, or root-equivalent Docker access can bypass it.
 - Linux with cgroup v2
 - AMD ROCm tooling with `amd-smi`
 - Go 1.22+
+- Node.js and npm for building the web UI
 - Root access for the daemon
 - Optional: Docker, `crictl`, or `kubectl` for container scopes
 
 ## Build
 
 ```bash
-npm --prefix web/ui install
+npm --prefix web/ui ci
 npm --prefix web/ui run build
 go build -buildvcs=false -o rocguard ./cmd/rocguard
 ```
@@ -91,8 +92,8 @@ Default path:
 Create it once:
 
 ```bash
-sudo install -d -o root -g root -m 0755 /var/lib/rocguard
-sudo sh -c 'test -f /var/lib/rocguard/root.key || openssl rand -hex 32 > /var/lib/rocguard/root.key'
+sudo install -d -o root -g root -m 0700 /var/lib/rocguard
+sudo sh -c 'umask 077; test -f /var/lib/rocguard/root.key || printf "rk_%s\n" "$(openssl rand -hex 32)" > /var/lib/rocguard/root.key'
 sudo chmod 600 /var/lib/rocguard/root.key
 ```
 
@@ -103,6 +104,207 @@ sudo cat /var/lib/rocguard/root.key
 ```
 
 If `ROCGUARD_ROOT_KEY` is set, use that file path instead.
+
+## Installation
+
+The node daemon runs as root. One web gateway can manage one or more nodes, and
+browsers connect only to the gateway.
+
+### 1. Build
+
+From the repository root:
+
+```bash
+npm --prefix web/ui ci
+npm --prefix web/ui run build
+go build -buildvcs=false -o rocguard ./cmd/rocguard
+```
+
+### 2. Install the binary and UI
+
+```bash
+sudo install -o root -g root -m 0755 rocguard /usr/local/bin/rocguard
+sudo install -d -o root -g root -m 0755 /etc/rocguard
+sudo install -d -o root -g root -m 0700 /var/lib/rocguard
+sudo install -d -o root -g root -m 0755 /var/log/rocguard
+sudo install -d -o root -g root -m 0755 /usr/local/share/rocguard/ui
+sudo cp -a web/ui/dist/. /usr/local/share/rocguard/ui/
+```
+
+### 3. Create the node root key
+
+Create this once on every GPU node. Do not share it with regular users.
+
+```bash
+sudo sh -c 'umask 077; test -f /var/lib/rocguard/root.key || printf "rk_%s\n" "$(openssl rand -hex 32)" > /var/lib/rocguard/root.key'
+sudo chmod 600 /var/lib/rocguard/root.key
+```
+
+Read it later with:
+
+```bash
+sudo cat /var/lib/rocguard/root.key
+```
+
+### 4. Install the node daemon
+
+Create `/etc/systemd/system/rocguard.service`:
+
+```ini
+[Unit]
+Description=RocGuard daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=ROCGUARD_SOCKET=/run/rocguard.sock
+Environment=ROCGUARD_STATE=/var/lib/rocguard/state.json
+Environment=ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
+Environment=ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
+Environment=ROCGUARD_NODE_ADDR=0.0.0.0:8192
+ExecStart=/usr/local/bin/rocguard daemon
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and verify it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rocguard
+sudo systemctl status rocguard --no-pager
+rocguard status
+```
+
+The Unix socket `/run/rocguard.sock` is available to local users. The node API
+on port `8192` requires the root key as a bearer token. Allow this port only
+from the gateway host.
+
+For a node API outside a trusted private network, add both TLS variables to the
+service and use an `https://` endpoint in the gateway:
+
+```ini
+Environment=ROCGUARD_NODE_TLS_CERT=/etc/rocguard/tls.crt
+Environment=ROCGUARD_NODE_TLS_KEY=/etc/rocguard/tls.key
+```
+
+### 5. Install the web gateway
+
+Skip this step on nodes that will be managed by a gateway elsewhere. Create the
+gateway credentials file:
+
+```bash
+sudo install -o root -g root -m 0600 /dev/null /etc/rocguard/web.env
+sudoedit /etc/rocguard/web.env
+```
+
+Add the initial admin account:
+
+```text
+ROCGUARD_WEB_USER=admin
+ROCGUARD_WEB_PASSWORD=change-me
+```
+
+Quote passwords that contain spaces, for example
+`ROCGUARD_WEB_PASSWORD="nexus titan"`.
+
+Create `/etc/systemd/system/rocguard-web.service`:
+
+```ini
+[Unit]
+Description=RocGuard web gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/rocguard/web.env
+Environment=ROCGUARD_WEB_ADDR=0.0.0.0:8080
+Environment=ROCGUARD_WEB_USERS=/var/lib/rocguard/web-users.json
+Environment=ROCGUARD_WEB_REGISTRY=/var/lib/rocguard/web-servers.json
+Environment=ROCGUARD_WEB_UI_DIR=/usr/local/share/rocguard/ui
+ExecStart=/usr/local/bin/rocguard web
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rocguard-web
+sudo systemctl status rocguard-web --no-pager
+```
+
+Open `http://<gateway-host>:8080`. If a host firewall is enabled, allow TCP
+port `8080` from the networks that should access the UI. Do not expose node port
+`8192` to all users.
+
+The first admin is created from `ROCGUARD_WEB_USER` and
+`ROCGUARD_WEB_PASSWORD` only when the users file is empty. Admin can add nodes
+and manage users. Regular users can manage only their own keys and
+reservations. Add each node with:
+
+```text
+Name: a display name
+Endpoint API: http://<node-host>:8192
+Root key: contents of /var/lib/rocguard/root.key on that node
+```
+
+The gateway registry and users files use mode `0600` because they contain node
+root keys and password hashes.
+
+## Upgrade
+
+Build the new version, replace the installed files, then restart both services:
+
+```bash
+npm --prefix web/ui ci
+npm --prefix web/ui run build
+go build -buildvcs=false -o rocguard ./cmd/rocguard
+sudo install -o root -g root -m 0755 rocguard /usr/local/bin/rocguard
+sudo cp -a web/ui/dist/. /usr/local/share/rocguard/ui/
+sudo systemctl restart rocguard rocguard-web
+```
+
+Existing state, root keys, users, and registered servers remain in
+`/var/lib/rocguard`.
+
+## Uninstall
+
+Stop the services and remove the installed program files:
+
+```bash
+sudo systemctl disable --now rocguard-web rocguard
+sudo rm -f /etc/systemd/system/rocguard-web.service
+sudo rm -f /etc/systemd/system/rocguard.service
+sudo systemctl daemon-reload
+sudo rm -f /usr/local/bin/rocguard
+sudo rm -rf /usr/local/share/rocguard
+sudo rm -f /run/rocguard.sock
+```
+
+The commands above keep configuration, users, keys, reservations, and logs so
+RocGuard can be installed again later. To remove all RocGuard data permanently:
+
+```bash
+sudo rm -rf /etc/rocguard
+sudo rm -rf /var/lib/rocguard
+sudo rm -rf /var/log/rocguard
+```
+
+Also remove any firewall rules created for ports `8080` or `8192`.
 
 ## Quick Start
 
@@ -138,148 +340,6 @@ Check state:
 KEY=rg_xxx ./rocguard token info
 ROOT_KEY=rk_xxx ./rocguard show-keys
 ```
-
-## System-Wide Install
-
-Install one root-owned binary for all users:
-
-```bash
-sudo install -o root -g root -m 0755 rocguard /usr/local/bin/rocguard
-sudo install -d -o root -g root -m 0755 /etc/rocguard
-sudo install -d -o root -g root -m 0755 /var/lib/rocguard
-sudo install -d -o root -g root -m 0755 /var/log/rocguard
-sudo install -d -o root -g root -m 0755 /usr/local/share/rocguard/ui
-sudo cp -a web/ui/dist/. /usr/local/share/rocguard/ui/
-```
-
-Create `/etc/systemd/system/rocguard.service`:
-
-```ini
-[Unit]
-Description=RocGuard daemon
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-Environment=ROCGUARD_SOCKET=/run/rocguard.sock
-Environment=ROCGUARD_STATE=/var/lib/rocguard/state.json
-Environment=ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
-Environment=ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
-Environment=ROCGUARD_NODE_ADDR=0.0.0.0:8192
-ExecStart=/usr/local/bin/rocguard daemon
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable it:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rocguard
-```
-
-Local users can then run:
-
-```bash
-rocguard status
-KEY=rg_xxx rocguard run -- python train.py
-```
-
-By default the local socket is `/run/rocguard.sock`. Admin operations still
-require the root key.
-
-## Web Gateway
-
-The browser talks only to `rocguard web`. The gateway stores node endpoint and
-root-key records locally, then calls each node daemon from the server side.
-
-Create `/etc/rocguard/web.env`:
-
-```bash
-sudo sh -c 'printf "%s\n" "ROCGUARD_WEB_PASSWORD=\"change-me\"" > /etc/rocguard/web.env'
-sudo chmod 600 /etc/rocguard/web.env
-```
-
-Example password with spaces:
-
-```bash
-sudo sh -c 'printf "%s\n" "ROCGUARD_WEB_PASSWORD=\"nexus titan\"" > /etc/rocguard/web.env'
-```
-
-Create `/etc/systemd/system/rocguard-web.service`:
-
-```ini
-[Unit]
-Description=RocGuard web gateway
-After=network-online.target rocguard.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-EnvironmentFile=/etc/rocguard/web.env
-Environment=ROCGUARD_WEB_ADDR=0.0.0.0:8080
-Environment=ROCGUARD_WEB_USER=admin
-Environment=ROCGUARD_WEB_USERS=/var/lib/rocguard/web-users.json
-Environment=ROCGUARD_WEB_REGISTRY=/var/lib/rocguard/web-servers.json
-Environment=ROCGUARD_WEB_UI_DIR=/usr/local/share/rocguard/ui
-ExecStart=/usr/local/bin/rocguard web
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable it:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rocguard-web
-```
-
-Open:
-
-```text
-http://<gateway-host>:8080
-```
-
-Default login user is `admin`.
-
-The first admin account is created from `ROCGUARD_WEB_USER` and
-`ROCGUARD_WEB_PASSWORD` when the users file is empty. Admin can create more
-users in the `Users` tab.
-
-Web roles:
-
-- `admin`: add/delete servers, create users, view/revoke all keys and
-  reservations.
-- `user`: reserve GPUs, create claim keys, reveal/revoke only their own keys
-  and reservations.
-
-Add a node in the UI:
-
-```text
-Endpoint API: http://<node-host>:8192
-Root key: contents of /var/lib/rocguard/root.key on that node
-```
-
-For non-local deployments, use HTTPS for the node API:
-
-```text
-ROCGUARD_NODE_TLS_CERT=/etc/rocguard/tls.crt
-ROCGUARD_NODE_TLS_KEY=/etc/rocguard/tls.key
-```
-
-The gateway registry and users files are written with mode `0600` because they
-contain node root keys and password hashes.
 
 ## Docker, Kubernetes, and User Scopes
 
