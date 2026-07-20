@@ -29,6 +29,7 @@ import (
 	"rocguard/internal/protocol"
 	"rocguard/internal/runtime"
 	"rocguard/internal/store"
+	"rocguard/internal/telemetry"
 )
 
 type Server struct {
@@ -62,6 +63,12 @@ type Server struct {
 	metricsReadAt        time.Time
 	metricsReadRows      []model.GPUMetric
 	metricsReadErr       error
+	Telemetry            *telemetry.Outbox
+	telemetryWriteMu     sync.Mutex
+	telemetryGapFrom     time.Time
+	telemetryJobsMu      sync.Mutex
+	observedJobs         map[string]*observedTelemetryJob
+	runJobs              map[string]telemetry.JobEvent
 	dockerResolveOnce    sync.Once
 	dockerResolveSlots   chan struct{}
 	nodeHTTPOnce         sync.Once
@@ -119,6 +126,8 @@ func New(cfg config.Config) *Server {
 		evictionClean:  make(map[string]int),
 		bootID:         bootID,
 		uidConnections: make(map[int]int),
+		observedJobs:   make(map[string]*observedTelemetryJob),
+		runJobs:        make(map[string]telemetry.JobEvent),
 		resolvePeer:    peerCred,
 	}
 }
@@ -131,6 +140,10 @@ func (s *Server) Run(ctx context.Context) error {
 	defer cancel()
 	if err := s.Store.Load(); err != nil {
 		return err
+	}
+	s.initializeTelemetry()
+	if s.Telemetry != nil {
+		defer s.Telemetry.Close()
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Cfg.SocketPath), 0755); err != nil {
 		return err
@@ -174,6 +187,13 @@ func (s *Server) Run(ctx context.Context) error {
 		defer handlers.Done()
 		s.monitor(runCtx)
 	}()
+	if s.Telemetry != nil {
+		handlers.Add(1)
+		go func() {
+			defer handlers.Done()
+			s.metricMonitor(runCtx)
+		}()
+	}
 	go func() {
 		<-runCtx.Done()
 		_ = listener.Close()
@@ -351,6 +371,9 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 		if err := validateRequestValue("purpose", args.Purpose); err != nil {
 			return nil, err
 		}
+		if err := validateRequestValue("external session id", args.ExternalSessionID); err != nil {
+			return nil, err
+		}
 		if ok, err := s.Store.ValidateRootKey(args.RootKey); err != nil {
 			return nil, err
 		} else if !ok {
@@ -384,10 +407,11 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 			if err := s.ensureGPUsCanReserveWindow(ctx, args.GPUs, startsAt, expiresAt); err != nil {
 				return nil, err
 			}
-			secret, token, reservations, err := s.Store.RegisterScheduledReservations(args.RootKey, args.Name, args.Purpose, args.GPUs, startsAt, expiresAt, now)
+			secret, token, reservations, err := s.Store.RegisterScheduledReservationsWithSession(args.RootKey, args.Name, args.Purpose, args.ExternalSessionID, args.GPUs, startsAt, expiresAt, now)
 			if err != nil {
 				return nil, err
 			}
+			s.emitReservation(token, reservations)
 			ids := make([]string, 0, len(reservations))
 			gpus := make([]int, 0, len(reservations))
 			for _, reservation := range reservations {
@@ -748,7 +772,11 @@ func (s *Server) addAuthorizationLocked(tokenSecret string, authorization *model
 	authorization.TokenMode = store.NormalizeTokenMode(token.Mode)
 	authorization.Holder = token.Name
 	authorization.ExpiresAt = token.ExpiresAt
-	return s.Store.AddAuthorization(*authorization)
+	if err := s.Store.AddAuthorization(*authorization); err != nil {
+		return err
+	}
+	s.emitAuthorization(token.ID, *authorization)
+	return nil
 }
 
 func prepareRunCommand(ctx context.Context, args protocol.RunArgs, p peer, useCgroupFD bool, cgroupFD int) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
@@ -939,6 +967,7 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID, tokenSecr
 		}
 		return model.RunResult{}, activateErr
 	}
+	s.rememberRunJob(token, authorization, authorization.RootPID, args.Command, time.Now())
 	var writeMu sync.Mutex
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -950,6 +979,7 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID, tokenSecr
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
+	s.updateRunJobRootExit(authorization.ID, exitCode, time.Now())
 	if cgroupEmptyOrOnlyExitedRoot(cgroupPath, authorization.RootPID) {
 		if err := s.releaseAuthorization(authorization.ID); err != nil {
 			return model.RunResult{AuthorizationID: authorization.ID, ExitCode: exitCode}, err
@@ -959,6 +989,7 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID, tokenSecr
 			return model.RunResult{AuthorizationID: authorization.ID, ExitCode: exitCode}, err
 		}
 		cleanupCgroup = false
+		s.finishRunJob(authorization.ID, "exited", time.Now())
 	} else {
 		keepAuthorization = true
 	}
@@ -971,7 +1002,11 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID, tokenSecr
 func (s *Server) releaseAuthorization(id string) error {
 	s.enforceMu.Lock()
 	defer s.enforceMu.Unlock()
-	return s.Store.ReleaseAuthorization(id)
+	if err := s.Store.ReleaseAuthorization(id); err != nil {
+		return err
+	}
+	s.emitAuthorizationEnded(id, "released", time.Now())
+	return nil
 }
 
 func (s *Server) ensureGPUCanReserve(ctx context.Context, gpu int) error {
@@ -1191,7 +1226,7 @@ func boundedPSField(value string) string {
 func (s *Server) processesForRead(ctx context.Context) ([]model.GPUProcess, error) {
 	s.processReadMu.Lock()
 	defer s.processReadMu.Unlock()
-	if time.Since(s.processReadAt) < time.Second {
+	if !s.processReadAt.IsZero() {
 		return append([]model.GPUProcess(nil), s.processReadRows...), s.processReadErr
 	}
 	rows, err := s.AMD.Processes(ctx)
@@ -1373,6 +1408,7 @@ func (s *Server) monitor(ctx context.Context) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	s.monitorOnce(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1385,6 +1421,11 @@ func (s *Server) monitor(ctx context.Context) {
 
 func (s *Server) monitorOnce(ctx context.Context) {
 	processes, err := s.AMD.Processes(ctx)
+	s.processReadMu.Lock()
+	s.processReadAt = time.Now()
+	s.processReadRows = append(s.processReadRows[:0], processes...)
+	s.processReadErr = err
+	s.processReadMu.Unlock()
 	if err != nil {
 		s.auditAMDProcessError(err)
 		s.cleanupExpiredManagedCgroups()
@@ -1428,6 +1469,7 @@ func (s *Server) monitorOnce(ctx context.Context) {
 	regularDecisions, enforceErr := authorizer.Enforce(enforcementCtx, state, processes)
 	decisions = append(decisions, regularDecisions...)
 	now := time.Now()
+	s.trackObservedTelemetryJobs(state, decisions, now)
 	_ = enforceErr // Kill failures are audited by the authorizer callback.
 	for _, decision := range decisions {
 		switch decision.Action {
@@ -1545,6 +1587,8 @@ func (s *Server) cleanupFinishedBareAuthorizationsState(state model.State) {
 		if err := s.Store.ReleaseAuthorization(authorization.ID); err != nil {
 			continue
 		}
+		s.emitAuthorizationEnded(authorization.ID, "released", now)
+		s.finishRunJob(authorization.ID, "cgroup_empty", now)
 		_ = s.Store.AppendAudit(model.AuditEvent{
 			Time:    now.UTC(),
 			Kind:    "authorization_released",
@@ -1642,9 +1686,15 @@ func (s *Server) cleanupExpiredAuthorizationsState(state model.State) bool {
 		}
 		kind := "authorization_expired"
 		message := "authorization expired"
+		reason := "expired"
 		if authorization.Revoked || !tokenValidForCleanup(tokens, authorization.TokenHash) {
 			kind = "authorization_revoked"
 			message = "authorization revoked"
+			reason = "revoked"
+		}
+		s.emitAuthorizationEnded(authorization.ID, reason, now)
+		if authorization.Mode == model.ModeBare {
+			s.finishRunJob(authorization.ID, reason, now)
 		}
 		_ = s.Store.AppendAudit(model.AuditEvent{Time: now.UTC(), Kind: kind, Message: message, LeaseID: authorization.ID, User: authorization.Holder})
 	}
@@ -1662,6 +1712,11 @@ func (s *Server) cleanupExpiredReservations() {
 func (s *Server) cleanupExpiredReservationsState(state model.State) bool {
 	now := time.Now()
 	ok := true
+	tokenIDs := make(map[string]string, len(state.Tokens))
+	for _, token := range state.Tokens {
+		tokenIDs[token.Hash] = token.ID
+	}
+	emitted := make(map[string]bool)
 	for _, reservation := range state.Reservations {
 		if !reservation.Active || (!reservation.Revoked && now.Before(reservation.ExpiresAt)) {
 			continue
@@ -1669,6 +1724,15 @@ func (s *Server) cleanupExpiredReservationsState(state model.State) bool {
 		if err := s.Store.ReleaseReservation(reservation.ID); err != nil {
 			ok = false
 			continue
+		}
+		groupID := tokenIDs[reservation.TokenHash]
+		if groupID != "" && !emitted[groupID] {
+			reason := "expired"
+			if reservation.Revoked {
+				reason = "revoked"
+			}
+			s.emitTelemetry(telemetry.EventReservationEnded, telemetry.ReservationEnded{GroupID: groupID, EndedAt: now.UTC(), Reason: reason}, now)
+			emitted[groupID] = true
 		}
 		_ = s.Store.AppendAudit(model.AuditEvent{Time: now.UTC(), Kind: "reservation_expired", Message: "reserved GPU reservation expired", GPU: reservation.GPU, LeaseID: reservation.ID, User: reservation.Holder})
 	}

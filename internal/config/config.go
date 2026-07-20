@@ -18,6 +18,8 @@ type Config struct {
 	NodeTLSCert           string
 	NodeTLSKey            string
 	NodeAllowInsecure     bool
+	NodeIDPath            string
+	TelemetryDir          string
 	WebAddr               string
 	WebTLSCert            string
 	WebTLSKey             string
@@ -32,6 +34,7 @@ type Config struct {
 	WebUIDir              string
 	WebUser               string
 	WebPassword           string
+	WebDB                 string
 }
 
 func Default() Config {
@@ -48,6 +51,8 @@ func Default() Config {
 		NodeTLSCert:           env("ROCGUARD_NODE_TLS_CERT", ""),
 		NodeTLSKey:            env("ROCGUARD_NODE_TLS_KEY", ""),
 		NodeAllowInsecure:     envBool("ROCGUARD_NODE_ALLOW_INSECURE"),
+		NodeIDPath:            env("ROCGUARD_NODE_ID", "/var/lib/rocguard/node.id"),
+		TelemetryDir:          env("ROCGUARD_TELEMETRY_DIR", "/var/lib/rocguard/telemetry"),
 		WebAddr:               env("ROCGUARD_WEB_ADDR", "127.0.0.1:8080"),
 		WebTLSCert:            env("ROCGUARD_WEB_TLS_CERT", ""),
 		WebTLSKey:             env("ROCGUARD_WEB_TLS_KEY", ""),
@@ -62,6 +67,7 @@ func Default() Config {
 		WebUIDir:              env("ROCGUARD_WEB_UI_DIR", "web/ui/dist"),
 		WebUser:               env("ROCGUARD_WEB_USER", "admin"),
 		WebPassword:           env("ROCGUARD_WEB_PASSWORD", ""),
+		WebDB:                 env("ROCGUARD_WEB_DB", "/var/lib/rocguard-web/history.db"),
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"rocguard/internal/config"
+	"rocguard/internal/history"
 	"rocguard/internal/model"
 	"rocguard/internal/netlimit"
 	"rocguard/internal/protocol"
@@ -28,6 +29,7 @@ type Server struct {
 	Registry *Registry
 	Users    *UserStore
 	Client   NodeAPI
+	History  *history.Store
 
 	fleetCacheMu   sync.Mutex
 	fleetCache     fleetSnapshot
@@ -44,6 +46,8 @@ type Server struct {
 	activeUsers    map[string]int
 	activeTotal    int
 	activeNonAdmin int
+	historySyncMu  sync.Mutex
+	historySync    map[string]historySyncState
 }
 
 type addServerRequest struct {
@@ -121,6 +125,7 @@ func New(cfg config.Config) *Server {
 		sessionKeyErr: sessionKeyErr,
 		loginAttempts: make(map[string]loginAttempt),
 		activeUsers:   make(map[string]int),
+		historySync:   make(map[string]historySyncState),
 	}
 }
 
@@ -148,6 +153,17 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.Users.BootstrapAdmin(s.Cfg.WebUser, s.Cfg.WebPassword); err != nil {
 		return err
 	}
+	historyPath := strings.TrimSpace(s.Cfg.WebDB)
+	if historyPath == "" {
+		historyPath = filepath.Join(filepath.Dir(s.Cfg.WebRegistry), "history.db")
+	}
+	historyStore, err := history.Open(historyPath)
+	if err != nil {
+		return fmt.Errorf("initialize history database: %w", err)
+	}
+	s.History = historyStore
+	defer historyStore.Close()
+	go s.runHistoryCollector(ctx)
 	httpServer := &http.Server{
 		Addr:              s.Cfg.WebAddr,
 		Handler:           s.routes(),
@@ -201,6 +217,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/servers", s.requireSession(s.handleServers))
 	mux.HandleFunc("/api/servers/", s.requireSession(s.handleServerAction))
 	mux.HandleFunc("/api/fleet/snapshot", s.requireSession(s.handleFleetSnapshot))
+	mux.HandleFunc("/api/history/summary", s.requireSession(s.handleHistorySummary))
+	mux.HandleFunc("/api/history/sessions", s.requireSession(s.handleHistorySessions))
+	mux.HandleFunc("/api/history/sessions/", s.requireSession(s.handleHistorySessionAction))
 	mux.HandleFunc("/", s.handleStatic)
 	return s.securityMiddleware(mux)
 }
@@ -329,8 +348,31 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		args.Name = session.User
+		preparedSessionID := ""
+		if s.History != nil && args.StartsAt != nil && args.ExpiresAt != nil {
+			if client, ok := s.Client.(TelemetryNodeAPI); ok {
+				if info, infoErr := client.Info(r.Context(), record); infoErr == nil && info.NodeID != "" && telemetryCapability(info, "reservation_external_session_id") {
+					preparedSessionID = "sess_" + randomHex(12)
+					args.ExternalSessionID = preparedSessionID
+					if prepareErr := s.History.PrepareSession(r.Context(), preparedSessionID, info.NodeID, record.ID, record.Name, session.User,
+						args.Purpose, args.StartsAt.UTC(), args.ExpiresAt.UTC(), args.GPUs); prepareErr != nil {
+						writeJSONError(w, http.StatusInternalServerError, prepareErr.Error())
+						return
+					}
+				}
+			}
+		}
 		result, err := s.Client.CreateReservation(r.Context(), record, args)
+		if err != nil && preparedSessionID != "" && unsupportedExternalSessionError(err) {
+			_ = s.History.DropProvisioningSession(r.Context(), preparedSessionID)
+			preparedSessionID = ""
+			args.ExternalSessionID = ""
+			result, err = s.Client.CreateReservation(r.Context(), record, args)
+		}
 		if err != nil {
+			if preparedSessionID != "" {
+				_ = s.History.DropProvisioningSession(r.Context(), preparedSessionID)
+			}
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -338,6 +380,9 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 			if status, statusErr := s.Client.ShowKeys(r.Context(), record, record.RootKey); statusErr == nil {
 				result.TokenID = reservationTokenID(result, status)
 			}
+		}
+		if preparedSessionID != "" && result.TokenID != "" {
+			_ = s.History.ConfirmSession(r.Context(), preparedSessionID, result.TokenID, result.ReservationIDs, result.GPUs)
 		}
 		s.clearFleetCache()
 		result.Token = ""
@@ -450,6 +495,15 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func unsupportedExternalSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "external_session_id") &&
+		(strings.Contains(message, "unknown") || strings.Contains(message, "unrecognized") || strings.Contains(message, "unsupported"))
 }
 
 func (s *Server) handleFleetSnapshot(w http.ResponseWriter, r *http.Request) {

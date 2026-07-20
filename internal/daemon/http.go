@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"rocguard/internal/netlimit"
 	"rocguard/internal/protocol"
 	"rocguard/internal/store"
+	"rocguard/internal/telemetry"
 )
 
 const maxNodeHTTPConnections = 128
@@ -82,6 +84,8 @@ func (s *Server) nodeHTTPHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.nodeAuth(s.handleNodeHealth))
 	mux.HandleFunc("/api/v1/snapshot", s.nodeAuth(s.handleNodeSnapshot))
+	mux.HandleFunc("/api/v1/info", s.nodeAuth(s.handleNodeInfo))
+	mux.HandleFunc("/api/v1/telemetry", s.nodeAuth(s.handleNodeTelemetry))
 	mux.HandleFunc("/api/v1/reservations", s.nodeAuth(s.handleNodeReservations))
 	mux.HandleFunc("/api/v1/claim-keys", s.nodeAuth(s.handleNodeClaimKeys))
 	mux.HandleFunc("/api/v1/show-keys", s.nodeAuth(s.handleNodeShowKeys))
@@ -171,6 +175,49 @@ func (s *Server) handleNodeSnapshot(w http.ResponseWriter, r *http.Request, _ st
 		return
 	}
 	writeHTTPJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleNodeInfo(w http.ResponseWriter, r *http.Request, _ string) {
+	if r.Method != http.MethodGet {
+		writeHTTPError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Telemetry == nil {
+		writeHTTPError(w, http.StatusServiceUnavailable, "telemetry is unavailable")
+		return
+	}
+	writeHTTPJSON(w, http.StatusOK, s.Telemetry.Info())
+}
+
+func (s *Server) handleNodeTelemetry(w http.ResponseWriter, r *http.Request, _ string) {
+	if r.Method != http.MethodGet {
+		writeHTTPError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Telemetry == nil {
+		writeHTTPError(w, http.StatusServiceUnavailable, "telemetry is unavailable")
+		return
+	}
+	limit := telemetry.DefaultPageLimit
+	if text := strings.TrimSpace(r.URL.Query().Get("limit")); text != "" {
+		parsed, err := strconv.Atoi(text)
+		if err != nil || parsed < 1 || parsed > telemetry.MaxPageLimit {
+			writeHTTPError(w, http.StatusBadRequest, "limit must be between 1 and 256")
+			return
+		}
+		limit = parsed
+	}
+	page, err := s.Telemetry.Page(strings.TrimSpace(r.URL.Query().Get("cursor")), limit)
+	if err != nil {
+		var gap *telemetry.CursorGap
+		if errors.As(err, &gap) {
+			writeHTTPJSON(w, http.StatusGone, gap)
+			return
+		}
+		writeHTTPError(w, http.StatusBadRequest, "invalid telemetry cursor")
+		return
+	}
+	writeHTTPJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) handleNodeReservations(w http.ResponseWriter, r *http.Request, rootKey string) {

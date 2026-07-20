@@ -33,12 +33,11 @@ in Docker.
 - Root access on the GPU nodes and gateway host
 - Docker Engine with the Compose plugin on the gateway host
 - OpenSSL
-- A supported Go toolchain and Node.js LTS with npm for local builds
+- Go 1.25 or newer and Node.js LTS with npm for local builds
 - A CA capable of issuing TLS server certificates
 
 Use the latest security-patched Go and Node.js releases supported by your
-organization. The `go 1.22` directive in `go.mod` is the source-language
-version, not a production toolchain recommendation.
+organization. The minimum Go version is also recorded in `go.mod`.
 
 Before starting, choose stable DNS names or IP addresses for:
 
@@ -167,6 +166,8 @@ User=root
 Group=root
 Environment=ROCGUARD_SOCKET=/run/rocguard.sock
 Environment=ROCGUARD_STATE=/var/lib/rocguard/state.json
+Environment=ROCGUARD_NODE_ID=/var/lib/rocguard/node.id
+Environment=ROCGUARD_TELEMETRY_DIR=/var/lib/rocguard/telemetry
 Environment=ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
 Environment=ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
 Environment=ROCGUARD_NODE_ADDR=0.0.0.0:8192
@@ -296,6 +297,14 @@ Back up these files as secrets:
 /var/lib/rocguard-web/users.json
 ```
 
+Reservation history is stored separately in
+`/var/lib/rocguard-web/history.db`. While the gateway is running, back it up
+with SQLite's Online Backup API or `VACUUM INTO`; do not copy only the live
+database file because committed data may still be in the WAL. A filesystem
+copy is safe after the gateway has been stopped cleanly. Restore the database
+only while the gateway is stopped, then preserve ownership UID/GID `65532` and
+mode `0600`. Keep this directory on a local filesystem; NFS is not supported.
+
 They must remain owned by UID/GID `65532` with mode `0600`. Losing
 `session.key` signs out all browser sessions. Never place these files, node
 root keys, certificate private keys, or `/etc/rocguard/web.env` in source
@@ -409,6 +418,8 @@ namespaces can spoof executable paths. Prefer a PID bypass when possible.
 ```text
 ROCGUARD_SOCKET=/run/rocguard.sock
 ROCGUARD_STATE=/var/lib/rocguard/state.json
+ROCGUARD_NODE_ID=/var/lib/rocguard/node.id
+ROCGUARD_TELEMETRY_DIR=/var/lib/rocguard/telemetry
 ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
 ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
 ROCGUARD_NODE_ADDR=0.0.0.0:8192
@@ -426,6 +437,7 @@ settings. `/etc/rocguard/web.env` should contain only operator options:
 ROCGUARD_WEB_USER=admin
 ROCGUARD_WEB_PASSWORD=<one-time-bootstrap-password>
 ROCGUARD_WEB_ALLOW_REGISTRATION=1
+ROCGUARD_WEB_DB=/var/lib/rocguard-web/history.db
 ```
 
 Production Compose forces browser-facing HTTP and HTTP node endpoints off.
@@ -451,8 +463,8 @@ sudo docker compose -f compose.web.yml down
 sudo docker compose -f compose.web.yml up -d
 ```
 
-The bind-mounted state in `/var/lib/rocguard-web` remains when the container is
-recreated or removed.
+The bind-mounted state in `/var/lib/rocguard-web`, including `history.db`,
+remains when the container is recreated or removed.
 
 ## Uninstall
 

@@ -22,6 +22,7 @@ services:
       ROCGUARD_WEB_USERS: /var/lib/rocguard-web/users.json
       ROCGUARD_WEB_REGISTRY: /var/lib/rocguard-web/servers.json
       ROCGUARD_WEB_SESSION_KEY: /var/lib/rocguard-web/session.key
+      ROCGUARD_WEB_DB: /var/lib/rocguard-web/history.db
       ROCGUARD_WEB_UI_DIR: /usr/local/share/rocguard/ui
     extra_hosts:
       - host.docker.internal:host-gateway

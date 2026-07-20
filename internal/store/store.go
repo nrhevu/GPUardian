@@ -219,6 +219,10 @@ func (s *Store) RegisterHardReservations(rootKey, name string, gpus []int, ttlTe
 }
 
 func (s *Store) RegisterScheduledReservations(rootKey, name, purpose string, gpus []int, startsAt, expiresAt, now time.Time) (string, model.Token, []model.Reservation, error) {
+	return s.RegisterScheduledReservationsWithSession(rootKey, name, purpose, "", gpus, startsAt, expiresAt, now)
+}
+
+func (s *Store) RegisterScheduledReservationsWithSession(rootKey, name, purpose, externalSessionID string, gpus []int, startsAt, expiresAt, now time.Time) (string, model.Token, []model.Reservation, error) {
 	startsAt = startsAt.UTC()
 	expiresAt = expiresAt.UTC()
 	now = now.UTC()
@@ -259,21 +263,47 @@ func (s *Store) RegisterScheduledReservations(rootKey, name, purpose string, gpu
 	reservations := make([]model.Reservation, 0, len(gpus))
 	for _, gpu := range gpus {
 		reservations = append(reservations, model.Reservation{
-			ID:        NewReservationID(),
-			GPU:       gpu,
-			TokenHash: token.Hash,
-			Holder:    token.Name,
-			Purpose:   strings.TrimSpace(purpose),
-			CreatedAt: now,
-			StartsAt:  startsAt,
-			ExpiresAt: expiresAt,
-			Active:    true,
+			ID:                NewReservationID(),
+			ExternalSessionID: strings.TrimSpace(externalSessionID),
+			GPU:               gpu,
+			TokenHash:         token.Hash,
+			Holder:            token.Name,
+			Purpose:           strings.TrimSpace(purpose),
+			CreatedAt:         now,
+			StartsAt:          startsAt,
+			ExpiresAt:         expiresAt,
+			Active:            true,
 		})
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.loadLocked(); err != nil {
 		return "", model.Token{}, nil, err
+	}
+	if externalSessionID = strings.TrimSpace(externalSessionID); externalSessionID != "" {
+		var existingReservations []model.Reservation
+		for _, reservation := range s.state.Reservations {
+			if reservation.ExternalSessionID == externalSessionID {
+				existingReservations = append(existingReservations, reservation)
+			}
+		}
+		if len(existingReservations) > 0 {
+			tokenHash := existingReservations[0].TokenHash
+			var existingToken model.Token
+			for _, candidate := range s.state.Tokens {
+				if candidate.Hash == tokenHash {
+					existingToken = candidate
+					break
+				}
+			}
+			if existingToken.ID == "" || existingToken.Secret == "" {
+				return "", model.Token{}, nil, errors.New("existing reservation session has no recoverable key")
+			}
+			if !sameReservationRequest(existingReservations, name, purpose, gpus, startsAt, expiresAt) {
+				return "", model.Token{}, nil, errors.New("external session id was already used for a different reservation")
+			}
+			return existingToken.Secret, existingToken, existingReservations, nil
+		}
 	}
 	if err := s.checkTokenCapacityLocked(token, now); err != nil {
 		return "", model.Token{}, nil, err
@@ -294,6 +324,24 @@ func (s *Store) RegisterScheduledReservations(rootKey, name, purpose string, gpu
 		return "", model.Token{}, nil, err
 	}
 	return tokenSecret, token, reservations, nil
+}
+
+func sameReservationRequest(existing []model.Reservation, name, purpose string, gpus []int, startsAt, expiresAt time.Time) bool {
+	if len(existing) != len(gpus) || len(existing) == 0 {
+		return false
+	}
+	want := make(map[int]bool, len(gpus))
+	for _, gpu := range gpus {
+		want[gpu] = true
+	}
+	for _, reservation := range existing {
+		if !want[reservation.GPU] || !strings.EqualFold(strings.TrimSpace(reservation.Holder), strings.TrimSpace(name)) ||
+			strings.TrimSpace(reservation.Purpose) != strings.TrimSpace(purpose) ||
+			!model.ReservationStartsAt(reservation).Equal(startsAt) || !reservation.ExpiresAt.Equal(expiresAt) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) RegisterToken(rootKey, name, ttlText string, now time.Time) (string, model.Token, error) {
@@ -725,16 +773,17 @@ func (s *Store) status(now time.Time, allowedTokenHash string, all bool) (model.
 		}
 		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
 			status.Reservations = append(status.Reservations, model.ReservationView{
-				ID:        reservation.ID,
-				GroupID:   tokenIDsByHash[reservation.TokenHash],
-				GPU:       reservation.GPU,
-				Holder:    reservation.Holder,
-				Purpose:   reservation.Purpose,
-				CreatedAt: reservation.CreatedAt,
-				StartsAt:  model.ReservationStartsAt(reservation),
-				ExpiresAt: reservation.ExpiresAt,
-				Active:    reservation.Active,
-				Revoked:   reservation.Revoked,
+				ID:                reservation.ID,
+				GroupID:           tokenIDsByHash[reservation.TokenHash],
+				ExternalSessionID: reservation.ExternalSessionID,
+				GPU:               reservation.GPU,
+				Holder:            reservation.Holder,
+				Purpose:           reservation.Purpose,
+				CreatedAt:         reservation.CreatedAt,
+				StartsAt:          model.ReservationStartsAt(reservation),
+				ExpiresAt:         reservation.ExpiresAt,
+				Active:            reservation.Active,
+				Revoked:           reservation.Revoked,
 			})
 		}
 	}
@@ -821,16 +870,17 @@ func (s *Store) KeyStatus(rootKey string, now time.Time) (model.KeyStatus, error
 	for _, reservation := range s.state.Reservations {
 		if reservation.Active && !reservation.Revoked && now.Before(reservation.ExpiresAt) {
 			status.Reservations = append(status.Reservations, model.ReservationView{
-				ID:        reservation.ID,
-				GroupID:   tokenIDsByHash[reservation.TokenHash],
-				GPU:       reservation.GPU,
-				Holder:    reservation.Holder,
-				Purpose:   reservation.Purpose,
-				CreatedAt: reservation.CreatedAt,
-				StartsAt:  model.ReservationStartsAt(reservation),
-				ExpiresAt: reservation.ExpiresAt,
-				Active:    reservation.Active,
-				Revoked:   reservation.Revoked,
+				ID:                reservation.ID,
+				GroupID:           tokenIDsByHash[reservation.TokenHash],
+				ExternalSessionID: reservation.ExternalSessionID,
+				GPU:               reservation.GPU,
+				Holder:            reservation.Holder,
+				Purpose:           reservation.Purpose,
+				CreatedAt:         reservation.CreatedAt,
+				StartsAt:          model.ReservationStartsAt(reservation),
+				ExpiresAt:         reservation.ExpiresAt,
+				Active:            reservation.Active,
+				Revoked:           reservation.Revoked,
 			})
 		}
 	}
@@ -1531,7 +1581,7 @@ func validateStateBounds(state model.State) error {
 		if err := validateGPUIndex(reservation.GPU); err != nil {
 			return fmt.Errorf("reservation %q: %w", reservation.ID, err)
 		}
-		if err := validatePersistedValues("reservation", reservation.ID, reservation.TokenHash, reservation.Holder, reservation.Purpose); err != nil {
+		if err := validatePersistedValues("reservation", reservation.ID, reservation.ExternalSessionID, reservation.TokenHash, reservation.Holder, reservation.Purpose); err != nil {
 			return err
 		}
 	}

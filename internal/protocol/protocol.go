@@ -28,14 +28,15 @@ const (
 )
 
 type RegisterArgs struct {
-	RootKey   string     `json:"root_key"`
-	Mode      string     `json:"mode"`
-	Name      string     `json:"name"`
-	Purpose   string     `json:"purpose,omitempty"`
-	GPUs      []int      `json:"gpus,omitempty"`
-	TTL       string     `json:"ttl"`
-	StartsAt  *time.Time `json:"starts_at,omitempty"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	RootKey           string     `json:"root_key"`
+	Mode              string     `json:"mode"`
+	Name              string     `json:"name"`
+	Purpose           string     `json:"purpose,omitempty"`
+	ExternalSessionID string     `json:"external_session_id,omitempty"`
+	GPUs              []int      `json:"gpus,omitempty"`
+	TTL               string     `json:"ttl"`
+	StartsAt          *time.Time `json:"starts_at,omitempty"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
 }
 
 type RunArgs struct {

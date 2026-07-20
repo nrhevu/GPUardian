@@ -65,6 +65,8 @@ sudo env \
   ROCGUARD_NODE_ALLOW_INSECURE=1 \
   ROCGUARD_SOCKET="$PWD/.dev/rocguard.sock" \
   ROCGUARD_STATE="$PWD/.dev/state.json" \
+  ROCGUARD_NODE_ID="$PWD/.dev/node.id" \
+  ROCGUARD_TELEMETRY_DIR="$PWD/.dev/telemetry" \
   ROCGUARD_ROOT_KEY="$PWD/.dev/root.key" \
   ROCGUARD_AUDIT_LOG="$PWD/.dev/audit.log" \
   ROCGUARD_CGROUP_ROOT=/sys/fs/cgroup/rocguard-dev \
@@ -89,6 +91,8 @@ Expected separation:
 | Node API | `8192` | `8193` |
 | Socket | `/run/rocguard.sock` | `.dev/rocguard.sock` |
 | State | `/var/lib/rocguard/state.json` | `.dev/state.json` |
+| Node ID | `/var/lib/rocguard/node.id` | `.dev/node.id` |
+| Telemetry outbox | `/var/lib/rocguard/telemetry` | `.dev/telemetry` |
 | Root key | `/var/lib/rocguard/root.key` | `.dev/root.key` |
 | Cgroup | `/sys/fs/cgroup/rocguard` | `/sys/fs/cgroup/rocguard-dev` |
 | Enforcement | enabled | `--dry-run` |

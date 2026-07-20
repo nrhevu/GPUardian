@@ -16,6 +16,7 @@ import (
 
 	"rocguard/internal/model"
 	"rocguard/internal/protocol"
+	"rocguard/internal/telemetry"
 )
 
 const (
@@ -54,6 +55,17 @@ type NodeAPI interface {
 	Revoke(ctx context.Context, server ServerRecord, args protocol.RevokeArgs) (map[string]string, error)
 }
 
+type TelemetryNodeAPI interface {
+	Info(ctx context.Context, server ServerRecord) (telemetry.Info, error)
+	Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int) (telemetry.Page, error)
+}
+
+type TelemetryGapError struct {
+	Gap telemetry.CursorGap
+}
+
+func (e *TelemetryGapError) Error() string { return e.Gap.Error() }
+
 func (c NodeClient) Health(ctx context.Context, server ServerRecord, rootKey string) error {
 	var out map[string]bool
 	return c.call(ctx, server, rootKey, http.MethodGet, "/healthz", nil, &out)
@@ -63,6 +75,77 @@ func (c NodeClient) Snapshot(ctx context.Context, server ServerRecord) (model.No
 	var snapshot boundedNodeSnapshot
 	err := c.call(ctx, server, server.RootKey, http.MethodGet, "/api/v1/snapshot", nil, &snapshot)
 	return model.NodeSnapshot(snapshot), err
+}
+
+func (c NodeClient) Info(ctx context.Context, server ServerRecord) (telemetry.Info, error) {
+	var info telemetry.Info
+	err := c.call(ctx, server, server.RootKey, http.MethodGet, "/api/v1/info", nil, &info)
+	return info, err
+}
+
+func (c NodeClient) Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int) (telemetry.Page, error) {
+	endpoint, err := joinURL(server.Endpoint, "/api/v1/telemetry", c.AllowInsecureNodes)
+	if err != nil {
+		return telemetry.Page{}, err
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return telemetry.Page{}, err
+	}
+	query := parsed.Query()
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	if limit > 0 {
+		query.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	parsed.RawQuery = query.Encode()
+	requestCtx, cancel := context.WithTimeout(ctx, c.timeout())
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return telemetry.Page{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+server.RootKey)
+	clients := c.httpClients()
+	client := clients.secure
+	if server.TLSSkipVerify {
+		client = clients.insecure
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return telemetry.Page{}, err
+	}
+	defer resp.Body.Close()
+	data, err := readLimitedNodeBody(resp.Body, c.successLimit())
+	if err != nil {
+		return telemetry.Page{}, err
+	}
+	if resp.StatusCode == http.StatusGone {
+		var gap telemetry.CursorGap
+		if err := json.Unmarshal(data, &gap); err != nil {
+			return telemetry.Page{}, err
+		}
+		return telemetry.Page{}, &TelemetryGapError{Gap: gap}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(data, &body)
+		if body.Error == "" {
+			body.Error = resp.Status
+		}
+		return telemetry.Page{}, fmt.Errorf("node %s: %s", server.Name, body.Error)
+	}
+	if err := validateGenericNodeJSON(data); err != nil {
+		return telemetry.Page{}, err
+	}
+	var page telemetry.Page
+	if err := json.Unmarshal(data, &page); err != nil {
+		return telemetry.Page{}, err
+	}
+	return page, nil
 }
 
 type boundedNodeSnapshot model.NodeSnapshot

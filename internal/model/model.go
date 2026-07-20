@@ -57,16 +57,17 @@ type Token struct {
 }
 
 type Reservation struct {
-	ID        string    `json:"id"`
-	GPU       int       `json:"gpu"`
-	TokenHash string    `json:"token_hash"`
-	Holder    string    `json:"holder"`
-	Purpose   string    `json:"purpose,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	StartsAt  time.Time `json:"starts_at,omitempty"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Active    bool      `json:"active"`
-	Revoked   bool      `json:"revoked,omitempty"`
+	ID                string    `json:"id"`
+	ExternalSessionID string    `json:"external_session_id,omitempty"`
+	GPU               int       `json:"gpu"`
+	TokenHash         string    `json:"token_hash"`
+	Holder            string    `json:"holder"`
+	Purpose           string    `json:"purpose,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	StartsAt          time.Time `json:"starts_at,omitempty"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	Active            bool      `json:"active"`
+	Revoked           bool      `json:"revoked,omitempty"`
 }
 
 func ReservationStartsAt(reservation Reservation) time.Time {
@@ -221,16 +222,17 @@ type TokenView struct {
 }
 
 type ReservationView struct {
-	ID        string    `json:"id"`
-	GroupID   string    `json:"group_id,omitempty"`
-	GPU       int       `json:"gpu"`
-	Holder    string    `json:"holder"`
-	Purpose   string    `json:"purpose,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	StartsAt  time.Time `json:"starts_at,omitempty"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Active    bool      `json:"active"`
-	Revoked   bool      `json:"revoked,omitempty"`
+	ID                string    `json:"id"`
+	GroupID           string    `json:"group_id,omitempty"`
+	ExternalSessionID string    `json:"external_session_id,omitempty"`
+	GPU               int       `json:"gpu"`
+	Holder            string    `json:"holder"`
+	Purpose           string    `json:"purpose,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	StartsAt          time.Time `json:"starts_at,omitempty"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	Active            bool      `json:"active"`
+	Revoked           bool      `json:"revoked,omitempty"`
 }
 
 type AuthorizationView struct {

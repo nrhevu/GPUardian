@@ -4,6 +4,7 @@
 
 !Dockerfile.web
 !go.mod
+!go.sum
 
 !cmd/
 !cmd/rocguard/

@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"rocguard/internal/config"
+	"rocguard/internal/enforce"
 	"rocguard/internal/model"
 	"rocguard/internal/protocol"
 	"rocguard/internal/store"
+	"rocguard/internal/telemetry"
 )
 
 type fakeAMD struct {
@@ -372,6 +374,88 @@ func TestNodeHTTPRequiresBearerRootKey(t *testing.T) {
 	handler.ServeHTTP(good, goodReq)
 	if good.Code != http.StatusOK {
 		t.Fatalf("valid bearer got %d: %s", good.Code, good.Body.String())
+	}
+}
+
+func TestNodeHTTPTelemetryInfoAndPage(t *testing.T) {
+	server := testServer(t)
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	server.Telemetry, err = telemetry.Open(filepath.Join(dir, "node.id"), filepath.Join(dir, "outbox"), "boot-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Telemetry.Close()
+	if _, err := server.Telemetry.Append(telemetry.EventDaemonStarted, map[string]bool{"ok": true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	handler := server.nodeHTTPHandler()
+	for _, endpoint := range []string{"/api/v1/info", "/api/v1/telemetry?limit=1"} {
+		request := httptest.NewRequest(http.MethodGet, endpoint, nil)
+		request.Header.Set("Authorization", "Bearer "+key)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", endpoint, response.Code, response.Body.String())
+		}
+		if endpoint == "/api/v1/info" && (!strings.Contains(response.Body.String(), `"node_id":"node_`) || !strings.Contains(response.Body.String(), `"telemetry_v1"`)) {
+			t.Fatalf("unexpected info response: %s", response.Body.String())
+		}
+		if strings.HasPrefix(endpoint, "/api/v1/telemetry") && !strings.Contains(response.Body.String(), `"daemon.started"`) {
+			t.Fatalf("unexpected telemetry response: %s", response.Body.String())
+		}
+	}
+}
+
+func TestObservedTelemetryJobGroupsGPUsAndDebouncesFinish(t *testing.T) {
+	server := testServer(t)
+	dir := t.TempDir()
+	box, err := telemetry.Open(filepath.Join(dir, "node.id"), filepath.Join(dir, "outbox"), "boot-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+	server.Telemetry = box
+	server.bootID = "boot-test"
+	state := model.State{
+		Tokens:         []model.Token{{ID: "tok_group", Hash: "hash", Mode: model.TokenModeReserved}},
+		Authorizations: []model.Authorization{{ID: "auth_private", TokenHash: "hash", TokenMode: model.TokenModeReserved, Mode: model.ModeDocker, Holder: "alice"}},
+	}
+	info := model.ProcInfo{PID: 42, StartTime: 99, Cmdline: []string{"python", "train.py"}}
+	decisions := []enforce.Decision{
+		{Action: "allow", AuthID: "auth_private", Process: model.GPUProcess{PID: 42, GPU: 0}, Info: info},
+		{Action: "allow", AuthID: "auth_private", Process: model.GPUProcess{PID: 42, GPU: 1}, Info: info},
+	}
+	now := time.Now().UTC()
+	server.trackObservedTelemetryJobs(state, decisions, now)
+	server.trackObservedTelemetryJobs(state, nil, now.Add(time.Second))
+	server.trackObservedTelemetryJobs(state, nil, now.Add(2*time.Second))
+	page, err := box.Page("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started, updated, finished telemetry.JobEvent
+	for _, event := range page.Events {
+		switch event.Type {
+		case telemetry.EventJobStarted:
+			if err := json.Unmarshal(event.Payload, &started); err != nil {
+				t.Fatal(err)
+			}
+		case telemetry.EventJobUpdated:
+			if err := json.Unmarshal(event.Payload, &updated); err != nil {
+				t.Fatal(err)
+			}
+		case telemetry.EventJobFinished:
+			if err := json.Unmarshal(event.Payload, &finished); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if started.ExecutionID == "" || updated.ExecutionID != started.ExecutionID || finished.ExecutionID != started.ExecutionID || len(updated.GPUs) != 2 || finished.FinishedAt == nil {
+		t.Fatalf("unexpected observed lifecycle: started=%+v updated=%+v finished=%+v", started, updated, finished)
 	}
 }
 

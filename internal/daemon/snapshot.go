@@ -103,7 +103,7 @@ func (s *Server) metricsForRead(ctx context.Context) ([]model.GPUMetric, error) 
 	}
 	s.metricsReadMu.Lock()
 	defer s.metricsReadMu.Unlock()
-	if time.Since(s.metricsReadAt) < time.Second {
+	if !s.metricsReadAt.IsZero() {
 		return append([]model.GPUMetric(nil), s.metricsReadRows...), s.metricsReadErr
 	}
 	rows, err := provider.Metrics(ctx)

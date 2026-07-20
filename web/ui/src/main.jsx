@@ -39,6 +39,12 @@ function App() {
   const [successKey, setSuccessKey] = useState("");
   const [error, setError] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [historySummary, setHistorySummary] = useState(null);
+  const [historySessions, setHistorySessions] = useState([]);
+  const [historyTarget, setHistoryTarget] = useState(null);
+  const [historyJobs, setHistoryJobs] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyFilters, setHistoryFilters] = useState({ owner: "", serverId: "", from: "", to: "" });
   const settingsRef = useRef(null);
 
   useEffect(() => {
@@ -117,6 +123,12 @@ function App() {
       setView("gpu");
     }
   }, [auth.authenticated, auth.role, view]);
+
+  useEffect(() => {
+    if (auth.authenticated && view === "history") {
+      void loadHistory();
+    }
+  }, [auth.authenticated, view, historyFilters]);
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -214,6 +226,10 @@ function App() {
       setDeleteUserTarget(null);
       setReservationSuccess(null);
       setSuccessKey("");
+      setHistorySummary(null);
+      setHistorySessions([]);
+      setHistoryTarget(null);
+      setHistoryJobs([]);
     }
   }
 
@@ -231,6 +247,48 @@ function App() {
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const query = historyQuery(historyFilters);
+      const [summary, response] = await Promise.all([
+        api(`/api/history/summary${query}`),
+        api(`/api/history/sessions${query}`),
+      ]);
+      setHistorySummary(summary);
+      setHistorySessions(response.sessions || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function openHistorySession(id) {
+    try {
+      const [session, response] = await Promise.all([
+        api(`/api/history/sessions/${id}`),
+        api(`/api/history/sessions/${id}/jobs`),
+      ]);
+      setHistoryTarget(session);
+      setHistoryJobs(response.jobs || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function saveHistoryResult(values) {
+    if (!historyTarget) {
+      return;
+    }
+    const result = await api(`/api/history/sessions/${historyTarget.id}/result`, {
+      method: "PUT",
+      body: JSON.stringify(values),
+    });
+    setHistoryTarget((current) => current ? { ...current, result } : current);
+    await loadHistory();
   }
 
   async function refresh({ signal, isCurrent } = {}) {
@@ -576,9 +634,9 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Nodes</p>
-            <h1>{current?.server?.name || "No server selected"}</h1>
-            {!current?.server && <p className="muted">Add a RocGuard node to begin.</p>}
+            <p className="eyebrow">{view === "history" ? "History" : "Nodes"}</p>
+            <h1>{view === "history" ? "Reservation dashboard" : current?.server?.name || "No server selected"}</h1>
+            {view !== "history" && !current?.server && <p className="muted">Add a RocGuard node to begin.</p>}
           </div>
           <div className="topbar-actions">
             <button className={view === "gpu" ? "tab active" : "tab"} onClick={() => setView("gpu")}>
@@ -586,6 +644,9 @@ function App() {
             </button>
             <button className={view === "keys" ? "tab active" : "tab"} onClick={() => setView("keys")}>
               Key
+            </button>
+            <button className={view === "history" ? "tab active" : "tab"} onClick={() => setView("history")}>
+              Dashboard
             </button>
             {isAdmin && (
               <button className={view === "users" ? "tab active" : "tab"} onClick={() => setView("users")}>
@@ -661,6 +722,16 @@ function App() {
             onShow={showKey}
             onRevoke={(token) => setRevokeTarget({ ...token, kind: "key" })}
           />
+        ) : view === "history" ? (
+          <HistoryDashboard
+            summary={historySummary}
+            sessions={historySessions}
+            servers={servers}
+            filters={historyFilters}
+            loading={historyLoading}
+            onFilters={setHistoryFilters}
+            onOpen={openHistorySession}
+          />
         ) : (
           <UsersView
             users={users}
@@ -734,8 +805,217 @@ function App() {
         />
       )}
       {successKey && <SuccessKey token={successKey} onClose={() => setSuccessKey("")} />}
+      {historyTarget && (
+        <HistorySessionModal
+          session={historyTarget}
+          jobs={historyJobs}
+          currentUser={auth.user}
+          onClose={() => {
+            setHistoryTarget(null);
+            setHistoryJobs([]);
+          }}
+          onSave={saveHistoryResult}
+        />
+      )}
     </div>
   );
+}
+
+function HistoryDashboard({ summary, sessions, servers, filters, loading, onFilters, onOpen }) {
+  const cards = [
+    ["Reservations", summary?.sessions ?? 0],
+    ["Reserved GPU hours", fixedNumber(summary?.reserved_gpu_hours, 1)],
+    ["Busy GPU hours", fixedNumber(summary?.busy_gpu_hours, 1)],
+    ["Busy ratio", percentLabel(summary?.busy_ratio)],
+    ["Average utilization", percentLabel((summary?.average_utilization_percent ?? 0) / 100)],
+    ["Telemetry coverage", percentLabel(summary?.telemetry_coverage)],
+    ["Jobs", summary?.jobs ?? 0],
+  ];
+  return (
+    <section className="history-page">
+      <div className="history-filters">
+        <label>Node
+          <select value={filters.serverId} onChange={(event) => onFilters({ ...filters, serverId: event.target.value })}>
+            <option value="">All nodes</option>
+            {servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
+          </select>
+        </label>
+        <label>Owner<input value={filters.owner} onChange={(event) => onFilters({ ...filters, owner: event.target.value })} placeholder="All users" /></label>
+        <label>From<input type="date" value={filters.from} onChange={(event) => onFilters({ ...filters, from: event.target.value })} /></label>
+        <label>To<input type="date" value={filters.to} onChange={(event) => onFilters({ ...filters, to: event.target.value })} /></label>
+        {(filters.owner || filters.serverId || filters.from || filters.to) && (
+          <button className="small-button" onClick={() => onFilters({ owner: "", serverId: "", from: "", to: "" })}>Clear</button>
+        )}
+      </div>
+      <div className="history-summary-grid">
+        {cards.map(([label, value]) => (
+          <article className="history-summary-card" key={label}>
+            <span>{label}</span><strong>{value}</strong>
+          </article>
+        ))}
+      </div>
+      <p className="muted history-metric-note">Utilization and VRAM describe the whole GPU during the reservation; bypass workloads may contribute to these values.</p>
+      <section className="history-list-panel">
+        <div className="section-heading">
+          <div><h2>Reservation sessions</h2><p className="muted">GPU utilization, observed jobs and user results are retained after the reservation ends.</p></div>
+          {loading && <span className="muted">Refreshing…</span>}
+        </div>
+        <div className="history-table">
+          <div className="history-table-head"><span>Session</span><span>Owner</span><span>Window</span><span>GPU</span><span>Utilization</span><span>Jobs</span><span>Status</span></div>
+          {sessions.map((session) => {
+            const observed = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.observed_ms || 0), 0);
+            const weighted = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.average_utilization_percent || 0) * (gpu.observed_ms || 0), 0);
+            const utilization = observed > 0 ? weighted / observed : null;
+            return (
+              <button className="history-table-row" key={session.id} onClick={() => onOpen(session.id)}>
+                <span><strong>{session.purpose || "Reservation"}</strong><small>{session.server_name}</small></span>
+                <span>{session.owner}</span>
+                <span>{compactDateTime(session.starts_at)}<small>to {compactDateTime(session.expires_at)}</small></span>
+                <span>{session.gpus?.join(", ") || "—"}</span>
+                <span>{utilization == null ? "—" : `${utilization.toFixed(1)}%`}</span>
+                <span>{session.job_count || 0}</span>
+                <span><em className={`history-status ${session.status}`}>{session.status}</em>{session.history_quality === "partial" && <small>partial telemetry</small>}</span>
+              </button>
+            );
+          })}
+          {!loading && sessions.length === 0 && <div className="empty">No reservation history matches these filters.</div>}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
+  const canEdit = session.result_editable && sameText(session.owner, currentUser);
+  const timeline = (session.timeline || []).slice(-180);
+  return (
+    <Modal title={session.purpose || "Reservation session"} onClose={onClose} className="history-modal">
+      <div className="history-detail">
+        <div className="history-detail-meta">
+          <KeyDetail label="Owner" value={session.owner} />
+          <KeyDetail label="Node" value={session.server_name} />
+          <KeyDetail label="Window" value={`${dateTimeLabel(session.starts_at)} – ${dateTimeLabel(session.expires_at)}`} />
+          <KeyDetail label="GPUs" value={session.gpus?.join(", ") || "—"} />
+          <KeyDetail label="Status" value={session.status} />
+          <KeyDetail label="Quality" value={session.history_quality} />
+        </div>
+        <div className="history-gpu-grid">
+          {(session.gpu_summaries || []).map((gpu) => (
+            <article key={gpu.gpu} className="history-gpu-card">
+              <strong>GPU {gpu.gpu}</strong>
+              <span>Busy <b>{durationLabel(gpu.busy_ms)}</b></span>
+              <span>Average <b>{gpu.average_utilization_percent == null ? "—" : `${gpu.average_utilization_percent.toFixed(1)}%`}</b></span>
+              <span>Coverage <b>{percentLabel(gpu.coverage)}</b></span>
+              <span>Average VRAM <b>{gpu.average_memory_used_bytes == null ? "—" : formatBytes(gpu.average_memory_used_bytes)}</b></span>
+              <span>Peak VRAM <b>{gpu.peak_memory_used_bytes == null ? "—" : formatBytes(gpu.peak_memory_used_bytes)}</b></span>
+            </article>
+          ))}
+        </div>
+        {timeline.length > 0 && (
+          <section className="history-chart-section">
+            <h3>Recent minute utilization</h3>
+            <div className="history-chart" title="Latest 180 GPU-minute buckets">
+              {timeline.map((point, index) => (
+                <span key={`${point.gpu}-${point.minute}-${index}`} style={{ height: `${Math.max(2, point.average_utilization_percent || 0)}%` }} title={`GPU ${point.gpu} · ${compactDateTime(point.minute)} · ${(point.average_utilization_percent || 0).toFixed(1)}%`} />
+              ))}
+            </div>
+          </section>
+        )}
+        {(session.authorization_scopes || []).length > 0 && (
+          <section className="history-jobs">
+            <div className="section-heading compact"><div><h3>Authorization scopes</h3><p className="muted">Permissions active during this reservation.</p></div></div>
+            {session.authorization_scopes.map((scope, index) => (
+              <article className="history-job" key={`${scope.created_at}-${index}`}>
+                <div><strong>{scope.mode}</strong><span>{scope.holder}</span></div>
+                <code>{scope.command?.length ? scope.command.join(" ") : scope.selector || "—"}</code>
+                <small>{compactDateTime(scope.created_at)} → {scope.ended_at ? compactDateTime(scope.ended_at) : scope.expires_at ? compactDateTime(scope.expires_at) : "active"}{scope.end_reason ? ` · ${scope.end_reason}` : ""}</small>
+              </article>
+            ))}
+          </section>
+        )}
+        <section className="history-jobs">
+          <div className="section-heading compact"><div><h3>Observed jobs</h3><p className="muted">Full command lines are visible to every signed-in user and may contain sensitive arguments.</p></div></div>
+          {jobs.map((job) => (
+            <article className="history-job" key={job.id}>
+              <div><strong>{job.source === "rocguard_run" ? "rocguard run" : `${job.mode} process`}</strong><span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span></div>
+              <code>{job.command?.join(" ") || "—"}</code>
+              <small>{job.started_at ? compactDateTime(job.started_at) : "unknown start"}{job.start_precision ? ` (${job.start_precision})` : ""} → {job.finished_at ? compactDateTime(job.finished_at) : "running"}{job.finish_precision ? ` (${job.finish_precision})` : ""}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}{job.reason ? ` · ${job.reason}` : ""}</small>
+            </article>
+          ))}
+          {jobs.length === 0 && <div className="empty">No authorized jobs were observed in this reservation.</div>}
+        </section>
+        <HistoryResultForm result={session.result || { version: 0 }} canEdit={canEdit} onSave={onSave} />
+      </div>
+    </Modal>
+  );
+}
+
+function HistoryResultForm({ result, canEdit, onSave }) {
+  const [outcome, setOutcome] = useState(result.outcome || "");
+  const [note, setNote] = useState(result.note || "");
+  const [artifactText, setArtifactText] = useState((result.artifacts || []).map((item) => `${item.label} | ${item.url}`).join("\n"));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event) {
+    event.preventDefault();
+    if (!canEdit || pending) return;
+    const artifacts = artifactText.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+      const [label, ...url] = line.split("|");
+      return { label: label.trim(), url: url.join("|").trim() };
+    });
+    setPending(true);
+    setError("");
+    try {
+      await onSave({ outcome: outcome || null, note, artifacts, version: result.version || 0 });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <form className="history-result" onSubmit={submit}>
+      <div><h3>Session result</h3><p className="muted">Visible to every signed-in user. Only the reservation owner can edit it.</p></div>
+      {error && <div className="modal-error">{error}</div>}
+      <label>Outcome<select disabled={!canEdit} value={outcome} onChange={(event) => setOutcome(event.target.value)}><option value="">Not set</option><option value="success">Success</option><option value="partial">Partial</option><option value="failed">Failed</option><option value="aborted">Aborted</option></select></label>
+      <label>Note<textarea disabled={!canEdit} value={note} maxLength={16384} onChange={(event) => setNote(event.target.value)} placeholder="Summary, findings, or follow-up…" /></label>
+      <label>Artifacts<textarea disabled={!canEdit} value={artifactText} onChange={(event) => setArtifactText(event.target.value)} placeholder="Model checkpoint | https://…" /></label>
+      {(result.artifacts || []).length > 0 && <div className="history-artifacts">{result.artifacts.map((artifact, index) => <a key={`${artifact.url}-${index}`} href={artifact.url} target="_blank" rel="noreferrer">{artifact.label || artifact.url}</a>)}</div>}
+      {canEdit && <button className="primary-button" disabled={pending}>{pending ? "Saving…" : "Save result"}</button>}
+    </form>
+  );
+}
+
+function historyQuery(filters) {
+  const params = new URLSearchParams();
+  if (filters.owner.trim()) params.set("owner", filters.owner.trim());
+  if (filters.serverId) params.set("server_id", filters.serverId);
+  if (filters.from) params.set("from", new Date(`${filters.from}T00:00:00`).toISOString());
+  if (filters.to) params.set("to", new Date(`${filters.to}T23:59:59`).toISOString());
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+function percentLabel(value) {
+  return Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : "—";
+}
+
+function fixedNumber(value, digits) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "0.0";
+}
+
+function durationLabel(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(milliseconds || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function compactDateTime(value) {
+  return value ? new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 }
 
 function LoadingScreen() {

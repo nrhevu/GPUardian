@@ -281,6 +281,31 @@ func TestScheduledReservationRejectsOverlap(t *testing.T) {
 	}
 }
 
+func TestScheduledReservationExternalSessionIDIsIdempotent(t *testing.T) {
+	st := testStore(t)
+	key, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	start := now.Add(time.Hour)
+	end := start.Add(time.Hour)
+	secret, token, reservations, err := st.RegisterScheduledReservationsWithSession(key, "alice", "training", "sess_web", []int{0, 1}, start, end, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrySecret, retryToken, retryReservations, err := st.RegisterScheduledReservationsWithSession(key, "alice", "training", "sess_web", []int{1, 0}, start, end, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrySecret != secret || retryToken.ID != token.ID || len(retryReservations) != len(reservations) {
+		t.Fatalf("retry created a different reservation: token=%+v reservations=%+v", retryToken, retryReservations)
+	}
+	if _, _, _, err := st.RegisterScheduledReservationsWithSession(key, "alice", "different", "sess_web", []int{0, 1}, start, end, now); err == nil {
+		t.Fatal("external session id accepted a different reservation")
+	}
+}
+
 func TestReservationActiveAtHonorsStartWindow(t *testing.T) {
 	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 	reservation := model.Reservation{
