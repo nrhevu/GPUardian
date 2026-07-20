@@ -1,0 +1,47 @@
+name: rocguard-web
+
+services:
+  gateway:
+    image: rocguard-web:local
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    env_file:
+      - /etc/rocguard/web.env
+    environment:
+      ROCGUARD_WEB_ADDR: 0.0.0.0:8443
+      ROCGUARD_WEB_TLS_CERT: /run/rocguard-tls/web.crt
+      ROCGUARD_WEB_TLS_KEY: /run/rocguard-tls/web.key
+      ROCGUARD_WEB_ALLOW_INSECURE: "0"
+      ROCGUARD_WEB_ALLOW_INSECURE_NODES: "0"
+      ROCGUARD_WEB_TRUST_PROXY: "0"
+      ROCGUARD_WEB_USERS: /var/lib/rocguard-web/users.json
+      ROCGUARD_WEB_REGISTRY: /var/lib/rocguard-web/servers.json
+      ROCGUARD_WEB_SESSION_KEY: /var/lib/rocguard-web/session.key
+      ROCGUARD_WEB_UI_DIR: /usr/local/share/rocguard/ui
+    ports:
+      - "8443:8443"
+    volumes:
+      - /var/lib/rocguard-web:/var/lib/rocguard-web
+      - /etc/rocguard/web.crt:/run/rocguard-tls/web.crt:ro
+      - /etc/rocguard/web.key:/run/rocguard-tls/web.key:ro
+      # Use the gateway host's trust bundle so private node CAs installed on
+      # that host are also trusted inside the container.
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

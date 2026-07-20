@@ -1,7 +1,24 @@
-# The hold-GPU image needs only this one runtime script. Keep repository
-# metadata, local state, and untracked secrets out of local or remote builders.
+# Default-deny the build context so repository metadata, local state, binaries,
+# and secrets cannot be sent to the Docker daemon.
 *
-!Dockerfile.hold-gpu
-!scripts/
-scripts/*
-!scripts/hold_gpu.py
+
+!Dockerfile.web
+!go.mod
+
+!cmd/
+!cmd/rocguard/
+!cmd/rocguard/*.go
+
+!internal/
+!internal/**/
+!internal/**/*.go
+
+!web/
+!web/ui/
+!web/ui/package.json
+!web/ui/package-lock.json
+!web/ui/index.html
+!web/ui/src/
+!web/ui/src/**
+!web/ui/public/
+!web/ui/public/**

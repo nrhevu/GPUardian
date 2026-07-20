@@ -1,4 +1,5 @@
 /rocguard
+/.dev/
 /coverage.out
 *.test
 __pycache__/
