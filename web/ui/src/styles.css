@@ -179,8 +179,7 @@ button {
   width: 30px;
   height: 30px;
   place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 6px;
+  border: 0;
   padding: 0;
   background: transparent;
   color: #cbd5e1;
@@ -188,14 +187,17 @@ button {
 
 .settings-button:hover,
 .settings-button[aria-expanded="true"] {
-  border-color: rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.07);
   color: #fff;
 }
 
+.settings-button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.72);
+  outline-offset: 2px;
+}
+
 .settings-icon {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
 }
 
 .settings-popover {
