@@ -1,6 +1,9 @@
 package history
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	OutcomeSuccess = "success"
@@ -115,4 +118,18 @@ type SessionFilter struct {
 	Limit    int
 	BeforeMS int64
 	BeforeID string
+}
+
+type SearchExpression struct {
+	Groups []SearchGroup `json:"groups"`
+}
+
+type SearchGroup struct {
+	Rules []SearchRule `json:"rules"`
+}
+
+type SearchRule struct {
+	Field    string          `json:"field"`
+	Operator string          `json:"operator"`
+	Value    json.RawMessage `json:"value,omitempty"`
 }

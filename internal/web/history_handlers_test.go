@@ -87,4 +87,22 @@ func TestHistoryAPIReadForUsersAndResultOwnerOnly(t *testing.T) {
 	if ownerWrite.Code != http.StatusOK || !strings.Contains(ownerWrite.Body.String(), `"version":1`) {
 		t.Fatalf("owner write = %d %s", ownerWrite.Code, ownerWrite.Body.String())
 	}
+
+	search := httptest.NewRecorder()
+	searchRequest := httptest.NewRequest(http.MethodPost, "/api/history/search", strings.NewReader(`{"filter":{"groups":[{"rules":[{"field":"purpose","operator":"contains","value":"train"}]}]},"limit":50}`))
+	searchRequest.Header.Set("Content-Type", "application/json")
+	searchRequest.AddCookie(testSessionCookie(t, server, "bob", RoleUser))
+	handler.ServeHTTP(search, searchRequest)
+	if search.Code != http.StatusOK || !strings.Contains(search.Body.String(), `"sessions":1`) || !strings.Contains(search.Body.String(), `"purpose":"training"`) {
+		t.Fatalf("history search = %d %s", search.Code, search.Body.String())
+	}
+
+	invalidSearch := httptest.NewRecorder()
+	invalidRequest := httptest.NewRequest(http.MethodPost, "/api/history/search", strings.NewReader(`{"filter":{"groups":[{"rules":[{"field":"private_sql","operator":"equals","value":"x"}]}]}}`))
+	invalidRequest.Header.Set("Content-Type", "application/json")
+	invalidRequest.AddCookie(testSessionCookie(t, server, "bob", RoleUser))
+	handler.ServeHTTP(invalidSearch, invalidRequest)
+	if invalidSearch.Code != http.StatusBadRequest {
+		t.Fatalf("invalid history search = %d %s", invalidSearch.Code, invalidSearch.Body.String())
+	}
 }

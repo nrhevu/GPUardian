@@ -13,6 +13,9 @@ const minCalendarHours = 10;
 const scheduleLaneGap = 2;
 const hourMs = 60 * 60 * 1000;
 const dayMs = 24 * hourMs;
+const historyPageSize = 50;
+
+let historyFilterID = 0;
 
 function App() {
   const [auth, setAuth] = useState({ checking: true, authenticated: false, user: "", role: "" });
@@ -44,8 +47,11 @@ function App() {
   const [historyTarget, setHistoryTarget] = useState(null);
   const [historyJobs, setHistoryJobs] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyFilters, setHistoryFilters] = useState({ owner: "", serverId: "", from: "", to: "" });
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [historyNextCursor, setHistoryNextCursor] = useState("");
+  const [historyFilters, setHistoryFilters] = useState({ groups: [] });
   const settingsRef = useRef(null);
+  const historyRequestRef = useRef(0);
 
   useEffect(() => {
     checkSession();
@@ -125,9 +131,21 @@ function App() {
   }, [auth.authenticated, auth.role, view]);
 
   useEffect(() => {
-    if (auth.authenticated && view === "history") {
-      void loadHistory();
+    if (!auth.authenticated || view !== "history") {
+      return undefined;
     }
+    historyRequestRef.current += 1;
+    if (historyFilterErrors(historyFilters).length > 0) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void loadHistory({ filters: historyFilters, signal: controller.signal });
+    }, 400);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [auth.authenticated, view, historyFilters]);
 
   useEffect(() => {
@@ -230,6 +248,9 @@ function App() {
       setHistorySessions([]);
       setHistoryTarget(null);
       setHistoryJobs([]);
+      setHistoryNextCursor("");
+      setHistoryFilters({ groups: [] });
+      historyRequestRef.current += 1;
     }
   }
 
@@ -249,20 +270,41 @@ function App() {
     }
   }
 
-  async function loadHistory() {
-    setHistoryLoading(true);
+  async function loadHistory({ filters = historyFilters, cursor = "", append = false, signal } = {}) {
+    if (historyFilterErrors(filters).length > 0) {
+      return;
+    }
+    const requestID = ++historyRequestRef.current;
+    if (append) {
+      setHistoryLoadingMore(true);
+    } else {
+      setHistoryLoading(true);
+    }
     try {
-      const query = historyQuery(historyFilters);
-      const [summary, response] = await Promise.all([
-        api(`/api/history/summary${query}`),
-        api(`/api/history/sessions${query}`),
-      ]);
-      setHistorySummary(summary);
-      setHistorySessions(response.sessions || []);
+      const response = await api("/api/history/search", {
+        method: "POST",
+        signal,
+        body: JSON.stringify({
+          filter: historySearchExpression(filters),
+          limit: historyPageSize,
+          cursor,
+        }),
+      });
+      if (signal?.aborted || requestID !== historyRequestRef.current) {
+        return;
+      }
+      setHistorySummary(response.summary || null);
+      setHistorySessions((current) => append ? [...current, ...(response.sessions || [])] : (response.sessions || []));
+      setHistoryNextCursor(response.next_cursor || "");
     } catch (err) {
-      setError(err.message);
+      if (err.name !== "AbortError" && requestID === historyRequestRef.current) {
+        setError(err.message);
+      }
     } finally {
-      setHistoryLoading(false);
+      if (requestID === historyRequestRef.current) {
+        setHistoryLoading(false);
+        setHistoryLoadingMore(false);
+      }
     }
   }
 
@@ -729,7 +771,10 @@ function App() {
             servers={servers}
             filters={historyFilters}
             loading={historyLoading}
+            loadingMore={historyLoadingMore}
+            nextCursor={historyNextCursor}
             onFilters={setHistoryFilters}
+            onLoadMore={() => loadHistory({ cursor: historyNextCursor, append: true })}
             onOpen={openHistorySession}
           />
         ) : (
@@ -821,7 +866,12 @@ function App() {
   );
 }
 
-function HistoryDashboard({ summary, sessions, servers, filters, loading, onFilters, onOpen }) {
+function HistoryDashboard({ summary, sessions, servers, filters, loading, loadingMore, nextCursor, onFilters, onLoadMore, onOpen }) {
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterRef = useRef(null);
+  const errors = historyFilterErrors(filters);
+  const errorByRule = new Map(errors.map((item) => [item.id, item.message]));
+  const ruleCount = historyRuleCount(filters);
   const cards = [
     ["Reservations", summary?.sessions ?? 0],
     ["Reserved GPU hours", fixedNumber(summary?.reserved_gpu_hours, 1)],
@@ -831,22 +881,55 @@ function HistoryDashboard({ summary, sessions, servers, filters, loading, onFilt
     ["Telemetry coverage", percentLabel(summary?.telemetry_coverage)],
     ["Jobs", summary?.jobs ?? 0],
   ];
+
+  useEffect(() => {
+    if (!filterOpen) return undefined;
+    function close(event) {
+      if (!filterRef.current?.contains(event.target)) setFilterOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key === "Escape") setFilterOpen(false);
+    }
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [filterOpen]);
+
+  function updateRule(groupID, ruleID, nextRule) {
+    onFilters({
+      groups: filters.groups.map((group) => group.id === groupID
+        ? { ...group, rules: group.rules.map((rule) => rule.id === ruleID ? nextRule : rule) }
+        : group),
+    });
+  }
+
+  function removeRule(groupID, ruleID) {
+    onFilters({
+      groups: filters.groups
+        .map((group) => group.id === groupID ? { ...group, rules: group.rules.filter((rule) => rule.id !== ruleID) } : group)
+        .filter((group) => group.rules.length > 0),
+    });
+  }
+
+  function addRule(groupID) {
+    if (ruleCount >= 32) return;
+    onFilters({
+      groups: filters.groups.map((group) => group.id === groupID && group.rules.length < 8
+        ? { ...group, rules: [...group.rules, newHistoryRule()] }
+        : group),
+    });
+  }
+
+  function addGroup() {
+    if (filters.groups.length >= 8 || ruleCount >= 32) return;
+    onFilters({ groups: [...filters.groups, newHistoryGroup()] });
+  }
+
   return (
     <section className="history-page">
-      <div className="history-filters">
-        <label>Node
-          <select value={filters.serverId} onChange={(event) => onFilters({ ...filters, serverId: event.target.value })}>
-            <option value="">All nodes</option>
-            {servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
-          </select>
-        </label>
-        <label>Owner<input value={filters.owner} onChange={(event) => onFilters({ ...filters, owner: event.target.value })} placeholder="All users" /></label>
-        <label>From<input type="date" value={filters.from} onChange={(event) => onFilters({ ...filters, from: event.target.value })} /></label>
-        <label>To<input type="date" value={filters.to} onChange={(event) => onFilters({ ...filters, to: event.target.value })} /></label>
-        {(filters.owner || filters.serverId || filters.from || filters.to) && (
-          <button className="small-button" onClick={() => onFilters({ owner: "", serverId: "", from: "", to: "" })}>Clear</button>
-        )}
-      </div>
       <div className="history-summary-grid">
         {cards.map(([label, value]) => (
           <article className="history-summary-card" key={label}>
@@ -854,35 +937,143 @@ function HistoryDashboard({ summary, sessions, servers, filters, loading, onFilt
           </article>
         ))}
       </div>
-      <p className="muted history-metric-note">Utilization and VRAM describe the whole GPU during the reservation; bypass workloads may contribute to these values.</p>
+      <div className="history-filter-controls">
+        <p className="muted history-metric-note">Utilization and VRAM describe the whole GPU during the reservation; bypass workloads may contribute to these values.</p>
+        {loading && <span className="muted history-filter-refreshing">Refreshing…</span>}
+        <div className="history-filter-menu" ref={filterRef}>
+          <button
+            type="button"
+            className={`small-button history-filter-button ${filterOpen ? "active" : ""}`}
+            aria-expanded={filterOpen}
+            onClick={() => setFilterOpen((current) => !current)}
+          >
+            Filters
+          </button>
+          {filterOpen && (
+            <div className="history-filter-popover">
+              <div className="history-filter-popover-head">
+                <div><strong>Session filters</strong><small>Groups use AND; rules inside a group use OR.</small></div>
+                {ruleCount > 0 && <button type="button" className="plain-button" onClick={() => onFilters({ groups: [] })}>Clear all</button>}
+              </div>
+              <div className="history-filter-groups">
+                {filters.groups.map((group, groupIndex) => (
+                  <div className="history-filter-group" key={group.id}>
+                    {groupIndex > 0 && <span className="history-filter-join">AND</span>}
+                    <div className="history-filter-group-head"><strong>Group {groupIndex + 1}</strong><span>Match any rule</span></div>
+                    {group.rules.map((rule, ruleIndex) => (
+                      <React.Fragment key={rule.id}>
+                        {ruleIndex > 0 && <span className="history-filter-or">OR</span>}
+                        <HistoryRuleEditor
+                          rule={rule}
+                          servers={servers}
+                          error={errorByRule.get(rule.id)}
+                          onChange={(nextRule) => updateRule(group.id, rule.id, nextRule)}
+                          onRemove={() => removeRule(group.id, rule.id)}
+                        />
+                      </React.Fragment>
+                    ))}
+                    <button type="button" className="history-filter-add" disabled={group.rules.length >= 8 || ruleCount >= 32} onClick={() => addRule(group.id)}>+ Add OR rule</button>
+                  </div>
+                ))}
+                {filters.groups.length === 0 && <div className="history-filter-empty">No filters. All reservation sessions are shown.</div>}
+              </div>
+              <button type="button" className="small-button" disabled={filters.groups.length >= 8 || ruleCount >= 32} onClick={addGroup}>+ Add AND group</button>
+            </div>
+          )}
+        </div>
+      </div>
       <section className="history-list-panel">
         <div className="section-heading">
           <div><h2>Reservation sessions</h2><p className="muted">GPU utilization, observed jobs and user results are retained after the reservation ends.</p></div>
-          {loading && <span className="muted">Refreshing…</span>}
         </div>
-        <div className="history-table">
-          <div className="history-table-head"><span>Session</span><span>Owner</span><span>Window</span><span>GPU</span><span>Utilization</span><span>Jobs</span><span>Status</span></div>
-          {sessions.map((session) => {
-            const observed = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.observed_ms || 0), 0);
-            const weighted = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.average_utilization_percent || 0) * (gpu.observed_ms || 0), 0);
-            const utilization = observed > 0 ? weighted / observed : null;
-            return (
-              <button className="history-table-row" key={session.id} onClick={() => onOpen(session.id)}>
-                <span><strong>{session.purpose || "Reservation"}</strong><small>{session.server_name}</small></span>
-                <span>{session.owner}</span>
-                <span>{compactDateTime(session.starts_at)}<small>to {compactDateTime(session.expires_at)}</small></span>
-                <span>{session.gpus?.join(", ") || "—"}</span>
-                <span>{utilization == null ? "—" : `${utilization.toFixed(1)}%`}</span>
-                <span>{session.job_count || 0}</span>
-                <span><em className={`history-status ${session.status}`}>{session.status}</em>{session.history_quality === "partial" && <small>partial telemetry</small>}</span>
-              </button>
-            );
-          })}
-          {!loading && sessions.length === 0 && <div className="empty">No reservation history matches these filters.</div>}
+        <div className="history-table-scroll">
+          <div className="history-table">
+            <div className="history-table-head"><span>Session</span><span>Owner</span><span>Window</span><span>GPU</span><span>Utilization</span><span>Jobs</span><span>Status</span></div>
+            {sessions.map((session) => {
+              const observed = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.observed_ms || 0), 0);
+              const weighted = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.average_utilization_percent || 0) * (gpu.observed_ms || 0), 0);
+              const utilization = observed > 0 ? weighted / observed : null;
+              return (
+                <button className="history-table-row" key={session.id} onClick={() => onOpen(session.id)}>
+                  <span><strong>{session.purpose || "Reservation"}</strong><small>{session.server_name}</small></span>
+                  <span>{session.owner}</span>
+                  <span>{compactDateTime(session.starts_at)}<small>to {compactDateTime(session.expires_at)}</small></span>
+                  <span>{session.gpus?.join(", ") || "—"}</span>
+                  <span>{utilization == null ? "—" : `${utilization.toFixed(1)}%`}</span>
+                  <span>{session.job_count || 0}</span>
+                  <span><em className={`history-status ${session.status}`}>{session.status}</em>{session.history_quality === "partial" && <small>partial telemetry</small>}</span>
+                </button>
+              );
+            })}
+            {!loading && sessions.length === 0 && <div className="empty">No reservation history matches these filters.</div>}
+            {nextCursor && <button type="button" className="history-load-more" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? "Loading…" : "Load more"}</button>}
+          </div>
         </div>
       </section>
     </section>
   );
+}
+
+function HistoryRuleEditor({ rule, servers, error, onChange, onRemove }) {
+  const field = historyFilterField(rule.field, servers);
+  const operators = historyOperatorsFor(field);
+  function changeField(value) {
+    const nextField = historyFilterField(value, servers);
+    const operator = historyOperatorsFor(nextField)[0].value;
+    onChange({ ...rule, field: value, operator, value: historyInitialRuleValue(nextField, operator) });
+  }
+  function changeOperator(value) {
+    onChange({ ...rule, operator: value, value: historyInitialRuleValue(field, value) });
+  }
+  return (
+    <div className={`history-filter-rule ${error ? "invalid" : ""}`}>
+      <div className="history-filter-rule-fields">
+        <select aria-label="Filter field" value={rule.field} onChange={(event) => changeField(event.target.value)}>
+          {historyFilterFields(servers).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select>
+        <select aria-label="Filter operator" value={rule.operator} onChange={(event) => changeOperator(event.target.value)}>
+          {operators.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select>
+        <HistoryRuleValue field={field} rule={rule} onChange={(value) => onChange({ ...rule, value })} />
+        <button type="button" className="history-filter-remove" aria-label="Remove filter rule" onClick={onRemove}>×</button>
+      </div>
+      {error && <small>{error}</small>}
+    </div>
+  );
+}
+
+function HistoryRuleValue({ field, rule, onChange }) {
+  if (historyUnaryOperators.has(rule.operator)) return <span className="history-filter-no-value">No value</span>;
+  const range = rule.operator === "between" || rule.operator === "overlaps";
+  if (range) {
+    const values = Array.isArray(rule.value) ? rule.value : ["", ""];
+    const type = field.type === "time" || field.type === "window" ? "datetime-local" : "number";
+    return (
+      <span className="history-filter-range">
+        <input type={type} step="any" value={values[0] ?? ""} onChange={(event) => onChange([event.target.value, values[1] ?? ""])} />
+        <i>to</i>
+        <input type={type} step="any" value={values[1] ?? ""} onChange={(event) => onChange([values[0] ?? "", event.target.value])} />
+      </span>
+    );
+  }
+  if (field.options && (rule.operator === "in" || rule.operator === "not_in")) {
+    const values = Array.isArray(rule.value) ? rule.value : [];
+    return (
+      <select multiple aria-label="Filter values" value={values} onChange={(event) => onChange(Array.from(event.target.selectedOptions, (option) => option.value))}>
+        {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    );
+  }
+  if (field.options) {
+    return (
+      <select aria-label="Filter value" value={rule.value ?? ""} onChange={(event) => onChange(event.target.value)}>
+        <option value="">Select…</option>
+        {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    );
+  }
+  const type = field.type === "number" ? "number" : field.type === "time" ? "datetime-local" : "text";
+  return <input type={type} step="any" value={rule.value ?? ""} placeholder={field.placeholder || "Value"} onChange={(event) => onChange(event.target.value)} />;
 }
 
 function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
@@ -986,14 +1177,152 @@ function HistoryResultForm({ result, canEdit, onSave }) {
   );
 }
 
-function historyQuery(filters) {
-  const params = new URLSearchParams();
-  if (filters.owner.trim()) params.set("owner", filters.owner.trim());
-  if (filters.serverId) params.set("server_id", filters.serverId);
-  if (filters.from) params.set("from", new Date(`${filters.from}T00:00:00`).toISOString());
-  if (filters.to) params.set("to", new Date(`${filters.to}T23:59:59`).toISOString());
-  const query = params.toString();
-  return query ? `?${query}` : "";
+const historyUnaryOperators = new Set(["is_empty", "is_not_empty"]);
+
+const historyOperatorSets = {
+  text: [
+    ["contains", "contains"], ["not_contains", "does not contain"], ["equals", "is"], ["not_equals", "is not"],
+    ["is_empty", "is empty"], ["is_not_empty", "is not empty"],
+  ],
+  enum: [
+    ["equals", "is"], ["not_equals", "is not"], ["in", "is any of"], ["not_in", "is none of"],
+    ["is_empty", "is empty"], ["is_not_empty", "is not empty"],
+  ],
+  number: [
+    ["equals", "="], ["not_equals", "≠"], ["lt", "<"], ["lte", "≤"], ["gt", ">"], ["gte", "≥"],
+    ["between", "between"], ["is_empty", "is empty"], ["is_not_empty", "is not empty"],
+  ],
+  time: [
+    ["after", "after"], ["before", "before"], ["between", "between"],
+    ["is_empty", "is empty"], ["is_not_empty", "is not empty"],
+  ],
+  window: [["overlaps", "overlaps"]],
+};
+
+function historyFilterFields(servers = []) {
+  const options = (values) => values.map(([value, label]) => ({ value, label }));
+  return [
+    { value: "purpose", label: "Session name / purpose", type: "text", placeholder: "training" },
+    { value: "owner", label: "Owner", type: "text", placeholder: "username" },
+    { value: "node", label: "Node", type: "enum", options: servers.map((server) => ({ value: server.id, label: server.name })) },
+    { value: "source", label: "Session source", type: "enum", options: options([["web", "Web"], ["cli", "CLI"]]) },
+    { value: "status", label: "Status", type: "enum", options: options([["scheduled", "Scheduled"], ["active", "Active"], ["completed", "Completed"], ["revoked", "Revoked"]]) },
+    { value: "history_quality", label: "Telemetry quality", type: "enum", options: options([["complete", "Complete"], ["partial", "Partial"]]) },
+    { value: "result_outcome", label: "Result outcome", type: "enum", options: options([["success", "Success"], ["partial", "Partial"], ["failed", "Failed"], ["aborted", "Aborted"]]) },
+    { value: "created_at", label: "Created time", type: "time" },
+    { value: "starts_at", label: "Start time", type: "time" },
+    { value: "effective_end", label: "Effective end", type: "time" },
+    { value: "session_window", label: "Session window", type: "window" },
+    { value: "duration_ms", label: "Duration (hours)", type: "number", factor: hourMs },
+    { value: "gpu", label: "Session GPU", type: "number" },
+    { value: "gpu_count", label: "GPU count", type: "number" },
+    { value: "reserved_ms", label: "Reserved GPU hours", type: "number", factor: hourMs },
+    { value: "busy_ms", label: "Busy GPU hours", type: "number", factor: hourMs },
+    { value: "average_utilization_percent", label: "Average utilization (%)", type: "number" },
+    { value: "busy_ratio", label: "Busy ratio (%)", type: "number", factor: 0.01 },
+    { value: "coverage", label: "Telemetry coverage (%)", type: "number", factor: 0.01 },
+    { value: "average_vram_bytes", label: "Average VRAM (GiB)", type: "number", factor: 1024 ** 3 },
+    { value: "peak_vram_bytes", label: "Peak VRAM (GiB)", type: "number", factor: 1024 ** 3 },
+    { value: "job_count", label: "Job count", type: "number" },
+    { value: "job.source", label: "Job source", type: "enum", options: options([["rocguard_run", "rocguard run"], ["authorized_process", "Authorized process"]]) },
+    { value: "job.mode", label: "Job mode", type: "text" },
+    { value: "job.holder", label: "Job holder", type: "text" },
+    { value: "job.command", label: "Job command / argv", type: "text", placeholder: "train.py" },
+    { value: "job.gpu", label: "Job GPU", type: "number" },
+    { value: "job.started_at", label: "Job start time", type: "time" },
+    { value: "job.finished_at", label: "Job finish time", type: "time" },
+    { value: "job.start_precision", label: "Job start precision", type: "enum", options: options([["exact", "Exact"], ["observed", "Observed"]]) },
+    { value: "job.finish_precision", label: "Job finish precision", type: "enum", options: options([["exact", "Exact"], ["observed", "Observed"]]) },
+    { value: "job.exit_code", label: "Job exit code", type: "number" },
+    { value: "job.end_reason", label: "Job end reason", type: "text" },
+  ];
+}
+
+function historyFilterField(value, servers = []) {
+  const fields = historyFilterFields(servers);
+  return fields.find((field) => field.value === value) || fields[0];
+}
+
+function historyOperatorsFor(field) {
+  return historyOperatorSets[field.type].map(([value, label]) => ({ value, label }));
+}
+
+function newHistoryRule() {
+  historyFilterID += 1;
+  return { id: `history-rule-${historyFilterID}`, field: "purpose", operator: "contains", value: "" };
+}
+
+function newHistoryGroup() {
+  historyFilterID += 1;
+  return { id: `history-group-${historyFilterID}`, rules: [newHistoryRule()] };
+}
+
+function historyInitialRuleValue(field, operator) {
+  if (historyUnaryOperators.has(operator)) return null;
+  if (operator === "between" || operator === "overlaps") return ["", ""];
+  if (operator === "in" || operator === "not_in") return [];
+  return "";
+}
+
+function historyRuleCount(filters) {
+  return (filters.groups || []).reduce((sum, group) => sum + (group.rules || []).length, 0);
+}
+
+function historyFilterErrors(filters) {
+  const errors = [];
+  for (const group of filters.groups || []) {
+    for (const rule of group.rules || []) {
+      const field = historyFilterField(rule.field);
+      const allowed = new Set(historyOperatorsFor(field).map((operator) => operator.value));
+      let message = "";
+      if (!allowed.has(rule.operator)) {
+        message = "Choose a valid operator.";
+      } else if (!historyUnaryOperators.has(rule.operator)) {
+        if (rule.operator === "between" || rule.operator === "overlaps") {
+          const values = Array.isArray(rule.value) ? rule.value : [];
+          if (values.length !== 2 || values.some((value) => value === "" || value == null)) {
+            message = "Enter both range values.";
+          } else if (field.type === "number" && (values.some((value) => !Number.isFinite(Number(value))) || Number(values[0]) > Number(values[1]))) {
+            message = "Enter an ordered numeric range.";
+          } else if ((field.type === "time" || field.type === "window") && (values.some((value) => !Number.isFinite(new Date(value).getTime())) || new Date(values[0]) > new Date(values[1]))) {
+            message = "Enter an ordered time range.";
+          }
+        } else if (rule.operator === "in" || rule.operator === "not_in") {
+          if (!Array.isArray(rule.value) || rule.value.length === 0) message = "Select at least one value.";
+        } else if (rule.value === "" || rule.value == null) {
+          message = "Enter a value.";
+        } else if (field.type === "number" && !Number.isFinite(Number(rule.value))) {
+          message = "Enter a valid number.";
+        } else if (field.type === "time" && !Number.isFinite(new Date(rule.value).getTime())) {
+          message = "Enter a valid date and time.";
+        }
+      }
+      if (message) errors.push({ id: rule.id, message });
+    }
+  }
+  return errors;
+}
+
+function historySearchExpression(filters) {
+  return {
+    groups: (filters.groups || []).map((group) => ({
+      rules: group.rules.map((rule) => {
+        const field = historyFilterField(rule.field);
+        const result = { field: rule.field, operator: rule.operator };
+        if (historyUnaryOperators.has(rule.operator)) return result;
+        if (field.type === "number") {
+          const convert = (value) => Number(value) * (field.factor || 1);
+          result.value = Array.isArray(rule.value) ? rule.value.map(convert) : convert(rule.value);
+        } else if (field.type === "time" || field.type === "window") {
+          const convert = (value) => new Date(value).toISOString();
+          result.value = Array.isArray(rule.value) ? rule.value.map(convert) : convert(rule.value);
+        } else {
+          result.value = rule.value;
+        }
+        return result;
+      }),
+    })),
+  };
 }
 
 function percentLabel(value) {

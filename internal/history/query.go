@@ -85,20 +85,8 @@ func (s *Store) ListSessions(ctx context.Context, filter SessionFilter) ([]Sessi
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	for index := range sessions {
-		item := &sessions[index]
-		item.GPUs, err = s.sessionGPUs(ctx, item.ID)
-		if err != nil {
-			return nil, err
-		}
-		item.GPUSummaries, err = s.gpuSummaries(ctx, *item)
-		if err != nil {
-			return nil, err
-		}
-		item.Result, err = s.result(ctx, item.ID)
-		if err != nil {
-			return nil, err
-		}
+	if err := s.enrichSessions(ctx, sessions); err != nil {
+		return nil, err
 	}
 	return sessions, nil
 }
@@ -236,6 +224,20 @@ func (s *Store) Summary(ctx context.Context, filter SessionFilter) (DashboardSum
 	if filter.To != nil {
 		where += " AND r.starts_at_ms<?"
 		args = append(args, millis(*filter.To))
+	}
+	now := time.Now().UTC().UnixMilli()
+	switch filter.Status {
+	case "scheduled":
+		where += " AND r.revoked_at_ms IS NULL AND r.starts_at_ms>?"
+		args = append(args, now)
+	case "active":
+		where += " AND r.revoked_at_ms IS NULL AND r.starts_at_ms<=? AND r.expires_at_ms>?"
+		args = append(args, now, now)
+	case "completed":
+		where += " AND r.revoked_at_ms IS NULL AND r.expires_at_ms<=?"
+		args = append(args, now)
+	case "revoked":
+		where += " AND r.revoked_at_ms IS NOT NULL"
 	}
 	var out DashboardSummary
 	var reservedMS sql.NullFloat64
@@ -398,6 +400,26 @@ func scanSession(scanner interface{ Scan(...any) error }) (Session, error) {
 	item.LastJobAt = timePtrFromNull(lastJob)
 	item.Status = sessionStatus(item, time.Now().UTC())
 	return item, nil
+}
+
+func (s *Store) enrichSessions(ctx context.Context, sessions []Session) error {
+	for index := range sessions {
+		item := &sessions[index]
+		var err error
+		item.GPUs, err = s.sessionGPUs(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+		item.GPUSummaries, err = s.gpuSummaries(ctx, *item)
+		if err != nil {
+			return err
+		}
+		item.Result, err = s.result(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sessionStatus(item Session, now time.Time) string {

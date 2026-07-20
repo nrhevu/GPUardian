@@ -218,6 +218,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/servers/", s.requireSession(s.handleServerAction))
 	mux.HandleFunc("/api/fleet/snapshot", s.requireSession(s.handleFleetSnapshot))
 	mux.HandleFunc("/api/history/summary", s.requireSession(s.handleHistorySummary))
+	mux.HandleFunc("/api/history/search", s.requireSession(s.handleHistorySearch))
 	mux.HandleFunc("/api/history/sessions", s.requireSession(s.handleHistorySessions))
 	mux.HandleFunc("/api/history/sessions/", s.requireSession(s.handleHistorySessionAction))
 	mux.HandleFunc("/", s.handleStatic)

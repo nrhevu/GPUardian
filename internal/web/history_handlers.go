@@ -19,6 +19,55 @@ type historyResultRequest struct {
 	Version   int                `json:"version"`
 }
 
+type historySearchRequest struct {
+	Filter history.SearchExpression `json:"filter"`
+	Limit  int                      `json:"limit"`
+	Cursor string                   `json:"cursor"`
+}
+
+func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.History == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "history is unavailable")
+		return
+	}
+	var request historySearchRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if request.Limit == 0 {
+		request.Limit = 50
+	}
+	if request.Limit < 1 || request.Limit > 100 {
+		writeJSONError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+		return
+	}
+	cursor, ok := decodeHistoryCursor(request.Cursor)
+	if request.Cursor != "" && !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
+	summary, sessions, err := s.History.Search(r.Context(), request.Filter, request.Limit, cursor.At, cursor.ID)
+	if errors.Is(err, history.ErrInvalidSearchFilter) {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	next := ""
+	if len(sessions) == request.Limit && len(sessions) > 0 {
+		last := sessions[len(sessions)-1]
+		next = encodeHistoryCursor(last.StartsAt.UnixMilli(), last.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"summary": summary, "sessions": sessions, "next_cursor": next})
+}
+
 func (s *Server) handleHistorySummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
