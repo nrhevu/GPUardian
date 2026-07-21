@@ -7,7 +7,7 @@ captures only things future agents would otherwise miss.
 
 ## What this repo is
 
-Gpuardian reserves and enforces access to AMD GPUs on shared Linux servers. It
+GPUardian reserves and enforces access to AMD GPUs on shared Linux servers. It
 is **monitor-and-kill enforcement**, not kernel-level device isolation — a user
 with root, sudo, or root-equivalent Docker access can bypass it.
 

@@ -1,15 +1,15 @@
-# Gpuardian MCP Server
+# GPUardian MCP Server
 
-An [MCP](https://modelcontextprotocol.io/) server that exposes Gpuardian GPU
+An [MCP](https://modelcontextprotocol.io/) server that exposes GPUardian GPU
 reservation operations as tools for AI assistants. The server connects to the
-Gpuardian web gateway over HTTP, authenticates with a username and password, and
+GPUardian web gateway over HTTP, authenticates with a username and password, and
 speaks the MCP protocol over stdio.
 
 ## Requirements
 
 - Python 3.11 or newer
-- A running Gpuardian web gateway (production or dev)
-- Credentials for a Gpuardian account (admin or regular user)
+- A running GPUardian web gateway (production or dev)
+- Credentials for a GPUardian account (admin or regular user)
 
 ## Installation
 
@@ -33,8 +33,8 @@ All configuration is via environment variables:
 | Env var | Required | Default | Description |
 | --- | --- | --- | --- |
 | `GPUARDIAN_MCP_URL` | yes | — | Web gateway URL, e.g. `http://127.0.0.1:18080` (dev) or `https://gpuardian.example.com:8443` (prod) |
-| `GPUARDIAN_MCP_USER` | yes | — | Gpuardian username |
-| `GPUARDIAN_MCP_PASSWORD` | yes | — | Gpuardian password |
+| `GPUARDIAN_MCP_USER` | yes | — | GPUardian username |
+| `GPUARDIAN_MCP_PASSWORD` | yes | — | GPUardian password |
 | `GPUARDIAN_MCP_TIMEOUT` | no | `30` | HTTP timeout in seconds |
 | `GPUARDIAN_MCP_VERIFY_TLS` | no | `1` | Verify TLS certificates (`1`/`0`). Set to `0` only for dev with self-signed certs. |
 

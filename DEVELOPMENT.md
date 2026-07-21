@@ -1,7 +1,7 @@
-# Gpuardian development guide
+# GPUardian development guide
 
 This guide runs a development node and web gateway on a host that may already
-run the production Gpuardian daemon. The development environment uses separate
+run the production GPUardian daemon. The development environment uses separate
 ports, state, keys, sockets, cgroups, Docker project names, and web storage.
 
 This is the only supported plaintext/no-TLS workflow. Both development APIs

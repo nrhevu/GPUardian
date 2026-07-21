@@ -1,13 +1,13 @@
-# Gpuardian
+# GPUardian
 
-Gpuardian reserves and enforces access to AMD GPUs on shared Linux servers. It
+GPUardian reserves and enforces access to AMD GPUs on shared Linux servers. It
 provides:
 
 - a root node daemon that observes GPU processes and enforces reservations;
 - a CLI for running and authorizing workloads; and
 - a Dockerized web gateway for accounts, scheduling, keys, and multiple nodes.
 
-Gpuardian uses monitor-and-kill enforcement; it is not kernel-level device
+GPUardian uses monitor-and-kill enforcement; it is not kernel-level device
 isolation. A user with root, sudo, or root-equivalent Docker access can bypass
 it.
 
@@ -20,7 +20,7 @@ development environment, use [DEVELOPMENT.md](DEVELOPMENT.md).
 | Component | Where it runs | Manager | Port |
 | --- | --- | --- | --- |
 | `gpuardian daemon` | Every AMD GPU node | systemd | HTTPS `8192` |
-| Gpuardian web gateway | One gateway host | Docker Compose | HTTPS `8443` |
+| GPUardian web gateway | One gateway host | Docker Compose | HTTPS `8443` |
 
 The node daemon must run directly on the host because it reads `/proc`, uses
 AMD tooling, manages cgroups, and launches workloads. Only the web gateway runs
@@ -156,7 +156,7 @@ sudo sh -c 'umask 077; test -f /var/lib/gpuardian/root.key || printf "rk_%s\n" "
 sudo chmod 0600 /var/lib/gpuardian/root.key
 sudo tee /etc/systemd/system/gpuardian.service >/dev/null <<'EOF'
 [Unit]
-Description=Gpuardian daemon
+Description=GPUardian daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -226,7 +226,7 @@ sudo install -o root -g 65532 -m 0640 \
 WEB_PASSWORD="$(openssl rand -hex 32)"
 printf 'GPUARDIAN_WEB_USER=admin\nGPUARDIAN_WEB_PASSWORD=%s\nGPUARDIAN_WEB_ALLOW_REGISTRATION=1\n' \
   "$WEB_PASSWORD" | sudo tee /etc/gpuardian/web.env >/dev/null
-printf 'Initial Gpuardian admin password: %s\n' "$WEB_PASSWORD"
+printf 'Initial GPUardian admin password: %s\n' "$WEB_PASSWORD"
 unset WEB_PASSWORD
 sudo docker compose -f compose.web.yml up -d
 sudo docker compose -f compose.web.yml ps
@@ -242,7 +242,7 @@ sudo sed -i 's/^GPUARDIAN_WEB_ALLOW_REGISTRATION=.*/GPUARDIAN_WEB_ALLOW_REGISTRA
 sudo docker compose -f compose.web.yml up -d --force-recreate
 ```
 
-Allow TCP `8443` only from networks that should access Gpuardian. Open:
+Allow TCP `8443` only from networks that should access GPUardian. Open:
 
 ```text
 https://<gateway-host>:8443
@@ -312,7 +312,7 @@ encrypted fixed keys in `users.json` unrecoverable, so those two files must be
 backed up and restored together. Never place these files, node root keys,
 certificate private keys, or `/etc/gpuardian/web.env` in source control.
 
-## Using Gpuardian
+## Using GPUardian
 
 ### Create an account and sign in
 
@@ -341,7 +341,7 @@ the managed-key snapshot reaches each node.
 
 ### Run a workload
 
-Run normal commands through the Gpuardian wrapper:
+Run normal commands through the GPUardian wrapper:
 
 ```bash
 KEY=rg_xxx gpuardian run -- python train.py
@@ -494,7 +494,7 @@ sudo rm -f /run/gpuardian.sock
 ```
 
 These commands retain configuration, state, keys, users, and logs. To remove
-all Gpuardian data permanently, delete the applicable paths on the gateway and
+all GPUardian data permanently, delete the applicable paths on the gateway and
 GPU nodes:
 
 ```bash
