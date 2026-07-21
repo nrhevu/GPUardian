@@ -682,7 +682,7 @@ function App() {
           <div>
             <p className="eyebrow">{view === "history" ? "History" : "Nodes"}</p>
             <h1>{view === "history" ? "Reservation dashboard" : current?.server?.name || "No server selected"}</h1>
-            {view !== "history" && !current?.server && <p className="muted">Add a Gpuardian node to begin.</p>}
+            {view !== "history" && !current?.server && <p className="muted">Add a GPUardian node to begin.</p>}
           </div>
           <div className="topbar-actions">
             <button className={view === "gpu" ? "tab active" : "tab"} onClick={() => setView("gpu")}>
@@ -1475,7 +1475,7 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
         </button>
         {registrationEnabled && (
           <div className="login-switch-row">
-            <span>{creating ? "Already have an account?" : "New to Gpuardian?"}</span>
+            <span>{creating ? "Already have an account?" : "New to GPUardian?"}</span>
             <button type="button" className="login-switch-button" onClick={switchMode} disabled={pending}>
               {creating ? "Sign in" : "Create account"}
             </button>
@@ -1490,7 +1490,7 @@ function BrandLockup({ className, showMark = true }) {
   return (
     <div className={className}>
       {showMark && <img className="brand-mark" src="/gpuardian-icon.svg" alt="" />}
-      <span>Gpuardian</span>
+      <span>GPUardian</span>
     </div>
   );
 }
