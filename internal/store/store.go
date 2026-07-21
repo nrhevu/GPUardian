@@ -855,7 +855,7 @@ func (s *Store) Revoke(idOrToken string) error {
 		return s.saveLocked()
 	}
 	tokenHash := ""
-	if strings.HasPrefix(idOrToken, "rg_") {
+	if strings.HasPrefix(idOrToken, "gk_") {
 		tokenHash = HashToken(idOrToken)
 	}
 	for _, token := range s.state.Tokens {
@@ -1712,7 +1712,7 @@ func cloneEnforcementState(state model.State) model.State {
 }
 
 func newToken(mode, name string, expiresAt time.Time, now time.Time) (string, model.Token) {
-	tokenSecret := "rg_" + randomHex(24)
+	tokenSecret := "gk_" + randomHex(24)
 	token := model.Token{
 		ID:        "tok_" + randomHex(8),
 		Hash:      HashToken(tokenSecret),

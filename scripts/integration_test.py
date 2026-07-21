@@ -40,7 +40,7 @@ def parse_args():
     if args.children < 0 or args.children > 64:
         raise SystemExit("--children must be between 0 and 64")
     if not args.key:
-        raise SystemExit("KEY token is required; export KEY=rg_... (secrets are not accepted in command-line arguments)")
+        raise SystemExit("KEY token is required; export KEY=gk_... (secrets are not accepted in command-line arguments)")
     needs_root_key = not args.no_auto_bypass or bool(args.docker_image) or bool(args.k8s_namespace and args.k8s_image)
     if needs_root_key and not args.root_key:
         raise SystemExit("ROOT_KEY is required for auto-bypass and cleanup; export ROOT_KEY=rk_...")

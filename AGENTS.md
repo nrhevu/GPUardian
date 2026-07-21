@@ -125,7 +125,7 @@ has no test suite; verify it against a running gateway by hand.
   environment variables consumed in `internal/config`. Do not introduce flag-
   based config for the daemon or gateway; add env vars there instead. The CLI
   uses `flag` for subcommand args only.
-- **`KEY=rg_...`** is the user-facing authorization credential;
+- **`KEY=gk_...`** is the user-facing authorization credential;
   **`ROOT_KEY=rk_...`** is the per-node admin secret. Never log either. Audit
   log path is `GPUARDIAN_AUDIT_LOG`.
 - **All `*_test.go` files live next to their package** (standard Go). Keep

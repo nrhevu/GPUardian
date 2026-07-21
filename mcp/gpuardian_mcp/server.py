@@ -102,7 +102,7 @@ TOOLS: list[Tool] = [
     Tool(
         name="reveal_key",
         description=(
-            "Reveal the plaintext fixed key secret (rg_...) for a user. "
+            "Reveal the plaintext fixed key secret (gk_...) for a user. "
             "Non-admins can only reveal their own key. Handle with care — "
             "the secret is returned in cleartext."
         ),

@@ -21,7 +21,7 @@ func TestFixedUserKeyBackfillRevealReopenAndRegenerate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ID == "" || first.Version != 1 || len(first.Secret) != 3+fixedKeySecretBytes*2 || first.Secret[:3] != "rg_" {
+	if first.ID == "" || first.Version != 1 || len(first.Secret) != 3+fixedKeySecretBytes*2 || first.Secret[:3] != "gk_" {
 		t.Fatalf("unexpected fixed key: %+v", first)
 	}
 

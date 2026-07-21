@@ -644,7 +644,7 @@ func TestManagedKeyReservationsHaveIndependentGroupsAndRevokeKeepsKey(t *testing
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
-	secret := "rg_" + strings.Repeat("a", 48)
+	secret := "gk_" + strings.Repeat("a", 48)
 	snapshot := protocol.ManagedUserKeySnapshot{
 		SnapshotID: "sha256:test",
 		Keys:       []protocol.ManagedUserKey{{ID: "uk_alice", Owner: "alice", Version: 1, Hash: HashToken(secret)}},

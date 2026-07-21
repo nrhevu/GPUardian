@@ -69,14 +69,14 @@ func (c *authzNodeClient) CreateReservation(_ context.Context, _ ServerRecord, a
 	if c.reservationResult.Mode != "" {
 		return c.reservationResult, nil
 	}
-	return model.RegisterResult{Token: "rg_reserved", TokenID: "tok_reserved", Mode: model.TokenModeReserved}, nil
+	return model.RegisterResult{Token: "gk_reserved", TokenID: "tok_reserved", Mode: model.TokenModeReserved}, nil
 }
 
 func (c *authzNodeClient) CreateClaimKey(_ context.Context, _ ServerRecord, args protocol.RegisterArgs) (model.RegisterResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lastClaim = args
-	return model.RegisterResult{Token: "rg_claim"}, nil
+	return model.RegisterResult{Token: "gk_claim"}, nil
 }
 
 func (c *authzNodeClient) ShowKeys(context.Context, ServerRecord, string) (model.KeyStatus, error) {
@@ -140,12 +140,12 @@ func TestGatewayRoleAuthorization(t *testing.T) {
 
 	client.mu.Lock()
 	client.reservationResult = model.RegisterResult{
-		Token:          "rg_reserved",
+		Token:          "gk_reserved",
 		Mode:           model.TokenModeReserved,
 		ReservationIDs: []string{"res_reserved"},
 	}
 	client.keys.Tokens = append(client.keys.Tokens, model.TokenView{
-		ID: "tok_reserved", Key: "rg_reserved", Name: "alice", Mode: model.TokenModeReserved,
+		ID: "tok_reserved", Key: "gk_reserved", Name: "alice", Mode: model.TokenModeReserved,
 	})
 	client.keys.Reservations = append(client.keys.Reservations, model.ReservationView{
 		ID: "res_reserved", GroupID: "tok_reserved", GPU: 0, Holder: "alice", Active: true,
@@ -193,7 +193,7 @@ func TestGatewayFiltersAndAuthorizesOwnedKeys(t *testing.T) {
 	}
 
 	ownKey := requestJSON(handler, http.MethodPost, "/api/servers/"+serverID+"/show-key", `{"id":"tok_alice"}`, userCookie)
-	if ownKey.Code != http.StatusOK || !bytes.Contains(ownKey.Body.Bytes(), []byte("rg_alice")) {
+	if ownKey.Code != http.StatusOK || !bytes.Contains(ownKey.Body.Bytes(), []byte("gk_alice")) {
 		t.Fatalf("own show-key = %d %s", ownKey.Code, ownKey.Body.String())
 	}
 
@@ -368,8 +368,8 @@ func newAuthzServer(t *testing.T) (*Server, *authzNodeClient, string) {
 		keys: model.KeyStatus{
 			Now: now,
 			Tokens: []model.TokenView{
-				{ID: "tok_alice", Key: "rg_alice", Name: "alice", Mode: model.TokenModeReserved, CreatedAt: now},
-				{ID: "tok_bob", Key: "rg_bob", Name: "bob", Mode: model.TokenModeReserved, CreatedAt: now},
+				{ID: "tok_alice", Key: "gk_alice", Name: "alice", Mode: model.TokenModeReserved, CreatedAt: now},
+				{ID: "tok_bob", Key: "gk_bob", Name: "bob", Mode: model.TokenModeReserved, CreatedAt: now},
 			},
 			Reservations: []model.ReservationView{
 				{ID: "res_alice", GroupID: "tok_alice", GPU: 0, Holder: "alice", CreatedAt: now, StartsAt: now, ExpiresAt: now.Add(time.Hour), Active: true},

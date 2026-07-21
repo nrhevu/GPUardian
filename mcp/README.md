@@ -97,7 +97,7 @@ client's docs for the exact file path and any client-specific fields.
 | `create_reservation` | Reserve GPUs on a node (GPUs, purpose, TTL or time window). |
 | `revoke` | Revoke a reservation/token/authorization by ID. |
 | `list_keys` | List fixed user keys (admin: all, user: own). |
-| `reveal_key` | Reveal the plaintext key secret (`rg_...`) for a user. |
+| `reveal_key` | Reveal the plaintext key secret (`gk_...`) for a user. |
 | `regenerate_key` | Rotate a user's fixed key. |
 | `history_summary` | Dashboard summary of reservation history with optional filters. |
 | `history_search` | Search reservation sessions with filter groups and sorting. |

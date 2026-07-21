@@ -64,7 +64,7 @@ func (c *userKeyCipher) assign(record *UserRecord, version int64) error {
 	if _, err := io.ReadFull(rand.Reader, idBytes); err != nil {
 		return err
 	}
-	secret := "rg_" + hex.EncodeToString(secretBytes)
+	secret := "gk_" + hex.EncodeToString(secretBytes)
 	record.KeyID = "uk_" + hex.EncodeToString(idBytes)
 	record.KeyVersion = version
 	record.KeyCreatedAt = time.Now().UTC()

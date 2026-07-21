@@ -416,7 +416,7 @@ func TestNodeHTTPManagedKeySyncAndReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret := "rg_" + strings.Repeat("a", 48)
+	secret := "gk_" + strings.Repeat("a", 48)
 	snapshot := protocol.ManagedUserKeySnapshot{SnapshotID: "sha256:test", Keys: []protocol.ManagedUserKey{{ID: "uk_alice", Owner: "alice", Version: 1, Hash: store.HashToken(secret)}}}
 	body, err := json.Marshal(snapshot)
 	if err != nil {
@@ -1079,12 +1079,12 @@ func TestUserAllowWildcardDoesNotLookupUser(t *testing.T) {
 }
 
 func TestCommandEnvDoesNotInjectGPUVisibility(t *testing.T) {
-	env := commandEnv([]string{"PATH=/bin", "KEY=rg_secret", "ROOT_KEY=rk_secret", "GPUARDIAN_WEB_PASSWORD=secret"})
+	env := commandEnv([]string{"PATH=/bin", "KEY=gk_secret", "ROOT_KEY=rk_secret", "GPUARDIAN_WEB_PASSWORD=secret"})
 	for _, item := range env {
 		if strings.HasPrefix(item, "HIP_VISIBLE_DEVICES=") ||
 			strings.HasPrefix(item, "ROCR_VISIBLE_DEVICES=") ||
 			strings.HasPrefix(item, "GPU_DEVICE_ORDINAL=") ||
-			item == "KEY=rg_secret" {
+			item == "KEY=gk_secret" {
 			t.Fatalf("unexpected env item %q", item)
 		}
 	}

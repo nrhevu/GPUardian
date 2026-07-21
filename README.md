@@ -346,8 +346,8 @@ the managed-key snapshot reaches each node.
 Run normal commands through the GPUardian wrapper:
 
 ```bash
-KEY=rg_xxx gpuardian run -- python train.py
-KEY=rg_xxx gpuardian run -- torchrun --nproc_per_node=8 train.py
+KEY=gk_xxx gpuardian run -- python train.py
+KEY=gk_xxx gpuardian run -- torchrun --nproc_per_node=8 train.py
 ```
 
 Everything after `--` is the workload command. Child processes inherit the
@@ -357,14 +357,14 @@ Do not use `gpuardian run -- docker run ...`; Docker places the real workload
 in a different cgroup. Authorize the container instead:
 
 ```bash
-KEY=rg_xxx gpuardian allow docker --container trainer
+KEY=gk_xxx gpuardian allow docker --container trainer
 ```
 
 Other exact authorization scopes:
 
 ```bash
-KEY=rg_xxx gpuardian allow k8s --namespace training
-KEY=rg_xxx gpuardian allow user --name alice
+KEY=gk_xxx gpuardian allow k8s --namespace training
+KEY=gk_xxx gpuardian allow user --name alice
 ```
 
 Use the narrowest exact scope possible. Wildcard scopes are admin-only because
@@ -373,9 +373,9 @@ they can authorize more workloads than intended.
 ### Inspect status and keys
 
 ```bash
-KEY=rg_xxx gpuardian status
-KEY=rg_xxx gpuardian ps
-KEY=rg_xxx gpuardian token info
+KEY=gk_xxx gpuardian status
+KEY=gk_xxx gpuardian ps
+KEY=gk_xxx gpuardian token info
 ```
 
 In the web `Key` tab:
