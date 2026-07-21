@@ -59,9 +59,11 @@ gpuardian-mcp
 
 ## MCP client configuration
 
-### ZCode / Claude Desktop
+### MCP-compatible client
 
-Add to your MCP client config:
+Add the following to your client's MCP server config. The block below uses the
+standard `mcpServers` shape that most MCP clients accept; consult your
+client's docs for the exact file path and any client-specific fields.
 
 ```json
 {
