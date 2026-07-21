@@ -96,7 +96,7 @@ func (c *userKeyCipher) reveal(record UserRecord) (string, error) {
 }
 
 func fixedKeyAAD(record UserRecord) []byte {
-	return []byte(fmt.Sprintf("rocguard-user-key-v1\x00%s\x00%s\x00%d", record.Username, record.KeyID, record.KeyVersion))
+	return []byte(fmt.Sprintf("gpuardian-user-key-v1\x00%s\x00%s\x00%d", record.Username, record.KeyID, record.KeyVersion))
 }
 
 func (s *UserStore) InitializeFixedKeys(master []byte) error {

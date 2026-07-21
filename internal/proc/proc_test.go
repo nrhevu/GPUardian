@@ -18,7 +18,7 @@ func TestFSReaderInfoUsesExeAndStartTime(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "cmdline"), []byte("/spoofed/argv0\x00--flag\x00"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(base, "cgroup"), []byte("0::/rocguard/test\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "cgroup"), []byte("0::/gpuardian/test\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	status := fmt.Sprintf("Name:\ttest\nUid:\t%d\t%d\t%d\t%d\n", os.Getuid(), os.Getuid(), os.Getuid(), os.Getuid())
@@ -29,7 +29,7 @@ func TestFSReaderInfoUsesExeAndStartTime(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "stat"), []byte(stat), 0644); err != nil {
 		t.Fatal(err)
 	}
-	const executable = "/opt/rocguard/actual worker"
+	const executable = "/opt/gpuardian/actual worker"
 	if err := os.Symlink(executable, filepath.Join(base, "exe")); err != nil {
 		t.Fatal(err)
 	}

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/model"
-	"rocguard/internal/proc"
-	"rocguard/internal/runtime"
+	"gpuardian/internal/model"
+	"gpuardian/internal/proc"
+	"gpuardian/internal/runtime"
 )
 
 type fakeProc struct {
@@ -242,9 +242,9 @@ func TestEvictExpiredReservedProcessesAtExpiryAcrossScopes(t *testing.T) {
 	}{
 		{
 			name:          "bare",
-			authorization: model.Authorization{Mode: model.ModeBare, CgroupRel: "rocguard/auth_old"},
-			matching:      model.ProcInfo{PID: 10, StartTime: 10, Cgroup: "0::/rocguard/auth_old/child"},
-			unrelated:     model.ProcInfo{PID: 11, StartTime: 11, Cgroup: "0::/rocguard/other"},
+			authorization: model.Authorization{Mode: model.ModeBare, CgroupRel: "gpuardian/auth_old"},
+			matching:      model.ProcInfo{PID: 10, StartTime: 10, Cgroup: "0::/gpuardian/auth_old/child"},
+			unrelated:     model.ProcInfo{PID: 11, StartTime: 11, Cgroup: "0::/gpuardian/other"},
 		},
 		{
 			name:          "docker",
@@ -943,9 +943,9 @@ func TestHardReservationAllowsMatchingAuthorizationScopes(t *testing.T) {
 			name: "bare",
 			auth: authorization("auth_bare", "hash_reserved", model.TokenModeReserved, model.ModeBare, func(a *model.Authorization) {
 				a.RootPID = 10
-				a.CgroupRel = "rocguard/auth_bare"
+				a.CgroupRel = "gpuardian/auth_bare"
 			}),
-			info: model.ProcInfo{PID: 10, UID: 1000, Cgroup: "0::/rocguard/auth_bare"},
+			info: model.ProcInfo{PID: 10, UID: 1000, Cgroup: "0::/gpuardian/auth_bare"},
 		},
 		{
 			name: "docker",
@@ -1254,10 +1254,10 @@ func TestSoftClaimRejectsAuthorizedProcessOnBusyGPU(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(decisions) != 2 || decisions[0].Action != "skip" || decisions[1].Action != "kill" {
-		t.Fatalf("expected existing process to be skipped and rocguard process to be killed: %+v", decisions)
+		t.Fatalf("expected existing process to be skipped and gpuardian process to be killed: %+v", decisions)
 	}
 	if len(killer.killed) != 1 || killer.killed[0] != 10 {
-		t.Fatalf("expected rocguard pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
+		t.Fatalf("expected gpuardian pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
 	}
 }
 
@@ -1265,7 +1265,7 @@ func TestSoftClaimRejectsRunCgroupOnBusyGPU(t *testing.T) {
 	killer := &fakeKiller{}
 	authz := Authorizer{
 		Proc: fakeProc{infos: map[int]model.ProcInfo{
-			20: {PID: 20, UID: 1000, Cgroup: "0::/rocguard/auth_run"},
+			20: {PID: 20, UID: 1000, Cgroup: "0::/gpuardian/auth_run"},
 			21: {PID: 21, UID: 2000, Cgroup: "0::/user.slice"},
 		}},
 		Killer: killer,
@@ -1275,7 +1275,7 @@ func TestSoftClaimRejectsRunCgroupOnBusyGPU(t *testing.T) {
 		Tokens: []model.Token{token("hash_claimed", model.TokenModeClaimed)},
 		Authorizations: []model.Authorization{authorization("auth_run", "hash_claimed", model.TokenModeClaimed, model.ModeBare, func(a *model.Authorization) {
 			a.RootPID = 19
-			a.CgroupRel = "rocguard/auth_run"
+			a.CgroupRel = "gpuardian/auth_run"
 		})},
 	}
 	decisions, err := authz.Enforce(context.Background(), state, []model.GPUProcess{gpuProcess(0, 20), gpuProcess(0, 21)})
@@ -1337,20 +1337,20 @@ func TestBareAuthorizationAndLeaseRequireCgroupSubtreeMatch(t *testing.T) {
 		cgroupRel  string
 		cgroupPath string
 	}{
-		{name: "relative", cgroupRel: "rocguard/auth_run"},
-		{name: "absolute", cgroupPath: "/sys/fs/cgroup/rocguard/auth_run"},
+		{name: "relative", cgroupRel: "gpuardian/auth_run"},
+		{name: "absolute", cgroupPath: "/sys/fs/cgroup/gpuardian/auth_run"},
 	}
 	cases := []struct {
 		name   string
 		cgroup string
 		want   bool
 	}{
-		{name: "exact", cgroup: "0::/rocguard/auth_run", want: true},
-		{name: "descendant", cgroup: "0::/rocguard/auth_run/child.scope", want: true},
-		{name: "matching second hierarchy", cgroup: "7:cpu:/other\n8:memory:/rocguard/auth_run/child", want: true},
-		{name: "prefix collision", cgroup: "0::/rocguard/auth_runner", want: false},
-		{name: "embedded substring", cgroup: "0::/other/rocguard/auth_run", want: false},
-		{name: "parent", cgroup: "0::/rocguard", want: false},
+		{name: "exact", cgroup: "0::/gpuardian/auth_run", want: true},
+		{name: "descendant", cgroup: "0::/gpuardian/auth_run/child.scope", want: true},
+		{name: "matching second hierarchy", cgroup: "7:cpu:/other\n8:memory:/gpuardian/auth_run/child", want: true},
+		{name: "prefix collision", cgroup: "0::/gpuardian/auth_runner", want: false},
+		{name: "embedded substring", cgroup: "0::/other/gpuardian/auth_run", want: false},
+		{name: "parent", cgroup: "0::/gpuardian", want: false},
 	}
 	authorizer := Authorizer{}
 	now := fixedNow()

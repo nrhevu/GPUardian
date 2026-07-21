@@ -1,7 +1,7 @@
 [project]
-name = "rocguard-mcp"
+name = "gpuardian-mcp"
 version = "0.1.0"
-description = "MCP server exposing RocGuard GPU reservation operations"
+description = "MCP server exposing Gpuardian GPU reservation operations"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0",
@@ -9,11 +9,11 @@ dependencies = [
 ]
 
 [project.scripts]
-rocguard-mcp = "rocguard_mcp.__main__:main"
+gpuardian-mcp = "gpuardian_mcp.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["rocguard_mcp"]
+packages = ["gpuardian_mcp"]

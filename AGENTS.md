@@ -7,19 +7,19 @@ captures only things future agents would otherwise miss.
 
 ## What this repo is
 
-RocGuard reserves and enforces access to AMD GPUs on shared Linux servers. It
+GPUardian reserves and enforces access to AMD GPUs on shared Linux servers. It
 is **monitor-and-kill enforcement**, not kernel-level device isolation — a user
 with root, sudo, or root-equivalent Docker access can bypass it.
 
-Three components share a single Go module (`module rocguard`, Go 1.25):
+Three components share a single Go module (`module gpuardian`, Go 1.25):
 
-1. **Node daemon** (`rocguard daemon`) — runs on every AMD GPU node under
+1. **Node daemon** (`gpuardian daemon`) — runs on every AMD GPU node under
    systemd. Reads `/proc`, uses `amd-smi`, manages cgroups, launches
    workloads. Must run on the host, never in a container. Port `8192` (HTTPS
    in prod, `8193` HTTP in dev with `--dry-run`).
-2. **CLI** (`cmd/rocguard`) — `run`, `allow`, `status`, `ps`, `register`,
+2. **CLI** (`cmd/gpuardian`) — `run`, `allow`, `status`, `ps`, `register`,
    `token info`, `show-keys`, `bypass`, `revoke`. Single binary shared by
-   daemon and CLI; subcommand dispatch is in `cmd/rocguard/main.go`.
+   daemon and CLI; subcommand dispatch is in `cmd/gpuardian/main.go`.
 3. **Web gateway** (`internal/web`) — Dockerized, non-root (UID/GID `65532`),
    serves accounts, scheduling, keys, fleet of nodes. Port `8443` (prod) or
    loopback `18080` (dev). Frontend is a React 19 + Vite SPA in `web/ui/`.
@@ -27,7 +27,7 @@ Three components share a single Go module (`module rocguard`, Go 1.25):
 ## Layout
 
 ```
-cmd/rocguard/         CLI + daemon entrypoint (single main.go)
+cmd/gpuardian/         CLI + daemon entrypoint (single main.go)
 internal/protocol/    JSON Request/Response wire format shared by daemon <-> gateway <-> CLI
 internal/daemon/      Node daemon: HTTP server, snapshot, telemetry, cgroup/enforce entry
 internal/enforce/     Monitor-and-kill enforcement logic
@@ -55,11 +55,11 @@ Run from repo root:
 ```bash
 # UI (must build before gateway so embedded assets exist)
 npm --prefix web/ui ci
-npm --prefix web/ui run build      # outputs web/ui/dist/, embedded via web/rocguard-ui/
+npm --prefix web/ui run build      # outputs web/ui/dist/, embedded via web/gpuardian-ui/
 
 # Go
 go test ./...
-go build -buildvcs=false -o rocguard ./cmd/rocguard
+go build -buildvcs=false -o gpuardian ./cmd/gpuardian
 
 # Focused Go tests
 go test ./internal/web/...
@@ -94,41 +94,41 @@ There is no separate lint config in the repo; `go vet ./...` and `go test
 
 ## Conventions
 
-- **Module path is `rocguard`** (not `github.com/...`). Internal imports look
-  like `rocguard/internal/web`. Keep this style in new code.
-- **Config is env-var driven.** All tunables live behind `ROCGUARD_*`
+- **Module path is `gpuardian`** (not `github.com/...`). Internal imports look
+  like `gpuardian/internal/web`. Keep this style in new code.
+- **Config is env-var driven.** All tunables live behind `GPUARDIAN_*`
   environment variables consumed in `internal/config`. Do not introduce flag-
   based config for the daemon or gateway; add env vars there instead. The CLI
   uses `flag` for subcommand args only.
 - **`KEY=rg_...`** is the user-facing authorization credential;
   **`ROOT_KEY=rk_...`** is the per-node admin secret. Never log either. Audit
-  log path is `ROCGUARD_AUDIT_LOG`.
+  log path is `GPUARDIAN_AUDIT_LOG`.
 - **All `*_test.go` files live next to their package** (standard Go). Keep
   table-driven test style used throughout `internal/web/*_test.go`.
 - **Go files use standard `gofmt`/`goimports` formatting.** No reformatting
   style config exists; match surrounding code.
 - **Secrets never go in source control.** `.dev/`, `*.key`, `web.env`,
   `users.json`, `servers.json`, `session.key`, `user-key.key`, `history.db`,
-  and the built `rocguard` binary are all gitignored or operator-only.
+  and the built `gpuardian` binary are all gitignored or operator-only.
 
 ## Gotchas
 
 - **Never run two enforcing daemons against the same GPUs.** The dev daemon
   must use `--dry-run` and a separate cgroup root
-  (`ROCGUARD_CGROUP_ROOT=/sys/fs/cgroup/rocguard-dev`). Production keeps
-  `/sys/fs/cgroup/rocguard`.
-- **Dev and prod share `/var/lib/rocguard-web` as a bind mount path inside
+  (`GPUARDIAN_CGROUP_ROOT=/sys/fs/cgroup/gpuardian-dev`). Production keeps
+  `/sys/fs/cgroup/gpuardian`.
+- **Dev and prod share `/var/lib/gpuardian-web` as a bind mount path inside
   the container** but dev points the host side at `.dev/web`. Don't confuse
   the two — dev state must stay under `.dev/`.
-- **`rocguard run -- docker run ...` is unsupported.** Docker puts the
+- **`gpuardian run -- docker run ...` is unsupported.** Docker puts the
   workload in a different cgroup; authorize the container instead with
-  `rocguard allow docker --container <name>`. Keep this invariant in any
+  `gpuardian allow docker --container <name>`. Keep this invariant in any
   enforcement changes.
 - **Command-path bypasses are UID-0 only** (unprivileged mount namespaces can
   spoof executable paths). Prefer PID bypasses. See `bypass` in `main.go`.
 - **The gateway image is `read_only: true` with `cap_drop: [ALL]` and
   `no-new-privileges`.** Anything new that needs writable storage must use
-  the existing tmpfs `/tmp` or the `/var/lib/rocguard-web` volume — do not
+  the existing tmpfs `/tmp` or the `/var/lib/gpuardian-web` volume — do not
   add filesystem writes elsewhere without updating the Compose files.
 - **`web/ui/dist/` and `web/ui/node_modules/` are gitignored.** Run
   `npm --prefix web/ui ci && npm --prefix web/ui run build` before building

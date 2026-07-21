@@ -1,15 +1,15 @@
-# RocGuard MCP Server
+# GPUardian MCP Server
 
-An [MCP](https://modelcontextprotocol.io/) server that exposes RocGuard GPU
+An [MCP](https://modelcontextprotocol.io/) server that exposes GPUardian GPU
 reservation operations as tools for AI assistants. The server connects to the
-RocGuard web gateway over HTTP, authenticates with a username and password, and
+GPUardian web gateway over HTTP, authenticates with a username and password, and
 speaks the MCP protocol over stdio.
 
 ## Requirements
 
 - Python 3.11 or newer
-- A running RocGuard web gateway (production or dev)
-- Credentials for a RocGuard account (admin or regular user)
+- A running GPUardian web gateway (production or dev)
+- Credentials for a GPUardian account (admin or regular user)
 
 ## Installation
 
@@ -32,11 +32,11 @@ All configuration is via environment variables:
 
 | Env var | Required | Default | Description |
 | --- | --- | --- | --- |
-| `ROCGUARD_MCP_URL` | yes | — | Web gateway URL, e.g. `http://127.0.0.1:18080` (dev) or `https://rocguard.example.com:8443` (prod) |
-| `ROCGUARD_MCP_USER` | yes | — | RocGuard username |
-| `ROCGUARD_MCP_PASSWORD` | yes | — | RocGuard password |
-| `ROCGUARD_MCP_TIMEOUT` | no | `30` | HTTP timeout in seconds |
-| `ROCGUARD_MCP_VERIFY_TLS` | no | `1` | Verify TLS certificates (`1`/`0`). Set to `0` only for dev with self-signed certs. |
+| `GPUARDIAN_MCP_URL` | yes | — | Web gateway URL, e.g. `http://127.0.0.1:18080` (dev) or `https://gpuardian.example.com:8443` (prod) |
+| `GPUARDIAN_MCP_USER` | yes | — | GPUardian username |
+| `GPUARDIAN_MCP_PASSWORD` | yes | — | GPUardian password |
+| `GPUARDIAN_MCP_TIMEOUT` | no | `30` | HTTP timeout in seconds |
+| `GPUARDIAN_MCP_VERIFY_TLS` | no | `1` | Verify TLS certificates (`1`/`0`). Set to `0` only for dev with self-signed certs. |
 
 The server logs in on startup and holds the session cookie for all subsequent
 requests. If the session expires (HTTP 401), it re-logs in automatically.
@@ -44,17 +44,17 @@ requests. If the session expires (HTTP 401), it re-logs in automatically.
 ## Running
 
 ```bash
-ROCGUARD_MCP_URL=http://127.0.0.1:18080 \
-ROCGUARD_MCP_USER=admin \
-ROCGUARD_MCP_PASSWORD=your-password \
-.venv/bin/python -m rocguard_mcp
+GPUARDIAN_MCP_URL=http://127.0.0.1:18080 \
+GPUARDIAN_MCP_USER=admin \
+GPUARDIAN_MCP_PASSWORD=your-password \
+.venv/bin/python -m gpuardian_mcp
 ```
 
 Or via the installed entry point:
 
 ```bash
-ROCGUARD_MCP_URL=... ROCGUARD_MCP_USER=... ROCGUARD_MCP_PASSWORD=... \
-rocguard-mcp
+GPUARDIAN_MCP_URL=... GPUARDIAN_MCP_USER=... GPUARDIAN_MCP_PASSWORD=... \
+gpuardian-mcp
 ```
 
 ## MCP client configuration
@@ -66,15 +66,15 @@ Add to your MCP client config:
 ```json
 {
   "mcpServers": {
-    "rocguard": {
-      "command": "/path/to/rocguardd/mcp/.venv/bin/python",
-      "args": ["-m", "rocguard_mcp"],
+    "gpuardian": {
+      "command": "/path/to/gpuardian/mcp/.venv/bin/python",
+      "args": ["-m", "gpuardian_mcp"],
       "env": {
-        "ROCGUARD_MCP_URL": "http://127.0.0.1:18080",
-        "ROCGUARD_MCP_USER": "admin",
-        "ROCGUARD_MCP_PASSWORD": "your-password"
+        "GPUARDIAN_MCP_URL": "http://127.0.0.1:18080",
+        "GPUARDIAN_MCP_USER": "admin",
+        "GPUARDIAN_MCP_PASSWORD": "your-password"
       },
-      "cwd": "/path/to/rocguardd/mcp"
+      "cwd": "/path/to/gpuardian/mcp"
     }
   }
 }
@@ -83,7 +83,7 @@ Add to your MCP client config:
 ### MCP Inspector (for testing)
 
 ```bash
-.venv/bin/mcp dev rocguard_mcp.__main__
+.venv/bin/mcp dev gpuardian_mcp.__main__
 ```
 
 ## Tools
@@ -110,4 +110,4 @@ Add to your MCP client config:
 - Non-admin accounts see only their own resources (the gateway enforces this).
 - Passwords and cookies are never written to stdout — stdout carries only MCP
   protocol messages. Errors go to stderr.
-- For production, always use HTTPS (`ROCGUARD_MCP_VERIFY_TLS=1`).
+- For production, always use HTTPS (`GPUARDIAN_MCP_VERIFY_TLS=1`).

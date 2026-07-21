@@ -1,7 +1,7 @@
-# RocGuard development guide
+# GPUardian development guide
 
 This guide runs a development node and web gateway on a host that may already
-run the production RocGuard daemon. The development environment uses separate
+run the production GPUardian daemon. The development environment uses separate
 ports, state, keys, sockets, cgroups, Docker project names, and web storage.
 
 This is the only supported plaintext/no-TLS workflow. Both development APIs
@@ -30,7 +30,7 @@ All commands below run from the repository root.
 npm --prefix web/ui ci
 npm --prefix web/ui run build
 go test ./...
-go build -buildvcs=false -o rocguard ./cmd/rocguard
+go build -buildvcs=false -o gpuardian ./cmd/gpuardian
 ```
 
 ## 2. Create isolated development state
@@ -43,7 +43,7 @@ umask 077
 test -f .dev/root.key || printf 'rk_%s\n' "$(openssl rand -hex 32)" > .dev/root.key
 
 WEB_PASSWORD="$(openssl rand -hex 32)"
-printf 'ROCGUARD_WEB_USER=admin\nROCGUARD_WEB_PASSWORD=%s\nROCGUARD_WEB_ALLOW_REGISTRATION=1\n' \
+printf 'GPUARDIAN_WEB_USER=admin\nGPUARDIAN_WEB_PASSWORD=%s\nGPUARDIAN_WEB_ALLOW_REGISTRATION=1\n' \
   "$WEB_PASSWORD" > .dev/web.env
 printf 'Development admin password: %s\n' "$WEB_PASSWORD"
 unset WEB_PASSWORD
@@ -61,16 +61,16 @@ separate terminal, start the development daemon on port `8193`:
 
 ```bash
 sudo env \
-  ROCGUARD_NODE_ADDR=0.0.0.0:8193 \
-  ROCGUARD_NODE_ALLOW_INSECURE=1 \
-  ROCGUARD_SOCKET="$PWD/.dev/rocguard.sock" \
-  ROCGUARD_STATE="$PWD/.dev/state.json" \
-  ROCGUARD_NODE_ID="$PWD/.dev/node.id" \
-  ROCGUARD_TELEMETRY_DIR="$PWD/.dev/telemetry" \
-  ROCGUARD_ROOT_KEY="$PWD/.dev/root.key" \
-  ROCGUARD_AUDIT_LOG="$PWD/.dev/audit.log" \
-  ROCGUARD_CGROUP_ROOT=/sys/fs/cgroup/rocguard-dev \
-  ./rocguard daemon --dry-run
+  GPUARDIAN_NODE_ADDR=0.0.0.0:8193 \
+  GPUARDIAN_NODE_ALLOW_INSECURE=1 \
+  GPUARDIAN_SOCKET="$PWD/.dev/gpuardian.sock" \
+  GPUARDIAN_STATE="$PWD/.dev/state.json" \
+  GPUARDIAN_NODE_ID="$PWD/.dev/node.id" \
+  GPUARDIAN_TELEMETRY_DIR="$PWD/.dev/telemetry" \
+  GPUARDIAN_ROOT_KEY="$PWD/.dev/root.key" \
+  GPUARDIAN_AUDIT_LOG="$PWD/.dev/audit.log" \
+  GPUARDIAN_CGROUP_ROOT=/sys/fs/cgroup/gpuardian-dev \
+  ./gpuardian daemon --dry-run
 ```
 
 Keep that terminal open. Confirm which processes and ports are active:
@@ -89,12 +89,12 @@ Expected separation:
 | Resource | Production | Development |
 | --- | --- | --- |
 | Node API | `8192` | `8193` |
-| Socket | `/run/rocguard.sock` | `.dev/rocguard.sock` |
-| State | `/var/lib/rocguard/state.json` | `.dev/state.json` |
-| Node ID | `/var/lib/rocguard/node.id` | `.dev/node.id` |
-| Telemetry outbox | `/var/lib/rocguard/telemetry` | `.dev/telemetry` |
-| Root key | `/var/lib/rocguard/root.key` | `.dev/root.key` |
-| Cgroup | `/sys/fs/cgroup/rocguard` | `/sys/fs/cgroup/rocguard-dev` |
+| Socket | `/run/gpuardian.sock` | `.dev/gpuardian.sock` |
+| State | `/var/lib/gpuardian/state.json` | `.dev/state.json` |
+| Node ID | `/var/lib/gpuardian/node.id` | `.dev/node.id` |
+| Telemetry outbox | `/var/lib/gpuardian/telemetry` | `.dev/telemetry` |
+| Root key | `/var/lib/gpuardian/root.key` | `.dev/root.key` |
+| Cgroup | `/sys/fs/cgroup/gpuardian` | `/sys/fs/cgroup/gpuardian-dev` |
 | Enforcement | enabled | `--dry-run` |
 
 ## 4. Start the development web gateway
@@ -150,8 +150,8 @@ response means the network path works but the supplied root key is wrong.
 Point local CLI commands at the isolated development socket:
 
 ```bash
-sudo env ROCGUARD_SOCKET="$PWD/.dev/rocguard.sock" ./rocguard status
-sudo env ROCGUARD_SOCKET="$PWD/.dev/rocguard.sock" ./rocguard ps
+sudo env GPUARDIAN_SOCKET="$PWD/.dev/gpuardian.sock" ./gpuardian status
+sudo env GPUARDIAN_SOCKET="$PWD/.dev/gpuardian.sock" ./gpuardian ps
 ```
 
 Do not use the development socket or root key for production operations.
@@ -176,5 +176,5 @@ development directory:
 sudo rm -rf .dev
 ```
 
-Never remove `/var/lib/rocguard`, `/run/rocguard.sock`, or the production
+Never remove `/var/lib/gpuardian`, `/run/gpuardian.sock`, or the production
 service while resetting this development environment.

@@ -21,15 +21,15 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"rocguard/internal/amdsmi"
-	"rocguard/internal/config"
-	"rocguard/internal/enforce"
-	"rocguard/internal/model"
-	"rocguard/internal/proc"
-	"rocguard/internal/protocol"
-	"rocguard/internal/runtime"
-	"rocguard/internal/store"
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/amdsmi"
+	"gpuardian/internal/config"
+	"gpuardian/internal/enforce"
+	"gpuardian/internal/model"
+	"gpuardian/internal/proc"
+	"gpuardian/internal/protocol"
+	"gpuardian/internal/runtime"
+	"gpuardian/internal/store"
+	"gpuardian/internal/telemetry"
 )
 
 type Server struct {
@@ -134,7 +134,7 @@ func New(cfg config.Config) *Server {
 
 func (s *Server) Run(ctx context.Context) error {
 	if os.Geteuid() != 0 {
-		return errors.New("rocguard daemon must run as root")
+		return errors.New("gpuardian daemon must run as root")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1661,7 +1661,7 @@ func (s *Server) cleanupExpiredAuthorizations() {
 
 // cleanupExpiredManagedCgroups does not depend on the AMD process inventory.
 // Keep this path available during telemetry outages so revocation and expiry
-// still stop workloads that rocguard placed in a managed cgroup. Non-cgroup
+// still stop workloads that gpuardian placed in a managed cgroup. Non-cgroup
 // scopes retain their evidence until a successful GPU sample can assess them.
 func (s *Server) cleanupExpiredManagedCgroups() {
 	s.enforceMu.Lock()
@@ -2122,7 +2122,7 @@ func acquireUnixSocketLock(path string) (*os.File, error) {
 	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("rocguard daemon already holds %s", path)
+			return nil, fmt.Errorf("gpuardian daemon already holds %s", path)
 		}
 		return nil, err
 	}
@@ -2224,7 +2224,7 @@ func commandEnv(env []string) []string {
 	for _, item := range env {
 		if strings.HasPrefix(item, "KEY=") ||
 			strings.HasPrefix(item, "ROOT_KEY=") ||
-			strings.HasPrefix(item, "ROCGUARD_WEB_PASSWORD=") {
+			strings.HasPrefix(item, "GPUARDIAN_WEB_PASSWORD=") {
 			continue
 		}
 		out = append(out, item)

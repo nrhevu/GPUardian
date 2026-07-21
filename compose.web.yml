@@ -1,8 +1,8 @@
-name: rocguard-web
+name: gpuardian-web
 
 services:
   gateway:
-    image: rocguard-web:local
+    image: gpuardian-web:local
     build:
       context: .
       dockerfile: Dockerfile.web
@@ -10,26 +10,26 @@ services:
     init: true
     user: "65532:65532"
     env_file:
-      - /etc/rocguard/web.env
+      - /etc/gpuardian/web.env
     environment:
-      ROCGUARD_WEB_ADDR: 0.0.0.0:8443
-      ROCGUARD_WEB_TLS_CERT: /run/rocguard-tls/web.crt
-      ROCGUARD_WEB_TLS_KEY: /run/rocguard-tls/web.key
-      ROCGUARD_WEB_ALLOW_INSECURE: "0"
-      ROCGUARD_WEB_ALLOW_INSECURE_NODES: "0"
-      ROCGUARD_WEB_TRUST_PROXY: "0"
-      ROCGUARD_WEB_USERS: /var/lib/rocguard-web/users.json
-      ROCGUARD_WEB_REGISTRY: /var/lib/rocguard-web/servers.json
-      ROCGUARD_WEB_SESSION_KEY: /var/lib/rocguard-web/session.key
-      ROCGUARD_WEB_USER_KEY: /var/lib/rocguard-web/user-key.key
-      ROCGUARD_WEB_DB: /var/lib/rocguard-web/history.db
-      ROCGUARD_WEB_UI_DIR: /usr/local/share/rocguard/ui
+      GPUARDIAN_WEB_ADDR: 0.0.0.0:8443
+      GPUARDIAN_WEB_TLS_CERT: /run/gpuardian-tls/web.crt
+      GPUARDIAN_WEB_TLS_KEY: /run/gpuardian-tls/web.key
+      GPUARDIAN_WEB_ALLOW_INSECURE: "0"
+      GPUARDIAN_WEB_ALLOW_INSECURE_NODES: "0"
+      GPUARDIAN_WEB_TRUST_PROXY: "0"
+      GPUARDIAN_WEB_USERS: /var/lib/gpuardian-web/users.json
+      GPUARDIAN_WEB_REGISTRY: /var/lib/gpuardian-web/servers.json
+      GPUARDIAN_WEB_SESSION_KEY: /var/lib/gpuardian-web/session.key
+      GPUARDIAN_WEB_USER_KEY: /var/lib/gpuardian-web/user-key.key
+      GPUARDIAN_WEB_DB: /var/lib/gpuardian-web/history.db
+      GPUARDIAN_WEB_UI_DIR: /usr/local/share/gpuardian/ui
     ports:
       - "8443:8443"
     volumes:
-      - /var/lib/rocguard-web:/var/lib/rocguard-web
-      - /etc/rocguard/web.crt:/run/rocguard-tls/web.crt:ro
-      - /etc/rocguard/web.key:/run/rocguard-tls/web.key:ro
+      - /var/lib/gpuardian-web:/var/lib/gpuardian-web
+      - /etc/gpuardian/web.crt:/run/gpuardian-tls/web.crt:ro
+      - /etc/gpuardian/web.key:/run/gpuardian-tls/web.key:ro
       # Use the gateway host's trust bundle so private node CAs installed on
       # that host are also trusted inside the container.
       - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro

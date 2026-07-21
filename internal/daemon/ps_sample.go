@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"rocguard/internal/model"
+	"gpuardian/internal/model"
 )
 
 type fixedProcessProvider []model.GPUProcess

@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/enforce"
-	"rocguard/internal/model"
-	"rocguard/internal/protocol"
-	"rocguard/internal/store"
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/config"
+	"gpuardian/internal/enforce"
+	"gpuardian/internal/model"
+	"gpuardian/internal/protocol"
+	"gpuardian/internal/store"
+	"gpuardian/internal/telemetry"
 )
 
 type fakeAMD struct {
@@ -95,7 +95,7 @@ func TestNodeHTTPRejectsPlaintextWithoutExplicitOptIn(t *testing.T) {
 	if closeServer != nil {
 		closeServer()
 	}
-	if err == nil || !strings.Contains(err.Error(), "ROCGUARD_NODE_ALLOW_INSECURE") {
+	if err == nil || !strings.Contains(err.Error(), "GPUARDIAN_NODE_ALLOW_INSECURE") {
 		t.Fatalf("startNodeHTTP error = %v, want explicit plaintext opt-in error", err)
 	}
 }
@@ -652,7 +652,7 @@ func TestClaimedMonitorRejectsRunGPUWhenBusy(t *testing.T) {
 		UID:       1000,
 		GID:       1000,
 		RootPID:   99,
-		CgroupRel: "rocguard/auth_run",
+		CgroupRel: "gpuardian/auth_run",
 		CreatedAt: time.Now().UTC(),
 		ExpiresAt: token.ExpiresAt,
 		Active:    true,
@@ -667,8 +667,8 @@ func TestClaimedMonitorRejectsRunGPUWhenBusy(t *testing.T) {
 		{GPU: 0, PID: 200, MemBytes: 1},
 	}}
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{
-		99:  {PID: 99, UID: 1000, Cgroup: "0::/rocguard/auth_run"},
-		100: {PID: 100, UID: 1000, Cgroup: "0::/rocguard/auth_run"},
+		99:  {PID: 99, UID: 1000, Cgroup: "0::/gpuardian/auth_run"},
+		100: {PID: 100, UID: 1000, Cgroup: "0::/gpuardian/auth_run"},
 		200: {PID: 200, UID: 2000, Cgroup: "0::/user.slice"},
 	}}
 
@@ -682,7 +682,7 @@ func TestClaimedMonitorRejectsRunGPUWhenBusy(t *testing.T) {
 		t.Fatalf("busy GPU should not be claimed, got %+v", status.SoftClaims)
 	}
 	if len(killer.killed) != 1 || killer.killed[0] != 100 {
-		t.Fatalf("expected rocguard pid to be killed, got %v", killer.killed)
+		t.Fatalf("expected gpuardian pid to be killed, got %v", killer.killed)
 	}
 }
 
@@ -1079,7 +1079,7 @@ func TestUserAllowWildcardDoesNotLookupUser(t *testing.T) {
 }
 
 func TestCommandEnvDoesNotInjectGPUVisibility(t *testing.T) {
-	env := commandEnv([]string{"PATH=/bin", "KEY=rg_secret", "ROOT_KEY=rk_secret", "ROCGUARD_WEB_PASSWORD=secret"})
+	env := commandEnv([]string{"PATH=/bin", "KEY=rg_secret", "ROOT_KEY=rk_secret", "GPUARDIAN_WEB_PASSWORD=secret"})
 	for _, item := range env {
 		if strings.HasPrefix(item, "HIP_VISIBLE_DEVICES=") ||
 			strings.HasPrefix(item, "ROCR_VISIBLE_DEVICES=") ||
@@ -1491,7 +1491,7 @@ func testServer(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Config{
-		SocketPath:  filepath.Join(dir, "rocguard.sock"),
+		SocketPath:  filepath.Join(dir, "gpuardian.sock"),
 		StatePath:   filepath.Join(dir, "state.json"),
 		RootKeyPath: filepath.Join(dir, "root.key"),
 		AuditLog:    filepath.Join(dir, "audit.log"),

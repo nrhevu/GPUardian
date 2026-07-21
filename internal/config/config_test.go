@@ -3,24 +3,24 @@ package config
 import "testing"
 
 func TestRegistrationDefaultsDisabled(t *testing.T) {
-	t.Setenv("ROCGUARD_WEB_ALLOW_REGISTRATION", "")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_REGISTRATION", "")
 	if cfg := Default(); cfg.WebAllowRegistration {
 		t.Fatal("public registration was enabled by default")
 	}
 }
 
 func TestDefaultLoadsSecuritySettings(t *testing.T) {
-	t.Setenv("ROCGUARD_NODE_ALLOW_INSECURE", "true")
-	t.Setenv("ROCGUARD_WEB_ALLOW_INSECURE", "1")
-	t.Setenv("ROCGUARD_WEB_ALLOW_INSECURE_NODES", "true")
-	t.Setenv("ROCGUARD_WEB_ALLOW_REGISTRATION", "true")
-	t.Setenv("ROCGUARD_WEB_SECURE_COOKIES", "TRUE")
-	t.Setenv("ROCGUARD_WEB_TRUST_PROXY", "true")
-	t.Setenv("ROCGUARD_WEB_TLS_CERT", "/tls/web.crt")
-	t.Setenv("ROCGUARD_WEB_TLS_KEY", "/tls/web.key")
-	t.Setenv("ROCGUARD_WEB_SESSION_KEY", "/state/session.key")
-	t.Setenv("ROCGUARD_WEB_USER_KEY", "/state/user-key.key")
-	t.Setenv("ROCGUARD_GPU_COUNT", "8")
+	t.Setenv("GPUARDIAN_NODE_ALLOW_INSECURE", "true")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_INSECURE", "1")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_INSECURE_NODES", "true")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_REGISTRATION", "true")
+	t.Setenv("GPUARDIAN_WEB_SECURE_COOKIES", "TRUE")
+	t.Setenv("GPUARDIAN_WEB_TRUST_PROXY", "true")
+	t.Setenv("GPUARDIAN_WEB_TLS_CERT", "/tls/web.crt")
+	t.Setenv("GPUARDIAN_WEB_TLS_KEY", "/tls/web.key")
+	t.Setenv("GPUARDIAN_WEB_SESSION_KEY", "/state/session.key")
+	t.Setenv("GPUARDIAN_WEB_USER_KEY", "/state/user-key.key")
+	t.Setenv("GPUARDIAN_GPU_COUNT", "8")
 
 	cfg := Default()
 	if !cfg.NodeAllowInsecure || !cfg.WebAllowInsecure || !cfg.WebAllowInsecureNodes || !cfg.WebAllowRegistration || !cfg.WebSecureCookies || !cfg.WebTrustProxy {
@@ -35,10 +35,10 @@ func TestDefaultLoadsSecuritySettings(t *testing.T) {
 }
 
 func TestInvalidEnvironmentValuesFailClosed(t *testing.T) {
-	t.Setenv("ROCGUARD_WEB_ALLOW_INSECURE", "definitely")
-	t.Setenv("ROCGUARD_WEB_ALLOW_INSECURE_NODES", "definitely")
-	t.Setenv("ROCGUARD_WEB_ALLOW_REGISTRATION", "definitely")
-	t.Setenv("ROCGUARD_GPU_COUNT", "1000000")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_INSECURE", "definitely")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_INSECURE_NODES", "definitely")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_REGISTRATION", "definitely")
+	t.Setenv("GPUARDIAN_GPU_COUNT", "1000000")
 	cfg := Default()
 	if cfg.WebAllowInsecure {
 		t.Fatal("invalid boolean enabled insecure web mode")
@@ -55,9 +55,9 @@ func TestInvalidEnvironmentValuesFailClosed(t *testing.T) {
 }
 
 func TestOtherInsecureFlagsDoNotEnableInsecureNodes(t *testing.T) {
-	t.Setenv("ROCGUARD_NODE_ALLOW_INSECURE", "true")
-	t.Setenv("ROCGUARD_WEB_ALLOW_INSECURE", "true")
-	t.Setenv("ROCGUARD_WEB_ALLOW_INSECURE_NODES", "")
+	t.Setenv("GPUARDIAN_NODE_ALLOW_INSECURE", "true")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_INSECURE", "true")
+	t.Setenv("GPUARDIAN_WEB_ALLOW_INSECURE_NODES", "")
 	if cfg := Default(); cfg.WebAllowInsecureNodes {
 		t.Fatal("listener security overrides enabled gateway-to-node HTTP")
 	}

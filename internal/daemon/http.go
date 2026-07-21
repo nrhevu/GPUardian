@@ -14,21 +14,21 @@ import (
 	"sync"
 	"time"
 
-	"rocguard/internal/model"
-	"rocguard/internal/netlimit"
-	"rocguard/internal/protocol"
-	"rocguard/internal/store"
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/model"
+	"gpuardian/internal/netlimit"
+	"gpuardian/internal/protocol"
+	"gpuardian/internal/store"
+	"gpuardian/internal/telemetry"
 )
 
 const maxNodeHTTPConnections = 128
 
 func (s *Server) startNodeHTTP(ctx context.Context) (func(), error) {
 	if (s.Cfg.NodeTLSCert == "") != (s.Cfg.NodeTLSKey == "") {
-		return nil, errors.New("both ROCGUARD_NODE_TLS_CERT and ROCGUARD_NODE_TLS_KEY are required for TLS")
+		return nil, errors.New("both GPUARDIAN_NODE_TLS_CERT and GPUARDIAN_NODE_TLS_KEY are required for TLS")
 	}
 	if s.Cfg.NodeTLSCert == "" && !s.Cfg.NodeAllowInsecure {
-		return nil, errors.New("refusing node HTTP listener without TLS; configure TLS or explicitly set ROCGUARD_NODE_ALLOW_INSECURE=1")
+		return nil, errors.New("refusing node HTTP listener without TLS; configure TLS or explicitly set GPUARDIAN_NODE_ALLOW_INSECURE=1")
 	}
 	var tlsConfig *tls.Config
 	if s.Cfg.NodeTLSCert != "" {

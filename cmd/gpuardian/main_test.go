@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/model"
+	"gpuardian/internal/config"
+	"gpuardian/internal/model"
 )
 
 func TestWritePSRowsFormatsTable(t *testing.T) {
@@ -65,7 +65,7 @@ func TestRunCommandRejectsLeadingFlag(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "rocguard run -- <command>") {
+	if !strings.Contains(err.Error(), "gpuardian run -- <command>") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -86,12 +86,12 @@ func TestParseGPUList(t *testing.T) {
 func TestUsageTextShowsOnlyCurrentCommands(t *testing.T) {
 	out := usageText()
 	for _, want := range []string{
-		"rocguard help",
-		"rocguard register (--reserved | --claimed)",
-		"KEY=... rocguard run -- <command>",
-		"KEY=... rocguard allow docker --container <name-or-id>",
-		"KEY=... rocguard allow user --name <name>",
-		"ROOT_KEY=... rocguard show-keys",
+		"gpuardian help",
+		"gpuardian register (--reserved | --claimed)",
+		"KEY=... gpuardian run -- <command>",
+		"KEY=... gpuardian allow docker --container <name-or-id>",
+		"KEY=... gpuardian allow user --name <name>",
+		"ROOT_KEY=... gpuardian show-keys",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("usage text missing %q: %q", want, out)
@@ -103,8 +103,8 @@ func TestUsageTextShowsOnlyCurrentCommands(t *testing.T) {
 		"--" + "soft",
 		"--" + "gpu",
 		"--" + "user",
-		"rocguard " + "docker allow",
-		"rocguard " + "k8s allow",
+		"gpuardian " + "docker allow",
+		"gpuardian " + "k8s allow",
 	} {
 		if strings.Contains(out, old) {
 			t.Fatalf("usage text still contains old command %q: %q", old, out)

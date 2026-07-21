@@ -1,13 +1,13 @@
-# RocGuard
+# GPUardian
 
-RocGuard reserves and enforces access to AMD GPUs on shared Linux servers. It
+GPUardian reserves and enforces access to AMD GPUs on shared Linux servers. It
 provides:
 
 - a root node daemon that observes GPU processes and enforces reservations;
 - a CLI for running and authorizing workloads; and
 - a Dockerized web gateway for accounts, scheduling, keys, and multiple nodes.
 
-RocGuard uses monitor-and-kill enforcement; it is not kernel-level device
+GPUardian uses monitor-and-kill enforcement; it is not kernel-level device
 isolation. A user with root, sudo, or root-equivalent Docker access can bypass
 it.
 
@@ -19,8 +19,8 @@ development environment, use [DEVELOPMENT.md](DEVELOPMENT.md).
 
 | Component | Where it runs | Manager | Port |
 | --- | --- | --- | --- |
-| `rocguard daemon` | Every AMD GPU node | systemd | HTTPS `8192` |
-| RocGuard web gateway | One gateway host | Docker Compose | HTTPS `8443` |
+| `gpuardian daemon` | Every AMD GPU node | systemd | HTTPS `8192` |
+| GPUardian web gateway | One gateway host | Docker Compose | HTTPS `8443` |
 
 The node daemon must run directly on the host because it reads `/proc`, uses
 AMD tooling, manages cgroups, and launches workloads. Only the web gateway runs
@@ -42,7 +42,7 @@ organization. The minimum Go version is also recorded in `go.mod`.
 Before starting, choose stable DNS names or IP addresses for:
 
 - every GPU node, for example `gpu-node-01.example.com`; and
-- the gateway, for example `rocguard.example.com`.
+- the gateway, for example `gpuardian.example.com`.
 
 The selected names or IP addresses must appear in the corresponding TLS
 certificate Subject Alternative Name (SAN).
@@ -64,7 +64,7 @@ On the gateway host, verify the source tree and build the web image:
 npm --prefix web/ui ci
 npm --prefix web/ui run build
 go test ./...
-go build -buildvcs=false -o rocguard ./cmd/rocguard
+go build -buildvcs=false -o gpuardian ./cmd/gpuardian
 sudo docker compose -f compose.web.yml build
 ```
 
@@ -73,9 +73,9 @@ install the daemon and CLI:
 
 ```bash
 go test ./...
-go build -buildvcs=false -o rocguard ./cmd/rocguard
-sudo install -o root -g root -m 0755 rocguard /usr/local/bin/rocguard
-sudo install -d -o root -g root -m 0755 /etc/rocguard
+go build -buildvcs=false -o gpuardian ./cmd/gpuardian
+sudo install -o root -g root -m 0755 gpuardian /usr/local/bin/gpuardian
+sudo install -d -o root -g root -m 0755 /etc/gpuardian
 ```
 
 ### 2. Obtain TLS certificates
@@ -99,38 +99,38 @@ paths before continuing:
 On every GPU node:
 
 ```text
-/tmp/rocguard-install/node.crt
-/tmp/rocguard-install/node.key
+/tmp/gpuardian-install/node.crt
+/tmp/gpuardian-install/node.key
 ```
 
 On the gateway host:
 
 ```text
-/tmp/rocguard-install/web.crt
-/tmp/rocguard-install/web.key
-/tmp/rocguard-install/rocguard-ca.crt
+/tmp/gpuardian-install/web.crt
+/tmp/gpuardian-install/web.key
+/tmp/gpuardian-install/gpuardian-ca.crt
 ```
 
 Install each node certificate and key on its node with this block:
 
 ```bash
-sudo test -s /tmp/rocguard-install/node.crt
-sudo test -s /tmp/rocguard-install/node.key
-sudo install -d -o root -g root -m 0755 /etc/rocguard
+sudo test -s /tmp/gpuardian-install/node.crt
+sudo test -s /tmp/gpuardian-install/node.key
+sudo install -d -o root -g root -m 0755 /etc/gpuardian
 sudo install -o root -g root -m 0644 \
-  /tmp/rocguard-install/node.crt /etc/rocguard/node.crt
+  /tmp/gpuardian-install/node.crt /etc/gpuardian/node.crt
 sudo install -o root -g root -m 0600 \
-  /tmp/rocguard-install/node.key /etc/rocguard/node.key
+  /tmp/gpuardian-install/node.key /etc/gpuardian/node.key
 ```
 
 Install the CA that issued the node certificates in the gateway host's system
 trust store. On Debian or Ubuntu, paste:
 
 ```bash
-sudo test -s /tmp/rocguard-install/rocguard-ca.crt
+sudo test -s /tmp/gpuardian-install/gpuardian-ca.crt
 sudo install -o root -g root -m 0644 \
-  /tmp/rocguard-install/rocguard-ca.crt \
-  /usr/local/share/ca-certificates/rocguard-ca.crt
+  /tmp/gpuardian-install/gpuardian-ca.crt \
+  /usr/local/share/ca-certificates/gpuardian-ca.crt
 sudo update-ca-certificates
 ```
 
@@ -150,13 +150,13 @@ The following single block creates the private state, generates a unique root
 key, writes the systemd unit, starts the daemon, and verifies it:
 
 ```bash
-sudo install -d -o root -g root -m 0700 /var/lib/rocguard
-sudo install -d -o root -g root -m 0700 /var/log/rocguard
-sudo sh -c 'umask 077; test -f /var/lib/rocguard/root.key || printf "rk_%s\n" "$(openssl rand -hex 32)" > /var/lib/rocguard/root.key'
-sudo chmod 0600 /var/lib/rocguard/root.key
-sudo tee /etc/systemd/system/rocguard.service >/dev/null <<'EOF'
+sudo install -d -o root -g root -m 0700 /var/lib/gpuardian
+sudo install -d -o root -g root -m 0700 /var/log/gpuardian
+sudo sh -c 'umask 077; test -f /var/lib/gpuardian/root.key || printf "rk_%s\n" "$(openssl rand -hex 32)" > /var/lib/gpuardian/root.key'
+sudo chmod 0600 /var/lib/gpuardian/root.key
+sudo tee /etc/systemd/system/gpuardian.service >/dev/null <<'EOF'
 [Unit]
-Description=RocGuard daemon
+Description=GPUardian daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -164,16 +164,16 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
-Environment=ROCGUARD_SOCKET=/run/rocguard.sock
-Environment=ROCGUARD_STATE=/var/lib/rocguard/state.json
-Environment=ROCGUARD_NODE_ID=/var/lib/rocguard/node.id
-Environment=ROCGUARD_TELEMETRY_DIR=/var/lib/rocguard/telemetry
-Environment=ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
-Environment=ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
-Environment=ROCGUARD_NODE_ADDR=0.0.0.0:8192
-Environment=ROCGUARD_NODE_TLS_CERT=/etc/rocguard/node.crt
-Environment=ROCGUARD_NODE_TLS_KEY=/etc/rocguard/node.key
-ExecStart=/usr/local/bin/rocguard daemon
+Environment=GPUARDIAN_SOCKET=/run/gpuardian.sock
+Environment=GPUARDIAN_STATE=/var/lib/gpuardian/state.json
+Environment=GPUARDIAN_NODE_ID=/var/lib/gpuardian/node.id
+Environment=GPUARDIAN_TELEMETRY_DIR=/var/lib/gpuardian/telemetry
+Environment=GPUARDIAN_ROOT_KEY=/var/lib/gpuardian/root.key
+Environment=GPUARDIAN_AUDIT_LOG=/var/log/gpuardian/audit.log
+Environment=GPUARDIAN_NODE_ADDR=0.0.0.0:8192
+Environment=GPUARDIAN_NODE_TLS_CERT=/etc/gpuardian/node.crt
+Environment=GPUARDIAN_NODE_TLS_KEY=/etc/gpuardian/node.key
+ExecStart=/usr/local/bin/gpuardian daemon
 Restart=always
 RestartSec=2
 NoNewPrivileges=true
@@ -190,9 +190,9 @@ SystemCallArchitectures=native
 WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
-sudo systemctl enable --now rocguard
-sudo systemctl status rocguard --no-pager
-sudo rocguard status
+sudo systemctl enable --now gpuardian
+sudo systemctl status gpuardian --no-pager
+sudo gpuardian status
 sudo ss -lntp | grep ':8192'
 ```
 
@@ -202,7 +202,7 @@ Internet.
 
 Do not add systemd restrictions such as `PrivateDevices`,
 `ProtectControlGroups`, `ProtectHome`, `ProtectSystem`, or a service-wide
-restrictive `UMask` without testing `rocguard run` and GPU enforcement end to
+restrictive `UMask` without testing `gpuardian run` and GPU enforcement end to
 end. These settings also affect workloads launched by the daemon.
 
 ### 4. Install the web gateway
@@ -214,19 +214,19 @@ creates persistent state, generates the first administrator password, enables
 regular-user self-registration, and starts the gateway:
 
 ```bash
-sudo test -s /tmp/rocguard-install/web.crt
-sudo test -s /tmp/rocguard-install/web.key
-sudo install -d -o root -g root -m 0755 /etc/rocguard
-sudo install -d -o 65532 -g 65532 -m 0700 /var/lib/rocguard-web
-sudo install -o root -g root -m 0600 /dev/null /etc/rocguard/web.env
+sudo test -s /tmp/gpuardian-install/web.crt
+sudo test -s /tmp/gpuardian-install/web.key
+sudo install -d -o root -g root -m 0755 /etc/gpuardian
+sudo install -d -o 65532 -g 65532 -m 0700 /var/lib/gpuardian-web
+sudo install -o root -g root -m 0600 /dev/null /etc/gpuardian/web.env
 sudo install -o root -g root -m 0644 \
-  /tmp/rocguard-install/web.crt /etc/rocguard/web.crt
+  /tmp/gpuardian-install/web.crt /etc/gpuardian/web.crt
 sudo install -o root -g 65532 -m 0640 \
-  /tmp/rocguard-install/web.key /etc/rocguard/web.key
+  /tmp/gpuardian-install/web.key /etc/gpuardian/web.key
 WEB_PASSWORD="$(openssl rand -hex 32)"
-printf 'ROCGUARD_WEB_USER=admin\nROCGUARD_WEB_PASSWORD=%s\nROCGUARD_WEB_ALLOW_REGISTRATION=1\n' \
-  "$WEB_PASSWORD" | sudo tee /etc/rocguard/web.env >/dev/null
-printf 'Initial RocGuard admin password: %s\n' "$WEB_PASSWORD"
+printf 'GPUARDIAN_WEB_USER=admin\nGPUARDIAN_WEB_PASSWORD=%s\nGPUARDIAN_WEB_ALLOW_REGISTRATION=1\n' \
+  "$WEB_PASSWORD" | sudo tee /etc/gpuardian/web.env >/dev/null
+printf 'Initial GPUardian admin password: %s\n' "$WEB_PASSWORD"
 unset WEB_PASSWORD
 sudo docker compose -f compose.web.yml up -d
 sudo docker compose -f compose.web.yml ps
@@ -237,12 +237,12 @@ Store the displayed password in an approved password manager. To disable
 self-registration later, paste:
 
 ```bash
-sudo sed -i 's/^ROCGUARD_WEB_ALLOW_REGISTRATION=.*/ROCGUARD_WEB_ALLOW_REGISTRATION=0/' \
-  /etc/rocguard/web.env
+sudo sed -i 's/^GPUARDIAN_WEB_ALLOW_REGISTRATION=.*/GPUARDIAN_WEB_ALLOW_REGISTRATION=0/' \
+  /etc/gpuardian/web.env
 sudo docker compose -f compose.web.yml up -d --force-recreate
 ```
 
-Allow TCP `8443` only from networks that should access RocGuard. Open:
+Allow TCP `8443` only from networks that should access GPUardian. Open:
 
 ```text
 https://<gateway-host>:8443
@@ -252,7 +252,7 @@ Sign in as `admin`, immediately change the generated password, then remove the
 bootstrap password from the container environment:
 
 ```bash
-sudo sed -i '/^ROCGUARD_WEB_PASSWORD=/d' /etc/rocguard/web.env
+sudo sed -i '/^GPUARDIAN_WEB_PASSWORD=/d' /etc/gpuardian/web.env
 sudo docker compose -f compose.web.yml up -d --force-recreate
 ```
 
@@ -261,7 +261,7 @@ sudo docker compose -f compose.web.yml up -d --force-recreate
 On each GPU node, read its root key:
 
 ```bash
-sudo cat /var/lib/rocguard/root.key
+sudo cat /var/lib/gpuardian/root.key
 ```
 
 Treat this value as an administrator secret. In the web gateway, open `Nodes`,
@@ -270,7 +270,7 @@ select `Add node`, and enter:
 ```text
 Name: gpu-node-01
 Endpoint API: https://gpu-node-01.example.com:8192
-Root key: contents of /var/lib/rocguard/root.key on that node
+Root key: contents of /var/lib/gpuardian/root.key on that node
 Skip TLS verify: disabled
 ```
 
@@ -292,14 +292,14 @@ If registration fails:
 Back up these files as secrets:
 
 ```text
-/var/lib/rocguard-web/session.key
-/var/lib/rocguard-web/user-key.key
-/var/lib/rocguard-web/servers.json
-/var/lib/rocguard-web/users.json
+/var/lib/gpuardian-web/session.key
+/var/lib/gpuardian-web/user-key.key
+/var/lib/gpuardian-web/servers.json
+/var/lib/gpuardian-web/users.json
 ```
 
 Reservation history is stored separately in
-`/var/lib/rocguard-web/history.db`. While the gateway is running, back it up
+`/var/lib/gpuardian-web/history.db`. While the gateway is running, back it up
 with SQLite's Online Backup API or `VACUUM INTO`; do not copy only the live
 database file because committed data may still be in the WAL. A filesystem
 copy is safe after the gateway has been stopped cleanly. Restore the database
@@ -310,9 +310,9 @@ They must remain owned by UID/GID `65532` with mode `0600`. Losing
 `session.key` signs out all browser sessions. Losing `user-key.key` makes the
 encrypted fixed keys in `users.json` unrecoverable, so those two files must be
 backed up and restored together. Never place these files, node root keys,
-certificate private keys, or `/etc/rocguard/web.env` in source control.
+certificate private keys, or `/etc/gpuardian/web.env` in source control.
 
-## Using RocGuard
+## Using GPUardian
 
 ### Create an account and sign in
 
@@ -341,28 +341,28 @@ the managed-key snapshot reaches each node.
 
 ### Run a workload
 
-Run normal commands through the RocGuard wrapper:
+Run normal commands through the GPUardian wrapper:
 
 ```bash
-KEY=rg_xxx rocguard run -- python train.py
-KEY=rg_xxx rocguard run -- torchrun --nproc_per_node=8 train.py
+KEY=rg_xxx gpuardian run -- python train.py
+KEY=rg_xxx gpuardian run -- torchrun --nproc_per_node=8 train.py
 ```
 
 Everything after `--` is the workload command. Child processes inherit the
 authorization.
 
-Do not use `rocguard run -- docker run ...`; Docker places the real workload
+Do not use `gpuardian run -- docker run ...`; Docker places the real workload
 in a different cgroup. Authorize the container instead:
 
 ```bash
-KEY=rg_xxx rocguard allow docker --container trainer
+KEY=rg_xxx gpuardian allow docker --container trainer
 ```
 
 Other exact authorization scopes:
 
 ```bash
-KEY=rg_xxx rocguard allow k8s --namespace training
-KEY=rg_xxx rocguard allow user --name alice
+KEY=rg_xxx gpuardian allow k8s --namespace training
+KEY=rg_xxx gpuardian allow user --name alice
 ```
 
 Use the narrowest exact scope possible. Wildcard scopes are admin-only because
@@ -371,9 +371,9 @@ they can authorize more workloads than intended.
 ### Inspect status and keys
 
 ```bash
-KEY=rg_xxx rocguard status
-KEY=rg_xxx rocguard ps
-KEY=rg_xxx rocguard token info
+KEY=rg_xxx gpuardian status
+KEY=rg_xxx gpuardian ps
+KEY=rg_xxx gpuardian token info
 ```
 
 In the web `Key` tab:
@@ -394,7 +394,7 @@ Regular users never need a node root key.
 The root key is the node's highest-privilege secret:
 
 ```bash
-sudo cat /var/lib/rocguard/root.key
+sudo cat /var/lib/gpuardian/root.key
 ```
 
 Use a different root key on every node. Never expose it in shell history,
@@ -403,20 +403,20 @@ logs, screenshots, or user documentation.
 ### CLI reference
 
 ```text
-rocguard help
-rocguard daemon [--dry-run]
-rocguard register (--reserved | --claimed)
-KEY=... rocguard run -- <command>
-KEY=... rocguard allow docker --container <name-or-id>
-KEY=... rocguard allow k8s --namespace <name>
-KEY=... rocguard allow user --name <name>
-KEY=... rocguard status
-KEY=... rocguard ps
-KEY=... rocguard token info
-ROOT_KEY=... rocguard show-keys
-ROOT_KEY=... rocguard bypass add --pid <pid> --ttl <duration> --reason <text>
-ROOT_KEY=... rocguard bypass add --command <path> --uid 0 --ttl <duration> --reason <text>
-ROOT_KEY=... rocguard revoke <id>
+gpuardian help
+gpuardian daemon [--dry-run]
+gpuardian register (--reserved | --claimed)
+KEY=... gpuardian run -- <command>
+KEY=... gpuardian allow docker --container <name-or-id>
+KEY=... gpuardian allow k8s --namespace <name>
+KEY=... gpuardian allow user --name <name>
+KEY=... gpuardian status
+KEY=... gpuardian ps
+KEY=... gpuardian token info
+ROOT_KEY=... gpuardian show-keys
+ROOT_KEY=... gpuardian bypass add --pid <pid> --ttl <duration> --reason <text>
+ROOT_KEY=... gpuardian bypass add --command <path> --uid 0 --ttl <duration> --reason <text>
+ROOT_KEY=... gpuardian revoke <id>
 ```
 
 Command-path bypasses are restricted to UID `0` because unprivileged mount
@@ -425,28 +425,28 @@ namespaces can spoof executable paths. Prefer a PID bypass when possible.
 ### Node configuration
 
 ```text
-ROCGUARD_SOCKET=/run/rocguard.sock
-ROCGUARD_STATE=/var/lib/rocguard/state.json
-ROCGUARD_NODE_ID=/var/lib/rocguard/node.id
-ROCGUARD_TELEMETRY_DIR=/var/lib/rocguard/telemetry
-ROCGUARD_ROOT_KEY=/var/lib/rocguard/root.key
-ROCGUARD_AUDIT_LOG=/var/log/rocguard/audit.log
-ROCGUARD_NODE_ADDR=0.0.0.0:8192
-ROCGUARD_NODE_TLS_CERT=/etc/rocguard/node.crt
-ROCGUARD_NODE_TLS_KEY=/etc/rocguard/node.key
-ROCGUARD_NODE_ALLOW_INSECURE=0
-ROCGUARD_GPU_COUNT=0
-ROCGUARD_DRY_RUN=0
+GPUARDIAN_SOCKET=/run/gpuardian.sock
+GPUARDIAN_STATE=/var/lib/gpuardian/state.json
+GPUARDIAN_NODE_ID=/var/lib/gpuardian/node.id
+GPUARDIAN_TELEMETRY_DIR=/var/lib/gpuardian/telemetry
+GPUARDIAN_ROOT_KEY=/var/lib/gpuardian/root.key
+GPUARDIAN_AUDIT_LOG=/var/log/gpuardian/audit.log
+GPUARDIAN_NODE_ADDR=0.0.0.0:8192
+GPUARDIAN_NODE_TLS_CERT=/etc/gpuardian/node.crt
+GPUARDIAN_NODE_TLS_KEY=/etc/gpuardian/node.key
+GPUARDIAN_NODE_ALLOW_INSECURE=0
+GPUARDIAN_GPU_COUNT=0
+GPUARDIAN_DRY_RUN=0
 ```
 
 Production Compose owns all web listener, TLS, cookie, state-path, and UI
-settings. `/etc/rocguard/web.env` should contain only operator options:
+settings. `/etc/gpuardian/web.env` should contain only operator options:
 
 ```text
-ROCGUARD_WEB_USER=admin
-ROCGUARD_WEB_PASSWORD=<one-time-bootstrap-password>
-ROCGUARD_WEB_ALLOW_REGISTRATION=1
-ROCGUARD_WEB_DB=/var/lib/rocguard-web/history.db
+GPUARDIAN_WEB_USER=admin
+GPUARDIAN_WEB_PASSWORD=<one-time-bootstrap-password>
+GPUARDIAN_WEB_ALLOW_REGISTRATION=1
+GPUARDIAN_WEB_DB=/var/lib/gpuardian-web/history.db
 ```
 
 Production Compose forces browser-facing HTTP and HTTP node endpoints off.
@@ -472,7 +472,7 @@ sudo docker compose -f compose.web.yml down
 sudo docker compose -f compose.web.yml up -d
 ```
 
-The bind-mounted state in `/var/lib/rocguard-web`, including `history.db`,
+The bind-mounted state in `/var/lib/gpuardian-web`, including `history.db`,
 remains when the container is recreated or removed.
 
 ## Uninstall
@@ -486,22 +486,22 @@ sudo docker compose -f compose.web.yml down
 On every GPU node:
 
 ```bash
-sudo systemctl disable --now rocguard
-sudo rm -f /etc/systemd/system/rocguard.service
+sudo systemctl disable --now gpuardian
+sudo rm -f /etc/systemd/system/gpuardian.service
 sudo systemctl daemon-reload
-sudo rm -f /usr/local/bin/rocguard
-sudo rm -f /run/rocguard.sock
+sudo rm -f /usr/local/bin/gpuardian
+sudo rm -f /run/gpuardian.sock
 ```
 
 These commands retain configuration, state, keys, users, and logs. To remove
-all RocGuard data permanently, delete the applicable paths on the gateway and
+all GPUardian data permanently, delete the applicable paths on the gateway and
 GPU nodes:
 
 ```bash
-sudo rm -rf /etc/rocguard
-sudo rm -rf /var/lib/rocguard
-sudo rm -rf /var/lib/rocguard-web
-sudo rm -rf /var/log/rocguard
+sudo rm -rf /etc/gpuardian
+sudo rm -rf /var/lib/gpuardian
+sudo rm -rf /var/lib/gpuardian-web
+sudo rm -rf /var/log/gpuardian
 ```
 
 Also remove the firewall rules for ports `8192` and `8443`.

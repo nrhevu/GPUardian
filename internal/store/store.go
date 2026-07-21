@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/model"
-	"rocguard/internal/protocol"
+	"gpuardian/internal/config"
+	"gpuardian/internal/model"
+	"gpuardian/internal/protocol"
 )
 
 const (

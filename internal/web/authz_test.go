@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/model"
-	"rocguard/internal/protocol"
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/config"
+	"gpuardian/internal/model"
+	"gpuardian/internal/protocol"
+	"gpuardian/internal/telemetry"
 )
 
 type authzNodeClient struct {

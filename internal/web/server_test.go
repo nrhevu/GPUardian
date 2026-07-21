@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/model"
-	"rocguard/internal/protocol"
+	"gpuardian/internal/config"
+	"gpuardian/internal/model"
+	"gpuardian/internal/protocol"
 )
 
 type cacheTestNodeClient struct {
@@ -30,7 +30,7 @@ type cacheTestNodeClient struct {
 func TestWebRunRejectsPlaintextWithoutExplicitOptIn(t *testing.T) {
 	server := &Server{Cfg: config.Config{}, sessionKey: make([]byte, sessionKeyBytes)}
 	err := server.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "ROCGUARD_WEB_ALLOW_INSECURE") {
+	if err == nil || !strings.Contains(err.Error(), "GPUARDIAN_WEB_ALLOW_INSECURE") {
 		t.Fatalf("Run error = %v, want explicit plaintext opt-in error", err)
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/telemetry"
 )
 
 const historyPollInterval = 2 * time.Second

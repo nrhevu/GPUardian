@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   job_id TEXT NOT NULL,
   session_id TEXT NOT NULL REFERENCES reservation_sessions(session_id) ON DELETE CASCADE,
   authorization_id TEXT NOT NULL,
-  source TEXT NOT NULL CHECK(source IN ('rocguard_run','authorized_process')),
+  source TEXT NOT NULL CHECK(source IN ('gpuardian_run','authorized_process')),
   mode TEXT NOT NULL,
   holder TEXT NOT NULL,
   command_json TEXT NOT NULL DEFAULT '[]',

@@ -21,15 +21,15 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" \
-    -o /out/rocguard ./cmd/rocguard
+    -o /out/gpuardian ./cmd/gpuardian
 
 FROM gcr.io/distroless/static-debian12:nonroot
-LABEL org.opencontainers.image.title="RocGuard web gateway" \
-      org.opencontainers.image.description="Non-root RocGuard web gateway and UI"
-COPY --from=go-build /out/rocguard /usr/local/bin/rocguard
-COPY --from=ui-build /src/web/ui/dist /usr/local/share/rocguard/ui
-WORKDIR /var/lib/rocguard-web
+LABEL org.opencontainers.image.title="Gpuardian web gateway" \
+      org.opencontainers.image.description="Non-root Gpuardian web gateway and UI"
+COPY --from=go-build /out/gpuardian /usr/local/bin/gpuardian
+COPY --from=ui-build /src/web/ui/dist /usr/local/share/gpuardian/ui
+WORKDIR /var/lib/gpuardian-web
 USER 65532:65532
 EXPOSE 8080 8443
-ENTRYPOINT ["/usr/local/bin/rocguard"]
+ENTRYPOINT ["/usr/local/bin/gpuardian"]
 CMD ["web"]

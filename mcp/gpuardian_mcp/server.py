@@ -1,4 +1,4 @@
-"""MCP server exposing RocGuard GPU reservation operations as tools."""
+"""MCP server exposing Gpuardian GPU reservation operations as tools."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
-from .client import RocGuardClient, RocGuardError
+from .client import GpuardianClient, GpuardianError
 
 # ----------------------------------------------------------------------
 # Tool definitions
@@ -18,7 +18,7 @@ TOOLS: list[Tool] = [
     # --- Servers / fleet ---
     Tool(
         name="list_servers",
-        description="List all registered RocGuard GPU nodes.",
+        description="List all registered Gpuardian GPU nodes.",
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
@@ -262,7 +262,7 @@ def _json_text(data: Any) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(data, indent=2, default=str))]
 
 
-def _dispatch(client: RocGuardClient, name: str, args: dict[str, Any]) -> list[TextContent]:
+def _dispatch(client: GpuardianClient, name: str, args: dict[str, Any]) -> list[TextContent]:
     if name == "list_servers":
         return _json_text(client.list_servers())
     if name == "fleet_snapshot":
@@ -337,9 +337,9 @@ def _dispatch(client: RocGuardClient, name: str, args: dict[str, Any]) -> list[T
 # ----------------------------------------------------------------------
 
 
-def create_server(client: RocGuardClient) -> Server:
-    """Create an MCP Server wired to the given RocGuardClient."""
-    app = Server("rocguard")
+def create_server(client: GpuardianClient) -> Server:
+    """Create an MCP Server wired to the given GpuardianClient."""
+    app = Server("gpuardian")
 
     @app.list_tools()
     async def list_tools() -> list[Tool]:
@@ -351,8 +351,8 @@ def create_server(client: RocGuardClient) -> Server:
             arguments = {}
         try:
             return _dispatch(client, name, arguments)
-        except RocGuardError as exc:
-            return [TextContent(type="text", text=f"RocGuard error: {exc}")]
+        except GpuardianError as exc:
+            return [TextContent(type="text", text=f"Gpuardian error: {exc}")]
         except Exception as exc:
             return [TextContent(type="text", text=f"Error: {type(exc).__name__}: {exc}")]
 

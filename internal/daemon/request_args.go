@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"rocguard/internal/protocol"
+	"gpuardian/internal/protocol"
 )
 
 const (

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	sessionCookieName            = "rocguard_session"
+	sessionCookieName            = "gpuardian_session"
 	sessionTTL                   = 24 * time.Hour
 	loginWindow                  = time.Minute
 	loginFailureLimit            = 5

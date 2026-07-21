@@ -11,10 +11,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"rocguard/internal/amdsmi"
-	"rocguard/internal/enforce"
-	"rocguard/internal/model"
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/amdsmi"
+	"gpuardian/internal/enforce"
+	"gpuardian/internal/model"
+	"gpuardian/internal/telemetry"
 )
 
 const telemetryMetricInterval = 5 * time.Second
@@ -355,7 +355,7 @@ func (s *Server) rememberRunJob(token model.Token, authorization model.Authoriza
 		ExecutionID:     "exec_" + authorization.ID,
 		AuthorizationID: authorization.ID,
 		GroupIDs:        groupIDs,
-		Source:          "rocguard_run",
+		Source:          "gpuardian_run",
 		Mode:            authorization.Mode,
 		Holder:          authorization.Holder,
 		PID:             pid,

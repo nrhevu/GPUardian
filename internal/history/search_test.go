@@ -28,7 +28,7 @@ func TestSearchExpressionFiltersSessionFactsAndJobs(t *testing.T) {
 		memory_integral=4096000,memory_observed_ms=1000,peak_memory_bytes=8192 WHERE session_id='alpha'`); err != nil {
 		t.Fatal(err)
 	}
-	insertSearchJob(t, store, "node-a", "job-alpha", "alpha", "rocguard_run", "run", []string{"python", "train.py"}, 0, []int{0, 1}, now.Add(-20*time.Minute))
+	insertSearchJob(t, store, "node-a", "job-alpha", "alpha", "gpuardian_run", "run", []string{"python", "train.py"}, 0, []int{0, 1}, now.Add(-20*time.Minute))
 	insertSearchJob(t, store, "node-b", "job-beta", "beta", "authorized_process", "user", []string{"bash", "evaluate.sh"}, 2, []int{2}, now.Add(-150*time.Minute))
 
 	t.Run("and groups with or rules", func(t *testing.T) {
@@ -50,7 +50,7 @@ func TestSearchExpressionFiltersSessionFactsAndJobs(t *testing.T) {
 			{Rules: []SearchRule{searchRule("average_utilization_percent", "gt", 7)}},
 			{Rules: []SearchRule{searchRule("gpu", "equals", 1)}},
 			{Rules: []SearchRule{searchRule("job.gpu", "equals", 0)}},
-			{Rules: []SearchRule{searchRule("job.source", "equals", "rocguard_run")}},
+			{Rules: []SearchRule{searchRule("job.source", "equals", "gpuardian_run")}},
 		}}
 		_, sessions, _, err := store.Search(ctx, expression, SearchSort{}, 50, SearchCursor{})
 		if err != nil || len(sessions) != 1 || sessions[0].ID != "alpha" {

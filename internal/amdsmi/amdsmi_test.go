@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"rocguard/internal/model"
+	"gpuardian/internal/model"
 )
 
 func TestParseProcessJSON(t *testing.T) {

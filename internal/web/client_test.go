@@ -56,7 +56,7 @@ func TestNodeClientAllowsHTTPOnlyWithExplicitOptIn(t *testing.T) {
 	clients := newNodeHTTPClients()
 	defer clients.closeIdleConnections()
 	blocked := NodeClient{Timeout: time.Second, clients: clients}
-	if err := blocked.Health(context.Background(), record, record.RootKey); err == nil || !strings.Contains(err.Error(), "ROCGUARD_WEB_ALLOW_INSECURE_NODES") {
+	if err := blocked.Health(context.Background(), record, record.RootKey); err == nil || !strings.Contains(err.Error(), "GPUARDIAN_WEB_ALLOW_INSECURE_NODES") {
 		t.Fatalf("default HTTP error = %v", err)
 	}
 	if got := hits.Load(); got != 0 {

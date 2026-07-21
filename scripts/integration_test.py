@@ -11,8 +11,8 @@ from pathlib import Path
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run light Rocguard integration tests on a bare-metal AMD GPU host.")
-    parser.add_argument("--rocguard", default="./rocguard", help="Path to rocguard binary.")
+    parser = argparse.ArgumentParser(description="Run light Gpuardian integration tests on a bare-metal AMD GPU host.")
+    parser.add_argument("--gpuardian", default="./gpuardian", help="Path to gpuardian binary.")
     parser.add_argument("--gpus", required=True, help="Comma-separated host GPU list, for example: 2 or 2,3.")
     parser.add_argument("--duration", type=int, default=8, help="Seconds for each GPU workload.")
     parser.add_argument("--mem-mb", type=int, default=64, help="Approximate VRAM per GPU per process.")
@@ -72,9 +72,9 @@ def parse_gpu_list(value):
 def main():
     args = parse_args()
     root = Path(__file__).resolve().parents[1]
-    rocguard = str((root / args.rocguard).resolve()) if not os.path.isabs(args.rocguard) else args.rocguard
+    gpuardian = str((root / args.gpuardian).resolve()) if not os.path.isabs(args.gpuardian) else args.gpuardian
     clean_env = os.environ.copy()
-    for name in ("KEY", "ROOT_KEY", "ROCGUARD_WEB_PASSWORD"):
+    for name in ("KEY", "ROOT_KEY", "GPUARDIAN_WEB_PASSWORD"):
         clean_env.pop(name, None)
     token_env = clean_env.copy()
     token_env["KEY"] = args.key
@@ -82,29 +82,29 @@ def main():
     if args.root_key:
         root_env["ROOT_KEY"] = args.root_key
 
-    print(f"rocguard={rocguard}")
+    print(f"gpuardian={gpuardian}")
     print(f"gpus={args.gpus}, duration={args.duration}s, mem={args.mem_mb}MiB, matrix={args.matrix}, sleep={args.sleep}s")
 
     bypass_ids = []
     try:
         if not args.no_auto_bypass:
-            auto_bypass_existing_processes(args, rocguard, clean_env, root_env, bypass_ids)
+            auto_bypass_existing_processes(args, gpuardian, clean_env, root_env, bypass_ids)
 
-        test_multigpu(args, root, rocguard, token_env)
-        test_child_processes(args, root, rocguard, token_env)
+        test_multigpu(args, root, gpuardian, token_env)
+        test_child_processes(args, root, gpuardian, token_env)
 
         if args.docker_image:
-            test_docker(args, root, rocguard, clean_env, token_env, root_env)
+            test_docker(args, root, gpuardian, clean_env, token_env, root_env)
         else:
             print("[skip] docker: pass --docker-image <rocm-pytorch-image> to run")
 
         if args.k8s_namespace and args.k8s_image:
-            test_k8s(args, rocguard, clean_env, token_env, root_env)
+            test_k8s(args, gpuardian, clean_env, token_env, root_env)
         else:
             print("[skip] k8s: pass --k8s-namespace <ns> --k8s-image <image> to run")
     finally:
         for bypass_id in reversed(bypass_ids):
-            run([rocguard, "revoke", bypass_id], env=root_env, check=False)
+            run([gpuardian, "revoke", bypass_id], env=root_env, check=False)
 
     print("integration tests completed")
     return 0
@@ -131,7 +131,7 @@ def run_json(cmd, *, env=None):
     return json.loads(result.stdout[start:])
 
 
-def auto_bypass_existing_processes(args, rocguard, clean_env, root_env, bypass_ids):
+def auto_bypass_existing_processes(args, gpuardian, clean_env, root_env, bypass_ids):
     print("[setup] auto-bypass existing GPU processes on selected GPUs")
     processes = amd_smi_processes(set(args.gpu_list), clean_env)
     if not processes:
@@ -147,7 +147,7 @@ def auto_bypass_existing_processes(args, rocguard, clean_env, root_env, bypass_i
             print(f"[setup] skip stale pid={pid} gpu={process['gpu']}")
             continue
         bypass = run_json(
-            [rocguard, "bypass", "add", "--pid", str(pid), "--ttl", args.bypass_ttl, "--reason", "rocguard-integration-preexisting"],
+            [gpuardian, "bypass", "add", "--pid", str(pid), "--ttl", args.bypass_ttl, "--reason", "gpuardian-integration-preexisting"],
             env=root_env,
         )
         if bypass.get("id"):
@@ -200,12 +200,12 @@ def hold_args(args, gpu_value):
     ]
 
 
-def test_multigpu(args, root, rocguard, env):
+def test_multigpu(args, root, gpuardian, env):
     print("[test] multi-gpu holder")
     gpu_csv = ",".join(str(gpu) for gpu in args.gpu_list)
     run(
         [
-            rocguard,
+            gpuardian,
             "run",
             "--",
             sys.executable,
@@ -216,11 +216,11 @@ def test_multigpu(args, root, rocguard, env):
     )
 
 
-def test_child_processes(args, root, rocguard, env):
-    print("[test] child processes stay authorized in rocguard cgroup")
+def test_child_processes(args, root, gpuardian, env):
+    print("[test] child processes stay authorized in gpuardian cgroup")
     run(
         [
-            rocguard,
+            gpuardian,
             "run",
             "--",
             sys.executable,
@@ -240,9 +240,9 @@ def docker_cmd(args):
     return prefix + ["docker"]
 
 
-def test_docker(args, root, rocguard, clean_env, token_env, root_env):
+def test_docker(args, root, gpuardian, clean_env, token_env, root_env):
     print("[test] docker container authorization")
-    name = f"rocguard-it-{os.getpid()}"
+    name = f"gpuardian-it-{os.getpid()}"
     mount = f"{root}:/work:ro"
     allow = {}
     try:
@@ -271,26 +271,26 @@ def test_docker(args, root, rocguard, clean_env, token_env, root_env):
             ],
             env=clean_env,
         )
-        allow = run_json([rocguard, "allow", "docker", "--container", name], env=token_env)
+        allow = run_json([gpuardian, "allow", "docker", "--container", name], env=token_env)
         run(
             docker_cmd(args) + ["exec", name, "python3", "scripts/hold_gpu.py"] + hold_args(args, args.gpu_list[0]),
             env=clean_env,
         )
     finally:
         if allow.get("authorization_id"):
-            run([rocguard, "revoke", allow["authorization_id"]], env=root_env, check=False)
+            run([gpuardian, "revoke", allow["authorization_id"]], env=root_env, check=False)
         run(docker_cmd(args) + ["rm", "-f", name], env=clean_env, check=False)
 
 
-def test_k8s(args, rocguard, clean_env, token_env, root_env):
+def test_k8s(args, gpuardian, clean_env, token_env, root_env):
     print("[test] k8s namespace authorization")
     namespace = args.k8s_namespace
-    pod = f"rocguard-it-{os.getpid()}"
+    pod = f"gpuardian-it-{os.getpid()}"
     if args.k8s_create_namespace:
         run(["kubectl", "create", "namespace", namespace], env=clean_env, check=False)
     allow = {}
     try:
-        allow = run_json([rocguard, "allow", "k8s", "--namespace", namespace], env=token_env)
+        allow = run_json([gpuardian, "allow", "k8s", "--namespace", namespace], env=token_env)
         manifest = k8s_manifest(args, namespace, pod)
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tmp:
             tmp.write(manifest)
@@ -304,7 +304,7 @@ def test_k8s(args, rocguard, clean_env, token_env, root_env):
             Path(tmp_path).unlink(missing_ok=True)
         run(["kubectl", "delete", "pod", pod, "-n", namespace, "--ignore-not-found=true"], env=clean_env, check=False)
         if allow.get("authorization_id"):
-            run([rocguard, "revoke", allow["authorization_id"]], env=root_env, check=False)
+            run([gpuardian, "revoke", allow["authorization_id"]], env=root_env, check=False)
 
 
 def k8s_manifest(args, namespace, pod):

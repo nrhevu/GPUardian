@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/telemetry"
 )
 
 func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
@@ -47,11 +47,11 @@ func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
 				},
 			}),
 			event(t, 4, telemetry.EventJobStarted, jobStarted, telemetry.JobEvent{
-				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "rocguard_run", Mode: "run",
+				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "gpuardian_run", Mode: "run",
 				Holder: "alice", Command: []string{"python", "train.py", "--token=possibly-secret"}, GPUs: []int{0, 1}, StartedAt: &jobStarted, StartPrecision: "exact",
 			}),
 			event(t, 5, telemetry.EventJobFinished, jobFinished, telemetry.JobEvent{
-				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "rocguard_run", Mode: "run",
+				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "gpuardian_run", Mode: "run",
 				Holder: "alice", FinishedAt: &jobFinished, FinishPrecision: "exact", ExitCode: &exitCode, Reason: "cgroup_empty",
 			}),
 		},
@@ -125,7 +125,7 @@ func TestOneJobCanBelongToMultipleReservationSessionsWithoutInflatingSummary(t *
 	page := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-3", Events: []telemetry.Event{
 		event(t, 1, telemetry.EventReservationUpsert, start, telemetry.ReservationUpsert{GroupID: "group-a", Holder: "alice", CreatedAt: start, StartsAt: start, ExpiresAt: start.Add(time.Hour), Members: []telemetry.ReservationMember{{ReservationID: "r0", GPU: 0}}}),
 		event(t, 2, telemetry.EventReservationUpsert, start, telemetry.ReservationUpsert{GroupID: "group-b", Holder: "alice", CreatedAt: start, StartsAt: start, ExpiresAt: start.Add(time.Hour), Members: []telemetry.ReservationMember{{ReservationID: "r1", GPU: 1}}}),
-		event(t, 3, telemetry.EventJobStarted, jobStart, telemetry.JobEvent{ExecutionID: "job-shared", AuthorizationID: "auth-shared", GroupID: "group-a", GroupIDs: []string{"group-a", "group-b"}, Source: "rocguard_run", Mode: "run", Holder: "alice", StartedAt: &jobStart}),
+		event(t, 3, telemetry.EventJobStarted, jobStart, telemetry.JobEvent{ExecutionID: "job-shared", AuthorizationID: "auth-shared", GroupID: "group-a", GroupIDs: []string{"group-a", "group-b"}, Source: "gpuardian_run", Mode: "run", Holder: "alice", StartedAt: &jobStart}),
 	}}
 	if err := store.ApplyPage(ctx, "server-a", "GPU node", page); err != nil {
 		t.Fatal(err)

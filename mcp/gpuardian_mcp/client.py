@@ -1,4 +1,4 @@
-"""HTTP client for the RocGuard web gateway API.
+"""HTTP client for the Gpuardian web gateway API.
 
 Wraps the gateway's /api/* endpoints with session-cookie auth and automatic
 re-login on 401. Never logs credentials or cookies.
@@ -13,12 +13,12 @@ from urllib.parse import quote
 import httpx
 
 
-class RocGuardError(Exception):
+class GpuardianError(Exception):
     """Raised when the gateway returns an error response."""
 
 
-class RocGuardClient:
-    """Thin HTTP client over the RocGuard web gateway /api/* endpoints."""
+class GpuardianClient:
+    """Thin HTTP client over the Gpuardian web gateway /api/* endpoints."""
 
     def __init__(
         self,
@@ -54,11 +54,11 @@ class RocGuardClient:
         )
         if resp.status_code == 429:
             retry = resp.headers.get("Retry-After")
-            raise RocGuardError(
+            raise GpuardianError(
                 f"login rate-limited, retry after {retry}s" if retry else "login rate-limited"
             )
         if resp.status_code != 200:
-            raise RocGuardError(f"login failed: HTTP {resp.status_code}")
+            raise GpuardianError(f"login failed: HTTP {resp.status_code}")
         self._logged_in = True
 
     def close(self) -> None:
@@ -92,12 +92,12 @@ class RocGuardClient:
             return self._request(method, path, params=params, json_body=json_body, _retry=False)
         if resp.status_code == 429:
             retry = resp.headers.get("Retry-After")
-            raise RocGuardError(
+            raise GpuardianError(
                 f"rate-limited ({path}), retry after {retry}s" if retry else f"rate-limited ({path})"
             )
         if resp.status_code >= 400:
             detail = _error_detail(resp)
-            raise RocGuardError(f"HTTP {resp.status_code} {method} {path}: {detail}")
+            raise GpuardianError(f"HTTP {resp.status_code} {method} {path}: {detail}")
         if resp.status_code == 204 or not resp.content:
             return None
         return resp.json()

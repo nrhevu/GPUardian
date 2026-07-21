@@ -1,8 +1,8 @@
-name: rocguard-web-dev
+name: gpuardian-web-dev
 
 services:
   gateway:
-    image: rocguard-web:dev
+    image: gpuardian-web:dev
     build:
       context: .
       dockerfile: Dockerfile.web
@@ -12,25 +12,25 @@ services:
     env_file:
       - ./.dev/web.env
     environment:
-      ROCGUARD_WEB_ADDR: 0.0.0.0:8080
-      ROCGUARD_WEB_TLS_CERT: ""
-      ROCGUARD_WEB_TLS_KEY: ""
-      ROCGUARD_WEB_ALLOW_INSECURE: "1"
-      ROCGUARD_WEB_ALLOW_INSECURE_NODES: "1"
-      ROCGUARD_WEB_SECURE_COOKIES: "0"
-      ROCGUARD_WEB_TRUST_PROXY: "0"
-      ROCGUARD_WEB_USERS: /var/lib/rocguard-web/users.json
-      ROCGUARD_WEB_REGISTRY: /var/lib/rocguard-web/servers.json
-      ROCGUARD_WEB_SESSION_KEY: /var/lib/rocguard-web/session.key
-      ROCGUARD_WEB_USER_KEY: /var/lib/rocguard-web/user-key.key
-      ROCGUARD_WEB_DB: /var/lib/rocguard-web/history.db
-      ROCGUARD_WEB_UI_DIR: /usr/local/share/rocguard/ui
+      GPUARDIAN_WEB_ADDR: 0.0.0.0:8080
+      GPUARDIAN_WEB_TLS_CERT: ""
+      GPUARDIAN_WEB_TLS_KEY: ""
+      GPUARDIAN_WEB_ALLOW_INSECURE: "1"
+      GPUARDIAN_WEB_ALLOW_INSECURE_NODES: "1"
+      GPUARDIAN_WEB_SECURE_COOKIES: "0"
+      GPUARDIAN_WEB_TRUST_PROXY: "0"
+      GPUARDIAN_WEB_USERS: /var/lib/gpuardian-web/users.json
+      GPUARDIAN_WEB_REGISTRY: /var/lib/gpuardian-web/servers.json
+      GPUARDIAN_WEB_SESSION_KEY: /var/lib/gpuardian-web/session.key
+      GPUARDIAN_WEB_USER_KEY: /var/lib/gpuardian-web/user-key.key
+      GPUARDIAN_WEB_DB: /var/lib/gpuardian-web/history.db
+      GPUARDIAN_WEB_UI_DIR: /usr/local/share/gpuardian/ui
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
-      - ./.dev/web:/var/lib/rocguard-web
+      - ./.dev/web:/var/lib/gpuardian-web
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m

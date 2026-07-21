@@ -1,4 +1,4 @@
-module rocguard
+module gpuardian
 
 go 1.25.0
 

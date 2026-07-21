@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"rocguard/internal/model"
-	"rocguard/internal/proc"
-	"rocguard/internal/runtime"
+	"gpuardian/internal/model"
+	"gpuardian/internal/proc"
+	"gpuardian/internal/runtime"
 )
 
 type Killer interface {
@@ -899,7 +899,7 @@ func (a Authorizer) performKill(ctx context.Context, request pendingKill) error 
 			return fmt.Errorf("revalidate GPU process before kill: %w", err)
 		}
 	}
-	msg := fmt.Sprintf("rocguard killed pid=%d on gpu=%d: %s", request.view.Process.PID, request.view.Process.GPU, request.reason)
+	msg := fmt.Sprintf("gpuardian killed pid=%d on gpu=%d: %s", request.view.Process.PID, request.view.Process.GPU, request.reason)
 	return a.Killer.Kill(request.view.Info, msg)
 }
 

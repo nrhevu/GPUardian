@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/model"
+	"gpuardian/internal/model"
 )
 
 type countingSnapshotAMD struct {

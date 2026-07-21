@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"rocguard/internal/model"
+	"gpuardian/internal/model"
 )
 
 const maxCmdlineBytes = 64 << 10

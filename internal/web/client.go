@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"rocguard/internal/model"
-	"rocguard/internal/protocol"
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/model"
+	"gpuardian/internal/protocol"
+	"gpuardian/internal/telemetry"
 )
 
 const (
@@ -561,7 +561,7 @@ func joinURL(base, apiPath string, allowInsecureNodes bool) (string, error) {
 		return "", err
 	}
 	if parsed.Scheme != "https" && !allowInsecureNodes {
-		return "", errors.New("plaintext HTTP node endpoints are disabled; use HTTPS or set ROCGUARD_WEB_ALLOW_INSECURE_NODES=1")
+		return "", errors.New("plaintext HTTP node endpoints are disabled; use HTTPS or set GPUARDIAN_WEB_ALLOW_INSECURE_NODES=1")
 	}
 	parsed.Path = path.Join(parsed.Path, apiPath)
 	return parsed.String(), nil

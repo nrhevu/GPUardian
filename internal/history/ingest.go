@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/telemetry"
 )
 
 func (s *Store) ApplyPage(ctx context.Context, serverID, serverName string, page telemetry.Page) error {

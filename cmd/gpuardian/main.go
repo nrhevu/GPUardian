@@ -20,16 +20,16 @@ import (
 	"time"
 	"unsafe"
 
-	"rocguard/internal/config"
-	"rocguard/internal/daemon"
-	"rocguard/internal/model"
-	"rocguard/internal/protocol"
-	webserver "rocguard/internal/web"
+	"gpuardian/internal/config"
+	"gpuardian/internal/daemon"
+	"gpuardian/internal/model"
+	"gpuardian/internal/protocol"
+	webserver "gpuardian/internal/web"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "rocguard:", err)
+		fmt.Fprintln(os.Stderr, "gpuardian:", err)
 		os.Exit(1)
 	}
 }
@@ -70,7 +70,7 @@ func run(args []string) error {
 		return bypassCommand(cfg, args[1:])
 	case "revoke":
 		if len(args) != 2 {
-			return errors.New("usage: rocguard revoke <token-or-reservation-or-authorization-or-bypass-id>")
+			return errors.New("usage: gpuardian revoke <token-or-reservation-or-authorization-or-bypass-id>")
 		}
 		rootKey, err := rootKeyFromEnvOrPrompt()
 		if err != nil {
@@ -135,12 +135,12 @@ func register(cfg config.Config, args []string) error {
 			continue
 		}
 		if mode != "" && mode != selected.mode {
-			return errors.New("usage: rocguard register (--reserved | --claimed)")
+			return errors.New("usage: gpuardian register (--reserved | --claimed)")
 		}
 		mode = selected.mode
 	}
 	if mode == "" {
-		return errors.New("usage: rocguard register (--reserved | --claimed)")
+		return errors.New("usage: gpuardian register (--reserved | --claimed)")
 	}
 	reader := bufio.NewReader(os.Stdin)
 	rootKey, err := promptSecret(reader, "Root key: ")
@@ -225,13 +225,13 @@ func formatIntList(values []int) string {
 func runCommand(cfg config.Config, args []string) error {
 	command := args
 	if len(command) > 0 && command[0] != "--" && strings.HasPrefix(command[0], "-") {
-		return errors.New("usage: KEY=... rocguard run -- <command>")
+		return errors.New("usage: KEY=... gpuardian run -- <command>")
 	}
 	if len(command) > 0 && command[0] == "--" {
 		command = command[1:]
 	}
 	if len(command) == 0 {
-		return errors.New("usage: KEY=... rocguard run -- <command>")
+		return errors.New("usage: KEY=... gpuardian run -- <command>")
 	}
 	if !strings.ContainsRune(command[0], filepath.Separator) {
 		resolved, err := exec.LookPath(command[0])
@@ -262,7 +262,7 @@ func runCommand(cfg config.Config, args []string) error {
 
 func allowCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: KEY=... rocguard allow (docker|k8s|user) ...")
+		return errors.New("usage: KEY=... gpuardian allow (docker|k8s|user) ...")
 	}
 	switch args[0] {
 	case "docker":
@@ -296,14 +296,14 @@ func allowCommand(cfg config.Config, args []string) error {
 
 func tokenCommand(cfg config.Config, args []string) error {
 	if len(args) != 1 || args[0] != "info" {
-		return errors.New("usage: rocguard token info")
+		return errors.New("usage: gpuardian token info")
 	}
 	return printRPC(cfg, "token_info", requiredToken(), protocol.TokenInfoArgs{})
 }
 
 func bypassCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 || args[0] != "add" {
-		return errors.New("usage: rocguard bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>")
+		return errors.New("usage: gpuardian bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>")
 	}
 	fs := flag.NewFlagSet("bypass add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -656,7 +656,7 @@ func setTermios(fd uintptr, state *syscall.Termios) error {
 func requiredToken() string {
 	token := tokenFromEnv()
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "rocguard: KEY token is required")
+		fmt.Fprintln(os.Stderr, "gpuardian: KEY token is required")
 		os.Exit(1)
 	}
 	return token
@@ -671,20 +671,20 @@ func usage() {
 }
 
 func usageText() string {
-	return `rocguard commands:
-  rocguard help
-  rocguard daemon [--dry-run]
-  rocguard web [--addr <host:port>] [--registry <path>] [--ui-dir <path>]
-  rocguard register (--reserved | --claimed)
-  KEY=... rocguard run -- <command>
-  KEY=... rocguard allow docker --container <name-or-id>
-  KEY=... rocguard allow k8s --namespace <name>
-  KEY=... rocguard allow user --name <name>
-  KEY=... rocguard status  (root may omit KEY)
-  KEY=... rocguard ps      (root may omit KEY)
-  KEY=... rocguard token info
-  ROOT_KEY=... rocguard show-keys
-  ROOT_KEY=... rocguard bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>
-  ROOT_KEY=... rocguard revoke <token-or-reservation-or-authorization-or-bypass-id>
+	return `gpuardian commands:
+  gpuardian help
+  gpuardian daemon [--dry-run]
+  gpuardian web [--addr <host:port>] [--registry <path>] [--ui-dir <path>]
+  gpuardian register (--reserved | --claimed)
+  KEY=... gpuardian run -- <command>
+  KEY=... gpuardian allow docker --container <name-or-id>
+  KEY=... gpuardian allow k8s --namespace <name>
+  KEY=... gpuardian allow user --name <name>
+  KEY=... gpuardian status  (root may omit KEY)
+  KEY=... gpuardian ps      (root may omit KEY)
+  KEY=... gpuardian token info
+  ROOT_KEY=... gpuardian show-keys
+  ROOT_KEY=... gpuardian bypass add (--pid <pid> | --command <path> --uid <uid>) --ttl <duration> --reason <text>
+  ROOT_KEY=... gpuardian revoke <token-or-reservation-or-authorization-or-bypass-id>
 `
 }

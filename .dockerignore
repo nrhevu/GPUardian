@@ -7,8 +7,8 @@
 !go.sum
 
 !cmd/
-!cmd/rocguard/
-!cmd/rocguard/*.go
+!cmd/gpuardian/
+!cmd/gpuardian/*.go
 
 !internal/
 !internal/**/

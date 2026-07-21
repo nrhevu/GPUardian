@@ -682,7 +682,7 @@ function App() {
           <div>
             <p className="eyebrow">{view === "history" ? "History" : "Nodes"}</p>
             <h1>{view === "history" ? "Reservation dashboard" : current?.server?.name || "No server selected"}</h1>
-            {view !== "history" && !current?.server && <p className="muted">Add a RocGuard node to begin.</p>}
+            {view !== "history" && !current?.server && <p className="muted">Add a GPUardian node to begin.</p>}
           </div>
           <div className="topbar-actions">
             <button className={view === "gpu" ? "tab active" : "tab"} onClick={() => setView("gpu")}>
@@ -1160,7 +1160,7 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
           <div className="section-heading compact"><div><h3>Observed jobs</h3><p className="muted">Full command lines are visible to every signed-in user and may contain sensitive arguments.</p></div></div>
           {jobs.map((job) => (
             <article className="history-job" key={job.id}>
-              <div><strong>{job.source === "rocguard_run" ? "rocguard run" : `${job.mode} process`}</strong><span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span></div>
+              <div><strong>{job.source === "gpuardian_run" ? "gpuardian run" : `${job.mode} process`}</strong><span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span></div>
               <code>{job.command?.join(" ") || "—"}</code>
               <small>{job.started_at ? compactDateTime(job.started_at) : "unknown start"}{job.start_precision ? ` (${job.start_precision})` : ""} → {job.finished_at ? compactDateTime(job.finished_at) : "running"}{job.finish_precision ? ` (${job.finish_precision})` : ""}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}{job.reason ? ` · ${job.reason}` : ""}</small>
             </article>
@@ -1256,7 +1256,7 @@ function historyFilterFields(servers = []) {
     { value: "average_vram_bytes", label: "Average VRAM (GiB)", type: "number", factor: 1024 ** 3 },
     { value: "peak_vram_bytes", label: "Peak VRAM (GiB)", type: "number", factor: 1024 ** 3 },
     { value: "job_count", label: "Job count", type: "number" },
-    { value: "job.source", label: "Job source", type: "enum", options: options([["rocguard_run", "rocguard run"], ["authorized_process", "Authorized process"]]) },
+    { value: "job.source", label: "Job source", type: "enum", options: options([["gpuardian_run", "gpuardian run"], ["authorized_process", "Authorized process"]]) },
     { value: "job.mode", label: "Job mode", type: "text" },
     { value: "job.holder", label: "Job holder", type: "text" },
     { value: "job.command", label: "Job command / argv", type: "text", placeholder: "train.py" },
@@ -1475,7 +1475,7 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
         </button>
         {registrationEnabled && (
           <div className="login-switch-row">
-            <span>{creating ? "Already have an account?" : "New to RocGuard?"}</span>
+            <span>{creating ? "Already have an account?" : "New to GPUardian?"}</span>
             <button type="button" className="login-switch-button" onClick={switchMode} disabled={pending}>
               {creating ? "Sign in" : "Create account"}
             </button>
@@ -1489,8 +1489,8 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
 function BrandLockup({ className, showMark = true }) {
   return (
     <div className={className}>
-      {showMark && <img className="brand-mark" src="/rocguard-icon.svg" alt="" />}
-      <span>RocGuard</span>
+      {showMark && <img className="brand-mark" src="/gpuardian-icon.svg" alt="" />}
+      <span>GPUardian</span>
     </div>
   );
 }
@@ -2121,7 +2121,7 @@ function AddServerModal({ onClose, onSubmit }) {
         }} placeholder="https://server:8192" required /></label>
         <label>Root key<input type="password" value={form.root_key} onChange={(event) => setForm({ ...form, root_key: event.target.value })} required /></label>
         <label className="checkbox-line"><input type="checkbox" checked={form.tls_skip_verify} disabled={plaintextHTTP} onChange={(event) => setForm({ ...form, tls_skip_verify: event.target.checked })} />Skip TLS verify</label>
-        {plaintextHTTP && <div className="form-warning">Plaintext HTTP sends the node root key and control traffic unencrypted. The gateway process must explicitly enable ROCGUARD_WEB_ALLOW_INSECURE_NODES.</div>}
+        {plaintextHTTP && <div className="form-warning">Plaintext HTTP sends the node root key and control traffic unencrypted. The gateway process must explicitly enable GPUARDIAN_WEB_ALLOW_INSECURE_NODES.</div>}
         {error && <div className="modal-error">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="small-button" onClick={onClose} disabled={pending}>Cancel</button>

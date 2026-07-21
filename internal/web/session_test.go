@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/config"
+	"gpuardian/internal/config"
 )
 
 func TestSessionLoginProtectsAPIWithoutBasicPopup(t *testing.T) {

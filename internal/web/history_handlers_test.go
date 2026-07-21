@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/history"
-	"rocguard/internal/telemetry"
+	"gpuardian/internal/config"
+	"gpuardian/internal/history"
+	"gpuardian/internal/telemetry"
 )
 
 func TestTelemetryCapabilityRequiresExplicitAdvertisement(t *testing.T) {

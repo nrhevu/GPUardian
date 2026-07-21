@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/history"
-	"rocguard/internal/model"
-	"rocguard/internal/netlimit"
-	"rocguard/internal/protocol"
+	"gpuardian/internal/config"
+	"gpuardian/internal/history"
+	"gpuardian/internal/model"
+	"gpuardian/internal/netlimit"
+	"gpuardian/internal/protocol"
 )
 
 type Server struct {
@@ -142,10 +142,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return errors.New("web session key is unavailable")
 	}
 	if (s.Cfg.WebTLSCert == "") != (s.Cfg.WebTLSKey == "") {
-		return errors.New("both ROCGUARD_WEB_TLS_CERT and ROCGUARD_WEB_TLS_KEY are required for TLS")
+		return errors.New("both GPUARDIAN_WEB_TLS_CERT and GPUARDIAN_WEB_TLS_KEY are required for TLS")
 	}
 	if s.Cfg.WebTLSCert == "" && !s.Cfg.WebAllowInsecure {
-		return errors.New("refusing web HTTP listener without TLS; configure TLS or explicitly set ROCGUARD_WEB_ALLOW_INSECURE=1")
+		return errors.New("refusing web HTTP listener without TLS; configure TLS or explicitly set GPUARDIAN_WEB_ALLOW_INSECURE=1")
 	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if s.Cfg.WebTLSCert != "" {

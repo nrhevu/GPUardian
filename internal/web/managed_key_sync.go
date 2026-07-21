@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"rocguard/internal/protocol"
+	"gpuardian/internal/protocol"
 )
 
 const (

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"rocguard/internal/config"
-	"rocguard/internal/model"
-	"rocguard/internal/protocol"
+	"gpuardian/internal/config"
+	"gpuardian/internal/model"
+	"gpuardian/internal/protocol"
 )
 
 func testStore(t *testing.T) *Store {
