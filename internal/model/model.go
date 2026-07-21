@@ -195,6 +195,9 @@ type Status struct {
 
 type GPUSnapshot struct {
 	ID               int              `json:"id"`
+	Vendor           string           `json:"vendor,omitempty"`
+	Model            string           `json:"model,omitempty"`
+	UUID             string           `json:"uuid,omitempty"`
 	State            string           `json:"state"`
 	MemoryUsedBytes  *uint64          `json:"memory_used_bytes,omitempty"`
 	MemoryTotalBytes *uint64          `json:"memory_total_bytes,omitempty"`

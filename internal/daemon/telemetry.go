@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"gpuardian/internal/amdsmi"
 	"gpuardian/internal/enforce"
+	"gpuardian/internal/gpusmi"
 	"gpuardian/internal/model"
 	"gpuardian/internal/telemetry"
 )
@@ -202,7 +202,7 @@ func (s *Server) metricMonitor(ctx context.Context) {
 }
 
 func (s *Server) sampleTelemetryMetrics(ctx context.Context, start, end time.Time) {
-	provider, ok := s.AMD.(amdsmi.MetricsProvider)
+	provider, ok := s.GPU.(gpusmi.MetricsProvider)
 	if !ok {
 		return
 	}

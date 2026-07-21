@@ -24,7 +24,9 @@ import (
 	"gpuardian/internal/amdsmi"
 	"gpuardian/internal/config"
 	"gpuardian/internal/enforce"
+	"gpuardian/internal/gpusmi"
 	"gpuardian/internal/model"
+	"gpuardian/internal/nvidiasmi"
 	"gpuardian/internal/proc"
 	"gpuardian/internal/protocol"
 	"gpuardian/internal/runtime"
@@ -35,15 +37,15 @@ import (
 type Server struct {
 	Cfg                  config.Config
 	Store                *store.Store
-	AMD                  amdsmi.Provider
+	GPU                  gpusmi.Provider
 	Proc                 proc.Reader
 	Runtime              runtime.Resolver
 	Killer               enforce.Killer
 	Interval             time.Duration
 	enforceMu            sync.Mutex
 	auditMu              sync.Mutex
-	lastAMDError         string
-	lastAMDErrorAt       time.Time
+	lastGPUError         string
+	lastGPUErrorAt       time.Time
 	lastKillError        string
 	lastKillErrorAt      time.Time
 	evictionClean        map[string]int
@@ -63,6 +65,10 @@ type Server struct {
 	metricsReadAt        time.Time
 	metricsReadRows      []model.GPUMetric
 	metricsReadErr       error
+	devicesReadMu        sync.Mutex
+	devicesReadAt        time.Time
+	devicesReadRows      map[int]gpusmi.DeviceInfo
+	devicesReadErr       error
 	Telemetry            *telemetry.Outbox
 	telemetryWriteMu     sync.Mutex
 	telemetryGapFrom     time.Time
@@ -118,7 +124,7 @@ func New(cfg config.Config) *Server {
 	return &Server{
 		Cfg:            cfg,
 		Store:          st,
-		AMD:            amdsmi.NewCLIProvider(),
+		GPU:            selectGPUProvider(cfg),
 		Proc:           procReader,
 		Runtime:        runtime.NewCachedResolver(runtime.CLIResolver{}),
 		Killer:         enforce.RealKiller{Grace: 2 * time.Second, Proc: procReader},
@@ -129,6 +135,31 @@ func New(cfg config.Config) *Server {
 		observedJobs:   make(map[string]*observedTelemetryJob),
 		runJobs:        make(map[string]telemetry.JobEvent),
 		resolvePeer:    peerCred,
+	}
+}
+
+// selectGPUProvider picks the GPU SMI provider based on GPUARDIAN_GPU_VENDOR.
+// "auto" probes for amd-smi first (preserving the historical default for
+// existing AMD nodes that never set the env var) and falls back to
+// nvidia-smi. Explicit "amd" or "nvidia" skip probing and use that provider
+// directly; an unrecognized value is treated as "auto".
+func selectGPUProvider(cfg config.Config) gpusmi.Provider {
+	switch strings.ToLower(strings.TrimSpace(cfg.GPUVendor)) {
+	case "amd":
+		return amdsmi.NewCLIProvider()
+	case "nvidia":
+		return nvidiasmi.NewCLIProvider()
+	default:
+		if _, err := exec.LookPath("amd-smi"); err == nil {
+			return amdsmi.NewCLIProvider()
+		}
+		if _, err := exec.LookPath("nvidia-smi"); err == nil {
+			return nvidiasmi.NewCLIProvider()
+		}
+		// Neither tool is on PATH; default to the AMD provider so the daemon
+		// still starts and surfaces a clear "amd-smi process list failed"
+		// audit error rather than silently doing nothing.
+		return amdsmi.NewCLIProvider()
 	}
 }
 
@@ -1107,9 +1138,9 @@ func (s *Server) ensureGPUsCanReserveWindow(ctx context.Context, gpus []int, sta
 	if now.Before(startsAt) || !now.Before(expiresAt) {
 		return nil
 	}
-	processes, err := s.AMD.Processes(ctx)
+	processes, err := s.GPU.Processes(ctx)
 	if err != nil {
-		return fmt.Errorf("amd-smi process list: %w", err)
+		return fmt.Errorf("GPU process list: %w", err)
 	}
 	auth := s.authorizer()
 	for _, gpu := range gpus {
@@ -1281,7 +1312,7 @@ func (s *Server) processesForRead(ctx context.Context) ([]model.GPUProcess, erro
 	if !s.processReadAt.IsZero() {
 		return append([]model.GPUProcess(nil), s.processReadRows...), s.processReadErr
 	}
-	rows, err := s.AMD.Processes(ctx)
+	rows, err := s.GPU.Processes(ctx)
 	s.processReadAt = time.Now()
 	s.processReadRows = append(s.processReadRows[:0], rows...)
 	s.processReadErr = err
@@ -1472,18 +1503,18 @@ func (s *Server) monitor(ctx context.Context) {
 }
 
 func (s *Server) monitorOnce(ctx context.Context) {
-	processes, err := s.AMD.Processes(ctx)
+	processes, err := s.GPU.Processes(ctx)
 	s.processReadMu.Lock()
 	s.processReadAt = time.Now()
 	s.processReadRows = append(s.processReadRows[:0], processes...)
 	s.processReadErr = err
 	s.processReadMu.Unlock()
 	if err != nil {
-		s.auditAMDProcessError(err)
+		s.auditGPUProcessError(err)
 		s.cleanupExpiredManagedCgroups()
 		return
 	}
-	s.auditAMDProcessRecovery()
+	s.auditGPUProcessRecovery()
 	s.enforceMu.Lock()
 	defer s.enforceMu.Unlock()
 	state, err := s.Store.EnforcementSnapshot()
@@ -1582,30 +1613,30 @@ func (s *Server) evictionScopeReady(kind, id string) bool {
 	return s.evictionClean[kind+":"+id] >= evictionCleanSamples
 }
 
-func (s *Server) auditAMDProcessError(processErr error) {
+func (s *Server) auditGPUProcessError(processErr error) {
 	now := time.Now().UTC()
 	message := processErr.Error()
 	s.auditMu.Lock()
-	if message == s.lastAMDError && now.Sub(s.lastAMDErrorAt) < time.Minute {
+	if message == s.lastGPUError && now.Sub(s.lastGPUErrorAt) < time.Minute {
 		s.auditMu.Unlock()
 		return
 	}
-	s.lastAMDError = message
-	s.lastAMDErrorAt = now
+	s.lastGPUError = message
+	s.lastGPUErrorAt = now
 	s.auditMu.Unlock()
-	_ = s.Store.AppendAudit(model.AuditEvent{Time: now, Kind: "error", Message: "amd-smi process list failed: " + message})
+	_ = s.Store.AppendAudit(model.AuditEvent{Time: now, Kind: "error", Message: "GPU process list failed: " + message})
 }
 
-func (s *Server) auditAMDProcessRecovery() {
+func (s *Server) auditGPUProcessRecovery() {
 	s.auditMu.Lock()
-	if s.lastAMDError == "" {
+	if s.lastGPUError == "" {
 		s.auditMu.Unlock()
 		return
 	}
-	s.lastAMDError = ""
-	s.lastAMDErrorAt = time.Time{}
+	s.lastGPUError = ""
+	s.lastGPUErrorAt = time.Time{}
 	s.auditMu.Unlock()
-	_ = s.Store.AppendAudit(model.AuditEvent{Time: time.Now().UTC(), Kind: "recovery", Message: "amd-smi process list recovered"})
+	_ = s.Store.AppendAudit(model.AuditEvent{Time: time.Now().UTC(), Kind: "recovery", Message: "GPU process list recovered"})
 }
 
 func (s *Server) cleanupFinishedBareAuthorizations() {
@@ -1659,7 +1690,7 @@ func (s *Server) cleanupExpiredAuthorizations() {
 	s.cleanupExpiredAuthorizationsState(state)
 }
 
-// cleanupExpiredManagedCgroups does not depend on the AMD process inventory.
+// cleanupExpiredManagedCgroups does not depend on the GPU process inventory.
 // Keep this path available during telemetry outages so revocation and expiry
 // still stop workloads that gpuardian placed in a managed cgroup. Non-cgroup
 // scopes retain their evidence until a successful GPU sample can assess them.
@@ -1955,14 +1986,14 @@ func (s *Server) authorizer() enforce.Authorizer {
 	present := make(map[gpuProcessKey]struct{})
 	validateKill := func(ctx context.Context, process model.GPUProcess) error {
 		sampleOnce.Do(func() {
-			if s.AMD == nil {
-				sampleErr = errors.New("AMD process provider is unavailable")
+			if s.GPU == nil {
+				sampleErr = errors.New("GPU process provider is unavailable")
 				return
 			}
 			var processes []model.GPUProcess
-			processes, sampleErr = s.AMD.Processes(ctx)
+			processes, sampleErr = s.GPU.Processes(ctx)
 			if sampleErr != nil {
-				s.auditAMDProcessError(sampleErr)
+				s.auditGPUProcessError(sampleErr)
 				return
 			}
 			for _, current := range processes {

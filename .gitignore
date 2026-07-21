@@ -1,7 +1,9 @@
 /gpuardian
+/rocguard
 /.dev/
 /coverage.out
 *.test
+go1.25.0.linux-amd64.tar.gz
 __pycache__/
 *.py[cod]
 web/ui/node_modules/

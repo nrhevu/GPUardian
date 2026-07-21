@@ -12,17 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"gpuardian/internal/gpusmi"
 	"gpuardian/internal/model"
 )
 
-type Provider interface {
-	Processes(ctx context.Context) ([]model.GPUProcess, error)
-}
-
-type MetricsProvider interface {
-	Metrics(ctx context.Context) ([]model.GPUMetric, error)
-}
-
+// CLIProvider shells out to amd-smi (with a rocm-smi fallback for metrics) and
+// satisfies gpusmi.Provider, gpusmi.MetricsProvider, and gpusmi.DeviceProvider
+// via Go's structural typing. The vendor-neutral interfaces live in
+// internal/gpusmi; this package owns only the AMD-specific parsing.
 type CLIProvider struct {
 	Command    string
 	Timeout    time.Duration
@@ -158,6 +155,82 @@ func (p CLIProvider) output(ctx context.Context, command string, args ...string)
 		return nil, fmt.Errorf("%s output exceeds %d bytes", command, maxSMIOutputBytes)
 	}
 	return output.Bytes(), nil
+}
+
+// Devices reports static device identity (vendor/model/UUID) keyed by GPU
+// index. It is best-effort: any failure returns an empty map so the snapshot
+// simply omits the vendor/model/UUID fields rather than failing the whole
+// snapshot. The amd-smi static payload is a gpu_data array whose entries may
+// carry product_name/marketing_name/gpu_uuid fields alongside the gpu index.
+func (p CLIProvider) Devices(ctx context.Context) (map[int]gpusmi.DeviceInfo, error) {
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	command := p.Command
+	if command == "" {
+		command = "amd-smi"
+	}
+	out, err := p.output(ctx, command, "static", "--json")
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeviceJSON(out)
+}
+
+// ParseDeviceJSON extracts per-GPU identity from an amd-smi static --json
+// payload. Unknown or missing fields are left empty; the returned map only
+// contains entries whose GPU index parsed cleanly.
+func ParseDeviceJSON(data []byte) (map[int]gpusmi.DeviceInfo, error) {
+	data = trimToJSON(data)
+	if err := validateSMIJSONComplexity(data); err != nil {
+		return nil, err
+	}
+	entriesJSON, err := metricEntriesJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := scanJSONArray(entriesJSON, maxGPUIndex+1, maxMetricEntryBytes, "static device response", nil); err != nil {
+		return nil, err
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(entriesJSON, &entries); err != nil {
+		return nil, err
+	}
+	out := make(map[int]gpusmi.DeviceInfo, len(entries))
+	seen := make(map[int]struct{}, len(entries))
+	for _, entry := range entries {
+		gpu, err := gpuNumber(entry["gpu"])
+		if err != nil {
+			continue
+		}
+		if err := addGPU(seen, gpu, "static device response"); err != nil {
+			return nil, err
+		}
+		info := gpusmi.DeviceInfo{Vendor: "amd"}
+		if name, ok := stringField(firstValue(entry, "product_name", "marketing_name", "name")); ok {
+			info.Model = name
+		}
+		if uuid, ok := stringField(firstValue(entry, "gpu_uuid", "uuid", "gpu_id")); ok {
+			info.UUID = uuid
+		}
+		out[gpu] = info
+	}
+	return out, nil
+}
+
+func stringField(value any) (string, bool) {
+	s, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == "" || s == "N/A" {
+		return "", false
+	}
+	return s, true
 }
 
 func ParseProcessJSON(data []byte) ([]model.GPUProcess, error) {

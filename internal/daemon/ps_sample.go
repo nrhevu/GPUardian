@@ -13,13 +13,13 @@ func (p fixedProcessProvider) Processes(context.Context) ([]model.GPUProcess, er
 	return p, nil
 }
 
-// psWithProcesses runs the normal PS logic against an existing AMD process
+// psWithProcesses runs the normal PS logic against an existing GPU process
 // sample without mutating the live server or invoking the SMI provider again.
 func (s *Server) psWithProcesses(ctx context.Context, now time.Time, processes []model.GPUProcess) ([]model.PSRow, error) {
 	sampled := &Server{
 		Cfg:             s.Cfg,
 		Store:           s.Store,
-		AMD:             fixedProcessProvider(processes),
+		GPU:             fixedProcessProvider(processes),
 		Proc:            s.Proc,
 		Runtime:         s.Runtime,
 		Killer:          s.Killer,

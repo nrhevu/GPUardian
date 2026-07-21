@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"gpuardian/internal/amdsmi"
+	"gpuardian/internal/gpusmi"
 	"gpuardian/internal/model"
 )
 
@@ -24,6 +24,7 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 			metricsByGPU[idsMetric.GPU] = idsMetric
 		}
 	}
+	devicesByGPU, _ := s.devicesForRead(ctx)
 	hostname, _ := os.Hostname()
 
 	ids := map[int]bool{}
@@ -70,6 +71,11 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 			UtilizationPct:   metricsByGPU[gpu].UtilizationPct,
 			Processes:        processesByGPU[gpu],
 		}
+		if info, ok := devicesByGPU[gpu]; ok {
+			item.Vendor = info.Vendor
+			item.Model = info.Model
+			item.UUID = info.UUID
+		}
 		if reservation, ok := activeReservationByGPU[gpu]; ok {
 			item.State = "reserved"
 			copy := reservation
@@ -97,7 +103,7 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 }
 
 func (s *Server) metricsForRead(ctx context.Context) ([]model.GPUMetric, error) {
-	provider, ok := s.AMD.(amdsmi.MetricsProvider)
+	provider, ok := s.GPU.(gpusmi.MetricsProvider)
 	if !ok {
 		return nil, nil
 	}
@@ -111,6 +117,27 @@ func (s *Server) metricsForRead(ctx context.Context) ([]model.GPUMetric, error) 
 	s.metricsReadRows = append(s.metricsReadRows[:0], rows...)
 	s.metricsReadErr = err
 	return append([]model.GPUMetric(nil), rows...), err
+}
+
+// devicesForRead returns the cached static device identity for this enforcement
+// pass, or samples it from the GPU provider's DeviceProvider implementation
+// (if any). A provider that does not implement DeviceProvider yields an empty
+// map, so the snapshot simply omits vendor/model/UUID.
+func (s *Server) devicesForRead(ctx context.Context) (map[int]gpusmi.DeviceInfo, error) {
+	provider, ok := s.GPU.(gpusmi.DeviceProvider)
+	if !ok {
+		return nil, nil
+	}
+	s.devicesReadMu.Lock()
+	defer s.devicesReadMu.Unlock()
+	if !s.devicesReadAt.IsZero() {
+		return s.devicesReadRows, s.devicesReadErr
+	}
+	rows, err := provider.Devices(ctx)
+	s.devicesReadAt = time.Now()
+	s.devicesReadRows = rows
+	s.devicesReadErr = err
+	return rows, err
 }
 
 func reservationViewActiveAt(reservation model.ReservationView, now time.Time) bool {

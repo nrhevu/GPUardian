@@ -7,16 +7,18 @@ captures only things future agents would otherwise miss.
 
 ## What this repo is
 
-GPUardian reserves and enforces access to AMD GPUs on shared Linux servers. It
-is **monitor-and-kill enforcement**, not kernel-level device isolation — a user
-with root, sudo, or root-equivalent Docker access can bypass it.
+GPUardian reserves and enforces access to AMD and NVIDIA GPUs on shared Linux
+servers. It is **monitor-and-kill enforcement**, not kernel-level device
+isolation — a user with root, sudo, or root-equivalent Docker access can
+bypass it.
 
 Three components share a single Go module (`module gpuardian`, Go 1.25):
 
-1. **Node daemon** (`gpuardian daemon`) — runs on every AMD GPU node under
-   systemd. Reads `/proc`, uses `amd-smi`, manages cgroups, launches
-   workloads. Must run on the host, never in a container. Port `8192` (HTTPS
-   in prod, `8193` HTTP in dev with `--dry-run`).
+1. **Node daemon** (`gpuardian daemon`) — runs on every AMD or NVIDIA GPU node
+   under systemd. Reads `/proc`, uses the vendor's SMI tooling (`amd-smi` or
+   `nvidia-smi`, selected via `GPUARDIAN_GPU_VENDOR`), manages cgroups,
+   launches workloads. Must run on the host, never in a container. Port
+   `8192` (HTTPS in prod, `8193` HTTP in dev with `--dry-run`).
 2. **CLI** (`cmd/gpuardian`) — `run`, `allow`, `status`, `ps`, `register`,
    `token info`, `show-keys`, `bypass`, `revoke`. Single binary shared by
    daemon and CLI; subcommand dispatch is in `cmd/gpuardian/main.go`.
@@ -37,7 +39,9 @@ internal/model/       Shared domain types
 internal/web/         Web gateway: HTTP handlers, sessions, users, registry, keys, history
 internal/history/     Reservation history SQLite store (history.db)
 internal/netlimit/    Rate limiting for gateway endpoints
-internal/amdsmi/      amd-smi wrapper
+internal/amdsmi/      amd-smi wrapper (AMD provider)
+internal/nvidiasmi/   nvidia-smi wrapper (NVIDIA provider)
+internal/gpusmi/      Vendor-neutral GPU provider interfaces shared by daemon
 internal/proc/        /proc parsing
 internal/runtime/     Workload process runtime
 internal/telemetry/   Telemetry outbox
@@ -80,8 +84,16 @@ There is no separate lint config in the repo; `go vet ./...` and `go test
   node API. Changes here are cross-component and must stay backward-compatible
   with deployed daemons.
 - **Daemon (`internal/daemon`, `internal/enforce`) must stay host-only.** It
-  reads `/proc`, `/sys/fs/cgroup`, and `amd-smi`. Never add container-only
-  assumptions or imports that pull gateway/Docker concerns in.
+  reads `/proc`, `/sys/fs/cgroup`, and the GPU vendor's SMI CLI (`amd-smi` or
+  `nvidia-smi`, selected in `internal/gpusmi` and wired in
+  `daemon.selectGPUProvider`). Never add container-only assumptions or imports
+  that pull gateway/Docker concerns in.
+- **`internal/gpusmi` is the vendor-neutral provider seam.** The daemon holds
+  the GPU provider as `gpusmi.Provider` (with optional `gpusmi.MetricsProvider`
+  and `gpusmi.DeviceProvider` type assertions). Vendor-specific parsing lives
+  only in `internal/amdsmi` and `internal/nvidiasmi`; both satisfy the
+  `gpusmi` interfaces via structural typing. Do not import either vendor
+  package into the gateway or CLI.
 - **Gateway (`internal/web`) talks to nodes only through `NodeAPI`
   (`client.go`).** Do not import daemon packages into the gateway; route
   through the protocol client.
@@ -136,6 +148,13 @@ There is no separate lint config in the repo; `go vet ./...` and `go test
 - **`modernc.org/sqlite` requires no CGO**, but its transactions and WAL
   semantics still apply. Back up `history.db` with SQLite Online Backup /
   `VACUUM INTO`, not a live file copy.
+- **GPU vendor is per-node, not per-cluster.** `GPUARDIAN_GPU_VENDOR` defaults
+  to `auto`, which probes `amd-smi` first then `nvidia-smi`. On a node with
+  both installed (rare), set it explicitly. The daemon never opens
+  `/dev/nvidia*`, `/dev/kfd`, or `/dev/dri` directly — container device
+  passthrough is the caller's responsibility (see `scripts/integration_test.py`
+  for the AMD `--device=/dev/kfd --device=/dev/dri` pattern; NVIDIA containers
+  pass `--gpus all` or `--device=/dev/nvidia*`).
 
 ## Docs to read before sensitive edits
 

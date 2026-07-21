@@ -14,6 +14,7 @@ type Config struct {
 	ProcRoot              string
 	DryRun                bool
 	GPUCount              int
+	GPUVendor             string
 	NodeAddr              string
 	NodeTLSCert           string
 	NodeTLSKey            string
@@ -48,6 +49,7 @@ func Default() Config {
 		ProcRoot:              env("GPUARDIAN_PROC_ROOT", "/proc"),
 		DryRun:                envBool("GPUARDIAN_DRY_RUN"),
 		GPUCount:              envInt("GPUARDIAN_GPU_COUNT", 0),
+		GPUVendor:             env("GPUARDIAN_GPU_VENDOR", "auto"),
 		NodeAddr:              env("GPUARDIAN_NODE_ADDR", ""),
 		NodeTLSCert:           env("GPUARDIAN_NODE_TLS_CERT", ""),
 		NodeTLSKey:            env("GPUARDIAN_NODE_TLS_KEY", ""),

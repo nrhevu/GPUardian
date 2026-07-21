@@ -32,7 +32,7 @@ func TestSnapshotSamplesProcessesOnce(t *testing.T) {
 		processes: []model.GPUProcess{{GPU: 3, PID: 42, Name: "python", MemBytes: 1}},
 		metrics:   []model.GPUMetric{{GPU: 3, MemoryUsedBytes: &usedBytes}},
 	}
-	server.AMD = provider
+	server.GPU = provider
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{42: {PID: 42, Cmdline: []string{"python"}}}}
 
 	snapshot, err := server.Snapshot(context.Background(), time.Now())

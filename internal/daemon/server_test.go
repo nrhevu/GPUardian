@@ -149,7 +149,7 @@ func TestReservationValidationUsesConfiguredInventoryAndOneSample(t *testing.T) 
 	server := testServer(t)
 	server.Cfg.GPUCount = 2
 	provider := &countingAMD{}
-	server.AMD = provider
+	server.GPU = provider
 	now := time.Now()
 	if err := server.ensureGPUsCanReserveWindow(context.Background(), []int{0, 1}, now, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestHardRegisterBusyGPUFailsWithoutReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.AMD = fakeAMD{processes: []model.GPUProcess{{GPU: 2, PID: 10, MemBytes: 1}}}
+	server.GPU = fakeAMD{processes: []model.GPUProcess{{GPU: 2, PID: 10, MemBytes: 1}}}
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{10: {PID: 10, UID: 1000, Cmdline: []string{"python", "--password", "do-not-leak", "\x1b[31m"}}}}
 	args, _ := json.Marshal(protocol.RegisterArgs{RootKey: key, Mode: model.TokenModeReserved, Name: "alice", GPUs: []int{1, 2}, TTL: "1h"})
 	if _, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "register", Args: args}); err == nil {
@@ -280,7 +280,7 @@ func TestHardRegisterIgnoresParentOnlyGPUProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.AMD = fakeAMD{processes: []model.GPUProcess{{GPU: 2, PID: 10, MemBytes: 0}}}
+	server.GPU = fakeAMD{processes: []model.GPUProcess{{GPU: 2, PID: 10, MemBytes: 0}}}
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{10: {PID: 10, UID: 1000, Cmdline: []string{"python", "-m", "launcher"}}}}
 	args, _ := json.Marshal(protocol.RegisterArgs{RootKey: key, Mode: model.TokenModeReserved, Name: "alice", GPUs: []int{2}, TTL: "1h"})
 	if _, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "register", Args: args}); err != nil {
@@ -662,7 +662,7 @@ func TestClaimedMonitorRejectsRunGPUWhenBusy(t *testing.T) {
 	}
 	killer := &daemonFakeKiller{}
 	server.Killer = killer
-	server.AMD = fakeAMD{processes: []model.GPUProcess{
+	server.GPU = fakeAMD{processes: []model.GPUProcess{
 		{GPU: 0, PID: 100, MemBytes: 1},
 		{GPU: 0, PID: 200, MemBytes: 1},
 	}}
@@ -717,7 +717,7 @@ func TestMonitorEvictsRevokedReservationBeforePruningEvidence(t *testing.T) {
 
 	killer := &daemonFakeKiller{}
 	server.Killer = killer
-	server.AMD = fakeAMD{processes: []model.GPUProcess{{GPU: 0, PID: 123, MemBytes: 1}}}
+	server.GPU = fakeAMD{processes: []model.GPUProcess{{GPU: 0, PID: 123, MemBytes: 1}}}
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{123: {PID: 123, UID: 1000}}}
 	server.monitorOnce(context.Background())
 
@@ -731,7 +731,7 @@ func TestMonitorEvictsRevokedReservationBeforePruningEvidence(t *testing.T) {
 	if len(state.Tokens) == 0 || len(state.Reservations) == 0 || len(state.Authorizations) == 0 {
 		t.Fatalf("revoked evidence was pruned before quiescence was confirmed: %+v", state)
 	}
-	server.AMD = fakeAMD{}
+	server.GPU = fakeAMD{}
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{}}
 	for i := 1; i <= evictionCleanSamples; i++ {
 		server.monitorOnce(context.Background())
@@ -900,7 +900,7 @@ func TestRevokeDeletesFromKeyStatus(t *testing.T) {
 
 func TestEnsureGPUCanReserveRejectsBusyGPU(t *testing.T) {
 	server := testServer(t)
-	server.AMD = fakeAMD{processes: []model.GPUProcess{{GPU: 0, PID: 10, MemBytes: 1}}}
+	server.GPU = fakeAMD{processes: []model.GPUProcess{{GPU: 0, PID: 10, MemBytes: 1}}}
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{10: {PID: 10, UID: 1000, Cmdline: []string{"python"}}}}
 	if err := server.ensureGPUCanReserve(context.Background(), 0); err == nil {
 		t.Fatal("expected busy gpu error")
@@ -953,7 +953,7 @@ func TestPSAggregatesMultiGPUProcessRows(t *testing.T) {
 	if err := server.Store.AddAuthorization(authorization); err != nil {
 		t.Fatal(err)
 	}
-	server.AMD = fakeAMD{processes: []model.GPUProcess{
+	server.GPU = fakeAMD{processes: []model.GPUProcess{
 		{GPU: 0, PID: 123, MemBytes: 1},
 		{GPU: 1, PID: 123, MemBytes: 1},
 	}}
@@ -1378,7 +1378,7 @@ func TestCleanupFinishedBareLeaseReleasesDeadProcess(t *testing.T) {
 
 func TestMonitorCleansExpiredManagedCgroupWhenAMDTelemetryFails(t *testing.T) {
 	server := testServer(t)
-	server.AMD = failingAMD{err: errors.New("telemetry unavailable")}
+	server.GPU = failingAMD{err: errors.New("telemetry unavailable")}
 	rootKey, err := server.Store.ReadOrCreateRootKey()
 	if err != nil {
 		t.Fatal(err)
@@ -1505,7 +1505,7 @@ func testServer(t *testing.T) *Server {
 	return &Server{
 		Cfg:                       cfg,
 		Store:                     st,
-		AMD:                       fakeAMD{},
+		GPU:                       fakeAMD{},
 		Proc:                      daemonFakeProc{infos: map[int]model.ProcInfo{}},
 		Runtime:                   daemonFakeRuntime{},
 		Interval:                  time.Hour,
