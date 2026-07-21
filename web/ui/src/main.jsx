@@ -1518,11 +1518,12 @@ function GPUCard({ gpu, selected, onClick }) {
   const state = gpu.state || "available";
   const memory = memoryMetric(gpu);
   const utilization = utilizationMetric(gpu);
+  const label = gpuLabel(gpu);
   return (
     <button className={`gpu-card ${state} ${selected ? "selected" : ""}`} onClick={onClick}>
       <div className="gpu-title-row">
         <span className="checkbox">{selected ? "✓" : ""}</span>
-        <h3>GPU {gpu.id}</h3>
+        <h3>{label}</h3>
         <span className={`status-chip ${state}`}>{statusLabels[state] || state}</span>
       </div>
       <div className="gpu-metrics">
@@ -1531,6 +1532,22 @@ function GPUCard({ gpu, selected, onClick }) {
       </div>
     </button>
   );
+}
+
+// gpuLabel renders a human-friendly title for a GPU. When the daemon supplies
+// vendor/model (e.g. "NVIDIA H100", "AMD MI250") we prefer that; otherwise we
+// fall back to the integer index so existing AMD nodes without device names
+// keep their "GPU 0" display.
+function gpuLabel(gpu) {
+  const model = typeof gpu.model === "string" ? gpu.model.trim() : "";
+  const vendor = typeof gpu.vendor === "string" ? gpu.vendor.trim() : "";
+  if (model) {
+    return vendor ? `${vendor} ${model}`.trim() : model;
+  }
+  if (vendor) {
+    return `${vendor} GPU ${gpu.id}`;
+  }
+  return `GPU ${gpu.id}`;
 }
 
 function MetricLine({ label, value, percent }) {

@@ -1,7 +1,7 @@
 # GPUardian
 
-GPUardian reserves and enforces access to AMD GPUs on shared Linux servers. It
-provides:
+GPUardian reserves and enforces access to AMD and NVIDIA GPUs on shared Linux
+servers. It provides:
 
 - a root node daemon that observes GPU processes and enforces reservations;
 - a CLI for running and authorizing workloads; and
@@ -19,17 +19,19 @@ development environment, use [DEVELOPMENT.md](DEVELOPMENT.md).
 
 | Component | Where it runs | Manager | Port |
 | --- | --- | --- | --- |
-| `gpuardian daemon` | Every AMD GPU node | systemd | HTTPS `8192` |
+| `gpuardian daemon` | Every AMD or NVIDIA GPU node | systemd | HTTPS `8192` |
 | GPUardian web gateway | One gateway host | Docker Compose | HTTPS `8443` |
 
 The node daemon must run directly on the host because it reads `/proc`, uses
-AMD tooling, manages cgroups, and launches workloads. Only the web gateway runs
-in Docker.
+the GPU vendor's SMI tooling, manages cgroups, and launches workloads. Only
+the web gateway runs in Docker.
 
 ## Requirements
 
 - Linux with cgroup v2 and systemd on every GPU node
-- AMD ROCm tooling with a working `amd-smi` command on every GPU node
+- GPU vendor tooling on every GPU node:
+  - AMD: ROCm tooling with a working `amd-smi` command
+  - NVIDIA: the NVIDIA driver with a working `nvidia-smi` command
 - Root access on the GPU nodes and gateway host
 - Docker Engine with the Compose plugin on the gateway host
 - OpenSSL
@@ -436,8 +438,15 @@ GPUARDIAN_NODE_TLS_CERT=/etc/gpuardian/node.crt
 GPUARDIAN_NODE_TLS_KEY=/etc/gpuardian/node.key
 GPUARDIAN_NODE_ALLOW_INSECURE=0
 GPUARDIAN_GPU_COUNT=0
+GPUARDIAN_GPU_VENDOR=auto
 GPUARDIAN_DRY_RUN=0
 ```
+
+`GPUARDIAN_GPU_VENDOR` selects the GPU SMI backend the daemon uses to sample
+processes and telemetry. `auto` (the default) probes for `amd-smi` first and
+falls back to `nvidia-smi`; set it explicitly to `amd` or `nvidia` to skip
+probing, which is recommended on nodes where only one vendor's tooling is
+installed.
 
 Production Compose owns all web listener, TLS, cookie, state-path, and UI
 settings. `/etc/gpuardian/web.env` should contain only operator options:
