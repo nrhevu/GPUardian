@@ -305,7 +305,42 @@ If registration fails:
   endpoint.
 - `401` or `403`: confirm the root key came from the same node.
 
-### 6. Protect gateway state
+### 6. (Optional) Put TLS in front with a reverse proxy
+
+If you want encryption for user-to-gateway traffic without managing GPUardian's
+own certificates, place a reverse proxy in front of the gateway:
+
+```
+User --HTTPS--> nginx :443 --HTTP--> gateway :8443 (loopback)
+```
+
+Example nginx snippet (terminate TLS, proxy to the gateway on loopback):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name gpuardian.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/gpuardian.crt;
+    ssl_certificate_key /etc/nginx/ssl/gpuardian.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8443;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+Set `GPUARDIAN_WEB_TRUST_PROXY=1` in `web.env` so the gateway honors the
+`X-Forwarded-*` headers, and bind the gateway to loopback only by changing
+`GPUARDIAN_WEB_ADDR` to `127.0.0.1:8443` in the Compose file. The node API
+(`8192`) should still be restricted to the gateway host via firewall; if the
+gateway and nodes are on different hosts, use a VPN or private network for that
+traffic.
+
+### 7. Protect gateway state
 
 Back up these files as secrets:
 
