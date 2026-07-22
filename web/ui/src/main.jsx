@@ -34,6 +34,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [deleteUserTarget, setDeleteUserTarget] = useState(null);
+  const [deleteServerTarget, setDeleteServerTarget] = useState(null);
+  const [serverMenu, setServerMenu] = useState(null);
   const [allowTarget, setAllowTarget] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [scheduleTarget, setScheduleTarget] = useState(null);
@@ -500,6 +502,14 @@ function App() {
     await refresh();
   }
 
+  async function deleteServer(id) {
+    await api(`/api/servers/${id}`, { method: "DELETE" });
+    setServers((prev) => prev.filter((s) => s.id !== id));
+    if (currentServerId === id) {
+      setSelectedServerId("");
+    }
+  }
+
   async function reserve(values) {
     if (selectedGPUList.length === 0) {
       showSelectGPUHint();
@@ -696,6 +706,10 @@ function App() {
                 key={server.id}
                 className={`server-row ${server.id === currentServerId ? "active" : ""}`}
                 onClick={() => selectServer(server.id)}
+                onContextMenu={isAdmin ? (e) => {
+                  e.preventDefault();
+                  setServerMenu({ server, x: e.clientX, y: e.clientY });
+                } : undefined}
               >
                 <span className={`server-dot ${item?.online ? "online" : "offline"}`} />
                 <span className="server-name">{server.name}</span>
@@ -907,6 +921,26 @@ function App() {
             setHistoryJobs([]);
           }}
           onSave={saveHistoryResult}
+        />
+      )}
+      {serverMenu && (
+        <ServerContextMenu
+          menu={serverMenu}
+          onClose={() => setServerMenu(null)}
+          onDelete={(server) => {
+            setServerMenu(null);
+            setDeleteServerTarget(server);
+          }}
+        />
+      )}
+      {deleteServerTarget && (
+        <DeleteServerModal
+          server={deleteServerTarget}
+          onClose={() => setDeleteServerTarget(null)}
+          onSubmit={async () => {
+            await deleteServer(deleteServerTarget.id);
+            setDeleteServerTarget(null);
+          }}
         />
       )}
     </div>
@@ -2316,6 +2350,75 @@ function DeleteUserModal({ user, onClose, onSubmit }) {
         <div className="modal-actions">
           <button type="button" className="small-button" onClick={onClose} disabled={pending}>Cancel</button>
           <button className="danger-button" disabled={pending}>{pending ? "Deleting" : "Delete"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ServerContextMenu({ menu, onClose, onDelete }) {
+  useEffect(() => {
+    const close = () => onClose();
+    // Defer attaching the click listener so the right-click that opened the
+    // menu does not immediately close it.
+    const timer = setTimeout(() => {
+      document.addEventListener("click", close);
+      document.addEventListener("keydown", close);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [onClose]);
+  return (
+    <div
+      className="server-context-menu"
+      style={{ left: menu.x, top: menu.y }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <button
+        type="button"
+        className="danger-menu-item"
+        onClick={() => onDelete(menu.server)}
+      >
+        Delete node
+      </button>
+    </div>
+  );
+}
+
+function DeleteServerModal({ server, onClose, onSubmit }) {
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  return (
+    <Modal title="Delete node" onClose={onClose} hideClose>
+      <form
+        className="modal-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (pending) return;
+          setPending(true);
+          setError("");
+          try {
+            await onSubmit();
+            onClose();
+          } catch (err) {
+            setError(err.message);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        <div className="revoke-summary">
+          <strong>{server.name}</strong>
+        </div>
+        <p className="muted">This removes the node from the gateway. The daemon on the node is unaffected and can be re-registered later.</p>
+        {error && <div className="modal-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="danger-button" disabled={pending}>{pending ? "Deleting" : "Delete"}</button>
         </div>
       </form>
     </Modal>
