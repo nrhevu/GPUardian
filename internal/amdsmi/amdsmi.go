@@ -210,7 +210,11 @@ func ParseDeviceJSON(data []byte) (map[int]gpusmi.DeviceInfo, error) {
 			return nil, err
 		}
 		info := gpusmi.DeviceInfo{Vendor: "amd"}
-		if name, ok := stringField(firstValue(entry, "product_name", "marketing_name", "name")); ok {
+		if name, ok := firstString(entry,
+			"asic.market_name", "asic.marketname",
+			"vbios.name",
+			"product_name", "marketing_name", "name",
+		); ok {
 			info.Model = name
 		}
 		if uuid, ok := stringField(firstValue(entry, "gpu_uuid", "uuid", "gpu_id")); ok {
@@ -741,6 +745,28 @@ func firstValue(values map[string]any, keys ...string) any {
 		}
 	}
 	return nil
+}
+
+// firstString resolves the first non-empty string value among the given
+// dot-paths (e.g. "asic.market_name", "vbios.name") or plain keys. Nested
+// objects are traversed one level deep; "N/A" and whitespace-only values are
+// rejected via stringField. Returns "", false when none of the paths resolve.
+func firstString(values map[string]any, keys ...string) (string, bool) {
+	for _, key := range keys {
+		var value any = values
+		for _, part := range strings.Split(key, ".") {
+			obj, ok := value.(map[string]any)
+			if !ok {
+				value = nil
+				break
+			}
+			value = obj[part]
+		}
+		if s, ok := stringField(value); ok {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 func bytesValue(value any) *uint64 {

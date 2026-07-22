@@ -103,6 +103,42 @@ func TestParseStaticJSON(t *testing.T) {
 	}
 }
 
+// TestParseDeviceJSONModelFromNestedFields covers the amd-smi static payload
+// shape seen on MI350X hardware: the marketing name lives under
+// asic.market_name (with vbios.name as a secondary), not as a top-level
+// product_name/marketing_name field. Both nested paths must be recognized;
+// "N/A" values (e.g. board.model_number) must be skipped.
+func TestParseDeviceJSONModelFromNestedFields(t *testing.T) {
+	data := []byte(`{
+		"gpu_data": [
+			{
+				"gpu": 0,
+				"asic": {"market_name": "AMD Instinct MI350X VF"},
+				"vbios": {"name": "AMD MI350X", "part_number": "113-M350-01-1K1-010C"},
+				"board": {"model_number": "N/A"}
+			},
+			{
+				"gpu": 1,
+				"asic": {"market_name": "N/A"},
+				"vbios": {"name": "AMD MI350X"}
+			}
+		]
+	}`)
+	devices, err := ParseDeviceJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("got %d devices, want 2", len(devices))
+	}
+	if d := devices[0]; d.Model != "AMD Instinct MI350X VF" {
+		t.Fatalf("gpu 0 model = %q, want %q", d.Model, "AMD Instinct MI350X VF")
+	}
+	if d := devices[1]; d.Model != "AMD MI350X" {
+		t.Fatalf("gpu 1 model = %q, want %q (vbios.name fallback)", d.Model, "AMD MI350X")
+	}
+}
+
 func TestParseRocmSMIJSON(t *testing.T) {
 	data := []byte(`{
 		"card0": {

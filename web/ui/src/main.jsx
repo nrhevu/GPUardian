@@ -1519,6 +1519,7 @@ function GPUCard({ gpu, selected, onClick }) {
   const memory = memoryMetric(gpu);
   const utilization = utilizationMetric(gpu);
   const label = gpuLabel(gpu);
+  const subtitle = gpuSubtitle(gpu);
   return (
     <button className={`gpu-card ${state} ${selected ? "selected" : ""}`} onClick={onClick}>
       <div className="gpu-title-row">
@@ -1530,24 +1531,34 @@ function GPUCard({ gpu, selected, onClick }) {
         <MetricLine label="Memory" value={memory.label} percent={memory.percent} />
         <MetricLine label="Utilization" value={utilization.label} percent={utilization.percent} />
       </div>
+      {subtitle && <div className="gpu-subtitle">{subtitle}</div>}
     </button>
   );
 }
 
-// gpuLabel renders a human-friendly title for a GPU. When the daemon supplies
-// vendor/model (e.g. "NVIDIA H100", "AMD MI250") we prefer that; otherwise we
-// fall back to the integer index so existing AMD nodes without device names
-// keep their "GPU 0" display.
+// gpuLabel renders the card title as the integer GPU index ("GPU 0"). The
+// vendor/model (e.g. "amd MI350") is shown separately as a muted subtitle via
+// gpuSubtitle so the title stays short and stable.
 function gpuLabel(gpu) {
+  return `GPU ${gpu.id}`;
+}
+
+// gpuSubtitle renders the model line shown muted beneath the title. Prefers
+// the daemon-supplied model (e.g. "AMD Instinct MI350X VF", "NVIDIA H100").
+// Only prepends the vendor (e.g. "amd") when the model does not already start
+// with it, to avoid "amd AMD ..." duplication. Falls back to vendor alone when
+// model is empty; returns empty string when neither is available.
+function gpuSubtitle(gpu) {
   const model = typeof gpu.model === "string" ? gpu.model.trim() : "";
   const vendor = typeof gpu.vendor === "string" ? gpu.vendor.trim() : "";
   if (model) {
-    return vendor ? `${vendor} ${model}`.trim() : model;
+    const lower = model.toLowerCase();
+    if (vendor && !lower.startsWith(vendor.toLowerCase())) {
+      return `${vendor} ${model}`.trim();
+    }
+    return model;
   }
-  if (vendor) {
-    return `${vendor} GPU ${gpu.id}`;
-  }
-  return `GPU ${gpu.id}`;
+  return vendor;
 }
 
 function MetricLine({ label, value, percent }) {
