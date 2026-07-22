@@ -1,8 +1,11 @@
-<p align="center">
+<div align="center">
   <img src="web/ui/public/gpuardian-icon.svg" alt="GPUardian" width="128" />
-</p>
+  <h1>GPUardian</h1>
+</div>
 
-# GPUardian
+---
+
+## About 
 
 GPUardian reserves and enforces access to AMD and NVIDIA GPUs on shared Linux
 servers. It provides:
