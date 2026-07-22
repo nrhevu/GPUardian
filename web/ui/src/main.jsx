@@ -1665,21 +1665,46 @@ function Legend() {
 
 function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
   const [selectedDay, setSelectedDay] = useState(() => dateInputValue(new Date()));
+  const [fitHours, setFitHours] = useState(minCalendarHours);
+  const calendarRef = useRef(null);
+  // Measure the day-calendar viewport and derive how many hour rows fit, so
+  // the timeline fills the available height at any window size — spilling past
+  // midnight when the viewport is tall, shrinking when it is short.
+  useEffect(() => {
+    const node = calendarRef.current;
+    if (!node) return;
+    const update = () => setFitHours(Math.max(minCalendarHours, Math.ceil(node.clientHeight / calendarHourHeight)));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
   const now = new Date();
   const dayStart = parseDateInput(selectedDay);
   const dayEnd = new Date(dayStart.getTime() + dayMs);
   const isToday = selectedDay === dateInputValue(now);
   const timelineStart = isToday ? startOfHour(now) : dayStart;
   const remainingTodayHours = Math.max(1, Math.ceil((dayEnd.getTime() - timelineStart.getTime()) / hourMs));
-  const visibleHours = isToday ? Math.max(minCalendarHours, remainingTodayHours) : 24;
+  const baseHours = isToday ? Math.max(fitHours, remainingTodayHours) : 24;
+  const targetGPUs = selected.length ? selected : allGPUs.length ? allGPUs : [gpu];
+  const gpuReservations = reservations.filter((reservation) => targetGPUs.includes(reservation.gpu));
+  const scheduleJobs = groupScheduleReservations(gpuReservations);
+  // When viewing today, always extend the timeline a little past midnight so
+  // there is room to place overnight reservations; also cover any reservation
+  // that spills further into the next day. Next-day hours render with the
+  // existing +1 day-offset badge.
+  const baseEnd = new Date(timelineStart.getTime() + baseHours * hourMs);
+  const spillFloor = isToday ? new Date(dayEnd.getTime() + 2 * hourMs) : baseEnd;
+  const spillEnd = scheduleJobs.reduce((acc, job) => {
+    const end = new Date(job.expires_at);
+    return Number.isFinite(end.getTime()) && end > acc ? end : acc;
+  }, spillFloor);
+  const visibleHours = Math.max(baseHours, Math.ceil((spillEnd.getTime() - timelineStart.getTime()) / hourMs));
   const timelineEnd = new Date(timelineStart.getTime() + visibleHours * hourMs);
   const hourSlots = Array.from(
     { length: visibleHours },
     (_, index) => new Date(timelineStart.getTime() + index * hourMs),
   );
-  const targetGPUs = selected.length ? selected : allGPUs.length ? allGPUs : [gpu];
-  const gpuReservations = reservations.filter((reservation) => targetGPUs.includes(reservation.gpu));
-  const scheduleJobs = groupScheduleReservations(gpuReservations);
   const blocks = layoutScheduleBlocks(
     scheduleJobs
       .map((job) => scheduleBlock(job, timelineStart, timelineEnd))
@@ -1712,7 +1737,7 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
           </button>
         </div>
       </div>
-      <div className="day-calendar">
+      <div className="day-calendar" ref={calendarRef}>
         <div
           className="timeline-canvas"
           style={{
