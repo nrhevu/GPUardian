@@ -138,8 +138,9 @@ func (s *Store) SyncManagedUserKeys(rootKey string, snapshot protocol.ManagedUse
 		}
 		token, ok := byOwner[normalizeHolder(reservation.Holder)]
 		if !ok {
-			reservation.Revoked = true
-			reservation.Active = false
+			// Removing a managed key must revoke access, but it must not
+			// implicitly cancel that owner's reservations. A later complete
+			// snapshot can safely attach them to the restored key.
 			continue
 		}
 		reservation.TokenHash = token.Hash

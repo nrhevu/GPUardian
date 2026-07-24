@@ -689,6 +689,78 @@ func TestManagedKeyReservationsHaveIndependentGroupsAndRevokeKeepsKey(t *testing
 	}
 }
 
+func TestManagedKeySyncPreservesReservationWhenOwnerIsTemporarilyMissing(t *testing.T) {
+	st := testStore(t)
+	rootKey, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 6, 41, 0, 0, time.UTC)
+	aliceSecret := "gk_" + strings.Repeat("a", 48)
+	bobSecret := "gk_" + strings.Repeat("b", 48)
+	initial := protocol.ManagedUserKeySnapshot{
+		SnapshotID: "sha256:initial",
+		Keys: []protocol.ManagedUserKey{
+			{ID: "uk_alice", Owner: "alice", Version: 1, Hash: HashToken(aliceSecret)},
+			{ID: "uk_bob", Owner: "bob", Version: 1, Hash: HashToken(bobSecret)},
+		},
+	}
+	if _, err := st.SyncManagedUserKeys(rootKey, initial, now); err != nil {
+		t.Fatal(err)
+	}
+	_, groupID, reservations, err := st.RegisterManagedReservations(rootKey, "uk_alice", "slow startup", "sess_slow", []int{4, 5}, now, now.Add(12*time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withoutAlice := protocol.ManagedUserKeySnapshot{
+		SnapshotID: "sha256:without-alice",
+		Keys:       []protocol.ManagedUserKey{{ID: "uk_bob", Owner: "bob", Version: 1, Hash: HashToken(bobSecret)}},
+	}
+	if _, err := st.SyncManagedUserKeys(rootKey, withoutAlice, now.Add(90*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ValidateToken(aliceSecret, now.Add(91*time.Second)); err == nil {
+		t.Fatal("removed managed key remained valid")
+	}
+	status, err := st.KeyStatus(rootKey, now.Add(91*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Reservations) != len(reservations) {
+		t.Fatalf("temporary key omission removed reservation: %+v", status.Reservations)
+	}
+	for _, reservation := range status.Reservations {
+		if reservation.GroupID != groupID || !reservation.Active || reservation.Revoked {
+			t.Fatalf("reservation changed during temporary key omission: %+v", reservation)
+		}
+	}
+
+	rotatedSecret := "gk_" + strings.Repeat("c", 48)
+	restored := protocol.ManagedUserKeySnapshot{
+		SnapshotID: "sha256:restored",
+		Keys: []protocol.ManagedUserKey{
+			{ID: "uk_alice", Owner: "alice", Version: 2, Hash: HashToken(rotatedSecret)},
+			{ID: "uk_bob", Owner: "bob", Version: 1, Hash: HashToken(bobSecret)},
+		},
+	}
+	if _, err := st.SyncManagedUserKeys(rootKey, restored, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ValidateToken(rotatedSecret, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("restored managed key is invalid: %v", err)
+	}
+	state, err := st.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reservation := range state.Reservations {
+		if reservation.GroupID == groupID && reservation.TokenHash != HashToken(rotatedSecret) {
+			t.Fatalf("reservation did not converge to restored key: %+v", reservation)
+		}
+	}
+}
+
 func TestStatusHidesOrphanReservedTokenUntilPruned(t *testing.T) {
 	st := testStore(t)
 	key, err := st.ReadOrCreateRootKey()
