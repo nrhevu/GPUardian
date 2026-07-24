@@ -371,24 +371,37 @@ Regular users never need a node root key.
 
 ### Codex skill
 
-This repository includes a Codex skill for low-friction RocGuard session
-protection and handoff workflows. Install it into Codex with:
+This repository includes the GPUardian Codex skill for low-friction setup,
+reservation protection, authorization, and handoff workflows. Install it into
+Codex with:
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R codex/skills/rocguard "${CODEX_HOME:-$HOME/.codex}/skills/"
+cp -R codex/skills/gpuardian "${CODEX_HOME:-$HOME/.codex}/skills/"
 ```
 
-Restart or reload Codex so the skill list refreshes, then use:
+Restart or reload Codex so the skill list refreshes, then set up the MCP bridge
+once:
 
 ```text
-$rocguard protect
-use ROCGUARD_KEY
+$gpuardian setup
+username: your_username
+password: your_password
+```
+
+After restarting Codex again, reserve/protect with:
+
+```text
+$gpuardian protect
+GPU: 0,1
+duration: 4
+purpose: dev session
 ```
 
 By default, the skill authorizes the current Linux user. Add `docker: ...` or
-`k8s namespace: ...` only when a narrower exact scope is known. See
-`codex/skills/rocguard/USER_GUIDE.md` for copy-paste prompts.
+`k8s namespace: ...` only when a narrower exact scope is known. Legacy
+`$rocguard` prompts are still accepted. See
+`codex/skills/gpuardian/USER_GUIDE.md` for copy-paste prompts.
 
 ## Administration
 

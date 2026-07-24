@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUardian"
+  short_description: "Setup, reserve/protect, or yield GPUardian GPU access"
+  default_prompt: "Use $gpuardian setup with username/password once; then use $gpuardian protect with exact GPU IDs, duration in hours, and a purpose, authorizing my current user by default."

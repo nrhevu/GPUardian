@@ -1,9 +1,9 @@
-# RocGuard Skill User Guide
+# GPUardian Skill User Guide
 
-Use `$rocguard` when you want Codex to reserve/protect, authorize, yield, or
-inspect GPUardian GPU access with minimal typing.
+Use `$gpuardian` when you want Codex to setup, reserve/protect, authorize,
+yield, or inspect GPUardian GPU access with minimal typing.
 
-The skill name stays **RocGuard**, but the backend is **GPUardian**.
+The skill name is **GPUardian**. Legacy `$rocguard` prompts are still accepted.
 
 ## Team Setup
 
@@ -13,12 +13,12 @@ only paste their GPUardian username and password.
 Lazy prompt:
 
 ```text
-$rocguard setup
+$gpuardian setup
 username: your_username
 password: your_password
 ```
 
-Then restart Codex and use `$rocguard`.
+Then restart Codex and use `$gpuardian`.
 
 Codex will automatically:
 
@@ -49,7 +49,7 @@ Optional:
 Lean prompt:
 
 ```text
-$rocguard protect
+$gpuardian protect
 GPU: 0
 duration: 2
 purpose: dev session
@@ -58,7 +58,7 @@ purpose: dev session
 Long reservation:
 
 ```text
-$rocguard protect
+$gpuardian protect
 GPU: 0,1
 duration: 72
 purpose: train benchmark
@@ -71,7 +71,7 @@ reports the maximum continuously reservable hours plus conflict details.
 Container authorization:
 
 ```text
-$rocguard protect
+$gpuardian protect
 GPU: 2
 duration: 3
 purpose: docker training
@@ -81,7 +81,7 @@ authorize: docker: trainer
 Kubernetes namespace:
 
 ```text
-$rocguard protect
+$gpuardian protect
 GPU: 0,1
 duration: 4
 purpose: k8s training
@@ -114,12 +114,12 @@ cover the full requested duration continuously, it reports failure with:
 Use this when a reservation already exists and you only want to add a rule.
 
 ```text
-$rocguard authorize using KEY
+$gpuardian authorize using KEY
 authorize: current user
 ```
 
 ```text
-$rocguard authorize using KEY
+$gpuardian authorize using KEY
 authorize: docker: trainer
 ```
 
@@ -131,17 +131,17 @@ Yield adds someone else's authorization. It does not revoke your reservation,
 rotate your key, stop your workload, or delete old rules.
 
 ```text
-$rocguard yield
+$gpuardian yield
 to: user: alice
 ```
 
 ```text
-$rocguard yield
+$gpuardian yield
 to: docker: trainer
 ```
 
 ```text
-$rocguard yield
+$gpuardian yield
 to: k8s: training
 ```
 
@@ -150,27 +150,27 @@ to: k8s: training
 Use this after yielding when you want your current user/scope authorized again.
 
 ```text
-$rocguard reclaim
+$gpuardian reclaim
 authorize: current user
 ```
 
-If you want a new reservation, use `$rocguard protect` with `GPU`, `duration`,
+If you want a new reservation, use `$gpuardian protect` with `GPU`, `duration`,
 and `purpose`.
 
 ## Inspect
 
 ```text
-$rocguard status
+$gpuardian status
 ```
 
 ```text
-$rocguard xem ai đang dùng GPU
+$gpuardian xem ai đang dùng GPU
 ```
 
 ## Notes
 
 - Protect/reserve requires GPUardian MCP connected to the web gateway.
-- First-time setup should be done with `$rocguard setup`; users normally do not
+- First-time setup should be done with `$gpuardian setup`; users normally do not
   run the setup script by hand.
 - Node defaults to the current node only when Codex can resolve it uniquely.
 - Regular CLI operations use `KEY=gk_xxx`; do not paste secrets into public

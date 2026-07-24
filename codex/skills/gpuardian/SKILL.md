@@ -1,21 +1,21 @@
 ---
-name: rocguard
-description: Set up GPUardian MCP, reserve/protect, extend, authorize, yield, reclaim, or inspect shared GPU access with RocGuard. Use when the user tags RocGuard/$rocguard or asks to setup, configure, protect, reserve, guard, authorize, allow, claim, share, release, yield, hand off, resume, or inspect GPU access. For protect/reserve, require exact GPU IDs, duration in hours, and a purpose; default authorization to the current Linux user; default node to the current GPUardian node; split reservations into 24h-or-smaller chunks while requiring continuous coverage.
+name: gpuardian
+description: Set up GPUardian MCP, reserve/protect, extend, authorize, yield, reclaim, or inspect shared GPU access with GPUardian. Use when the user tags GPUardian/$gpuardian, legacy RocGuard/$rocguard, or asks to setup, configure, protect, reserve, guard, authorize, allow, claim, share, release, yield, hand off, resume, or inspect GPU access. For protect/reserve, require exact GPU IDs, duration in hours, and a purpose; default authorization to the current Linux user; default node to the current GPUardian node; split reservations into 24h-or-smaller chunks while requiring continuous coverage.
 ---
 
-# RocGuard
+# GPUardian
 
-Use this skill as a low-friction wrapper around GPUardian. Keep the user-facing
-name "RocGuard", but use the current GPUardian CLI, MCP, and fixed-key model.
+Use this skill as a low-friction wrapper around GPUardian. Use the
+user-facing name "GPUardian" while accepting legacy `$rocguard` prompts.
 
 The main user flow is:
 
 ```text
-$rocguard setup
+$gpuardian setup
 username: alice
 password: ...
 
-$rocguard protect
+$gpuardian protect
 GPU: 0,1
 duration: 4
 purpose: dev session
@@ -55,7 +55,7 @@ defaults to the current GPUardian node.
 ## Intents
 
 - **Setup**: Configure the local Codex GPUardian MCP connection from
-  username/password so future `$rocguard protect` requests work without manual
+  username/password so future `$gpuardian protect` requests work without manual
   setup.
 - **Protect/reserve**: Ensure exact GPU IDs are reserved continuously for the
   requested duration and authorize a scope. This requires `GPU`, `duration`, and
@@ -72,7 +72,7 @@ defaults to the current GPUardian node.
 
 ## Setup Workflow
 
-Use this for `$rocguard setup`.
+Use this for `$gpuardian setup`.
 
 Inputs:
 
@@ -102,7 +102,7 @@ password or credential file contents.
 
 ## Protect Contract
 
-For `$rocguard protect` or `$rocguard reserve`, require:
+For `$gpuardian protect` or `$gpuardian reserve`, require:
 
 - `GPU`: exact numeric GPU IDs, such as `0`, `0,1`, or `[0, 1]`.
 - `duration`: numeric duration in hours, such as `1`, `2`, or `4.5`.
@@ -169,7 +169,7 @@ If `authorize` is provided but lacks a clear type, ask for one of:
 
 ## Protect Workflow
 
-Use this sequence for `$rocguard protect`:
+Use this sequence for `$gpuardian protect`:
 
 1. Validate required fields: exact `GPU` IDs, `duration` in hours, and
    `purpose`.

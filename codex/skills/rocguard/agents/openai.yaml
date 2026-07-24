@@ -1,4 +1,0 @@
-interface:
-  display_name: "RocGuard"
-  short_description: "Setup, reserve/protect, or yield GPUardian GPU access"
-  default_prompt: "Use $rocguard setup with username/password once; then use $rocguard protect with exact GPU IDs, duration in hours, and a purpose, authorizing my current user by default."

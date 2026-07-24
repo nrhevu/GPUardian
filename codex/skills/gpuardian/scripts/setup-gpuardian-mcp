@@ -94,7 +94,7 @@ env_file="\${GPUARDIAN_MCP_ENV_FILE:-$env_file}"
 
 if [[ ! -r "\$env_file" ]]; then
   echo "gpuardian-mcp: missing env file: \$env_file" >&2
-  echo "Run: $codex_home/skills/rocguard/scripts/setup-gpuardian-mcp" >&2
+  echo "Run: $codex_home/skills/gpuardian/scripts/setup-gpuardian-mcp" >&2
   exit 1
 fi
 
@@ -133,4 +133,4 @@ if ! grep -q '^\[mcp_servers\.gpuardian\]' "$config_file"; then
 fi
 
 printf 'GPUardian MCP configured for %s\n' "$username"
-printf 'Restart Codex, then use $rocguard protect.\n'
+printf 'Restart Codex, then use $gpuardian protect.\n'
