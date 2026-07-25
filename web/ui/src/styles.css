@@ -287,13 +287,13 @@
 
 .history-table {
   display: grid;
-  min-width: 940px;
+  min-width: 980px;
 }
 
 .history-table-head,
 .history-table-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.5fr) minmax(90px, .7fr) minmax(170px, 1.2fr) 70px 90px 60px 100px;
+  grid-template-columns: minmax(180px, 1.5fr) minmax(90px, .7fr) minmax(170px, 1.2fr) 70px 90px 60px 140px;
   gap: 12px;
   align-items: center;
 }

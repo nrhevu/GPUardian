@@ -1114,7 +1114,11 @@ function HistoryDashboard({ summary, sessions, servers, filters, sort, loading, 
                   <span>{session.gpus?.join(", ") || "—"}</span>
                   <span>{utilization == null ? "—" : `${utilization.toFixed(1)}%`}</span>
                   <span>{session.job_count || 0}</span>
-                  <span><em className={`history-status ${session.status}`}>{session.status}</em>{session.history_quality === "partial" && <small>partial telemetry</small>}</span>
+                  <span>
+                    <em className={`history-status ${session.status}`}>{session.status}</em>
+                    {session.revoked_at && <small>at {compactDateTime(session.revoked_at)}</small>}
+                    {session.history_quality === "partial" && <small>partial telemetry</small>}
+                  </span>
                 </button>
               );
             })}
@@ -1214,6 +1218,7 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
           <KeyDetail label="Window" value={`${dateTimeLabel(session.starts_at)} – ${dateTimeLabel(session.expires_at)}`} />
           <KeyDetail label="GPUs" value={session.gpus?.join(", ") || "—"} />
           <KeyDetail label="Status" value={session.status} />
+          {session.revoked_at && <KeyDetail label="Revoked at" value={dateTimeLabel(session.revoked_at)} />}
           <KeyDetail label="Quality" value={session.history_quality} />
         </div>
         <div className="history-gpu-grid">
