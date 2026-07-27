@@ -254,6 +254,21 @@ func TestSummaryIncludesBusyGPUTimeOutsideReservations(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].Purpose != "training" {
 		t.Fatalf("unreserved samples created a session: %+v", sessions)
 	}
+
+	filteredSummary, filteredSessions, _, err := store.Search(ctx, SearchExpression{ServerID: "server-a", Groups: []SearchGroup{{Rules: []SearchRule{
+		searchRule("purpose", "equals", "training"),
+	}}}}, SearchSort{}, 10, SearchCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filteredSessions) != 1 || filteredSessions[0].Purpose != "training" {
+		t.Fatalf("filtered sessions = %+v", filteredSessions)
+	}
+	if math.Abs(filteredSummary.BusyGPUHours-10.0/3600.0) > 0.0001 ||
+		filteredSummary.BusyRatio != 1 ||
+		filteredSummary.AverageUtilization == nil || *filteredSummary.AverageUtilization != reservedUtilization {
+		t.Fatalf("filtered busy metrics did not follow matched sessions: %+v", filteredSummary)
+	}
 }
 
 func TestNodeGPURollupMigrationPreservesReservationMetrics(t *testing.T) {

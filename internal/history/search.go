@@ -72,16 +72,16 @@ func (s *Store) Search(ctx context.Context, expression SearchExpression, sort Se
 	defer tx.Rollback()
 
 	var summary DashboardSummary
-	var reserved, observed, busy int64
+	var reserved, reservationObserved, observed, busy int64
 	var integral sql.NullFloat64
 	summaryQuery := sessionFactsCTE + ` SELECT COUNT(*),
 		COUNT(CASE WHEN kind='reservation' THEN 1 END),COUNT(CASE WHEN kind='claimed_run' THEN 1 END),
 		COALESCE(SUM(CASE WHEN kind='reservation' THEN duration_ms*gpu_count ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN kind='reservation' THEN observed_ms ELSE 0 END),0),
-		COALESCE(SUM(CASE WHEN kind='reservation' THEN busy_ms ELSE 0 END),0),
-		SUM(CASE WHEN kind='reservation' THEN utilization_integral ELSE 0 END) FROM session_facts f WHERE ` + predicate
+		COALESCE(SUM(observed_ms),0),COALESCE(SUM(busy_ms),0),
+		SUM(utilization_integral) FROM session_facts f WHERE ` + predicate
 	summaryArgs := append(append([]any{}, cteArgs...), predicateArgs...)
-	if err := tx.QueryRowContext(ctx, summaryQuery, summaryArgs...).Scan(&summary.Sessions, &summary.Reservations, &summary.ClaimedRuns, &reserved, &observed, &busy, &integral); err != nil {
+	if err := tx.QueryRowContext(ctx, summaryQuery, summaryArgs...).Scan(&summary.Sessions, &summary.Reservations, &summary.ClaimedRuns, &reserved, &reservationObserved, &observed, &busy, &integral); err != nil {
 		return DashboardSummary{}, nil, SearchCursor{}, err
 	}
 	jobSummaryQuery := sessionFactsCTE + `, matched_sessions AS (SELECT f.session_id FROM session_facts f WHERE ` + predicate + `)
@@ -95,14 +95,16 @@ func (s *Store) Search(ctx context.Context, expression SearchExpression, sort Se
 	}
 	if reserved > 0 {
 		summary.ReservedGPUHours = float64(reserved) / float64(time.Hour/time.Millisecond)
-		summary.TelemetryCoverage = float64(observed) / float64(reserved)
+		summary.TelemetryCoverage = float64(reservationObserved) / float64(reserved)
 	}
-	globalObserved, globalBusy, globalIntegral, hasGlobalMetrics, err := nodeWideGPUMetrics(ctx, tx, expression.ServerID)
-	if err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
-	}
-	if hasGlobalMetrics {
-		observed, busy, integral = globalObserved, globalBusy, globalIntegral
+	if len(expression.Groups) == 0 {
+		globalObserved, globalBusy, globalIntegral, hasGlobalMetrics, err := nodeWideGPUMetrics(ctx, tx, expression.ServerID)
+		if err != nil {
+			return DashboardSummary{}, nil, SearchCursor{}, err
+		}
+		if hasGlobalMetrics {
+			observed, busy, integral = globalObserved, globalBusy, globalIntegral
+		}
 	}
 	summary.BusyGPUHours = float64(busy) / float64(time.Hour/time.Millisecond)
 	if observed > 0 {

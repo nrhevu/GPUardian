@@ -1043,7 +1043,13 @@ function HistoryDashboard({ summary, sessions, servers, filters, sort, loading, 
         ))}
       </div>
       <div className="history-filter-controls">
-        <p className="muted history-metric-note">Reserved GPU hours = elapsed reserved time × GPU count; future time and time after revoke are excluded. Busy GPU hours, busy ratio, and average utilization cover all observed GPU activity on the selected node, including workloads outside reservations and claims. Telemetry coverage remains reservation telemetry coverage.</p>
+        <p className="muted history-metric-note">
+          Reserved GPU hours = elapsed reserved time × GPU count; future time and time after revoke are excluded.{" "}
+          {ruleCount > 0
+            ? "Busy GPU hours, busy ratio, and average utilization cover the sessions matching the current filters."
+            : "Busy GPU hours, busy ratio, and average utilization cover all observed GPU activity on the selected node, including workloads outside reservations and claims."}{" "}
+          Telemetry coverage remains reservation telemetry coverage.
+        </p>
         {loading && <span className="muted history-filter-refreshing">Refreshing…</span>}
         <div className="history-filter-menu" ref={filterRef}>
           <button
