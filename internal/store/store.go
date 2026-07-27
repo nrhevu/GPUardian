@@ -84,8 +84,12 @@ func (s *Store) SyncManagedUserKeys(rootKey string, snapshot protocol.ManagedUse
 		return protocol.ManagedUserKeySyncResult{}, ErrInvalidRootKey
 	}
 	snapshot.SnapshotID = strings.TrimSpace(snapshot.SnapshotID)
+	snapshot.AuthorityID = strings.TrimSpace(snapshot.AuthorityID)
 	if snapshot.SnapshotID == "" {
 		return protocol.ManagedUserKeySyncResult{}, errors.New("snapshot_id is required")
+	}
+	if err := validatePersistedValues("managed key snapshot", snapshot.SnapshotID, snapshot.AuthorityID); err != nil {
+		return protocol.ManagedUserKeySyncResult{}, err
 	}
 	if len(snapshot.Keys) > maxTotalTokens {
 		return protocol.ManagedUserKeySyncResult{}, fmt.Errorf("managed key limit exceeded: maximum %d", maxTotalTokens)
@@ -121,7 +125,22 @@ func (s *Store) SyncManagedUserKeys(rootKey string, snapshot protocol.ManagedUse
 	if err := s.loadLocked(); err != nil {
 		return protocol.ManagedUserKeySyncResult{}, err
 	}
+	authorityChanged := false
+	switch {
+	case s.state.ManagedKeyAuthority != "" && snapshot.AuthorityID == "":
+		return protocol.ManagedUserKeySyncResult{}, errors.New("managed key authority is required for this node")
+	case s.state.ManagedKeyAuthority != "" && snapshot.AuthorityID != s.state.ManagedKeyAuthority:
+		return protocol.ManagedUserKeySyncResult{}, errors.New("managed key authority does not match this node")
+	case s.state.ManagedKeyAuthority == "" && snapshot.AuthorityID != "":
+		s.state.ManagedKeyAuthority = snapshot.AuthorityID
+		authorityChanged = true
+	}
 	if s.state.ManagedKeys && s.state.KeySnapshotID == snapshot.SnapshotID {
+		if authorityChanged {
+			if err := s.saveLocked(); err != nil {
+				return protocol.ManagedUserKeySyncResult{}, err
+			}
+		}
 		return protocol.ManagedUserKeySyncResult{SnapshotID: snapshot.SnapshotID, Applied: len(managed), Managed: true}, nil
 	}
 	oldTokenIDs := make(map[string]string, len(s.state.Tokens))
@@ -1227,7 +1246,11 @@ func (s *Store) PruneUnreferencedInvalidEntitlements(now time.Time) error {
 	reservations := make([]model.Reservation, 0, len(s.state.Reservations))
 	for _, reservation := range s.state.Reservations {
 		_, needed := referenced[reservation.TokenHash]
-		invalid := !reservation.Active || reservation.Revoked || !now.Before(reservation.ExpiresAt) || !tokenValid[reservation.TokenHash]
+		// A managed token may be temporarily absent while the authoritative
+		// gateway is restoring a complete snapshot. The reservation lifecycle
+		// remains authoritative; explicit token revocation already marks its
+		// related reservations revoked.
+		invalid := !reservation.Active || reservation.Revoked || !now.Before(reservation.ExpiresAt)
 		if invalid && !needed {
 			changed = true
 			continue
@@ -1676,7 +1699,11 @@ func liveReservationTokenHashes(reservations []model.Reservation, now time.Time)
 }
 
 func cloneState(state model.State) model.State {
-	out := model.State{ManagedKeys: state.ManagedKeys, KeySnapshotID: state.KeySnapshotID}
+	out := model.State{
+		ManagedKeys:         state.ManagedKeys,
+		KeySnapshotID:       state.KeySnapshotID,
+		ManagedKeyAuthority: state.ManagedKeyAuthority,
+	}
 	out.Tokens = append(out.Tokens, state.Tokens...)
 	out.Reservations = append(out.Reservations, state.Reservations...)
 	out.Authorizations = append(out.Authorizations, state.Authorizations...)
@@ -1694,7 +1721,11 @@ func cloneState(state model.State) model.State {
 }
 
 func cloneEnforcementState(state model.State) model.State {
-	out := model.State{ManagedKeys: state.ManagedKeys, KeySnapshotID: state.KeySnapshotID}
+	out := model.State{
+		ManagedKeys:         state.ManagedKeys,
+		KeySnapshotID:       state.KeySnapshotID,
+		ManagedKeyAuthority: state.ManagedKeyAuthority,
+	}
 	out.Tokens = append(out.Tokens, state.Tokens...)
 	for i := range out.Tokens {
 		out.Tokens[i].Secret = ""
@@ -1796,7 +1827,7 @@ func checkTotalCapacity(kind string, current, adding, maximum int) error {
 }
 
 func validateStateBounds(state model.State) error {
-	if err := validatePersistedValues("state", state.KeySnapshotID); err != nil {
+	if err := validatePersistedValues("state", state.KeySnapshotID, state.ManagedKeyAuthority); err != nil {
 		return err
 	}
 	counts := []struct {

@@ -240,7 +240,7 @@ func (o *Outbox) Info() Info {
 	defer o.mu.Unlock()
 	return Info{
 		NodeID: o.nodeID, BootID: o.bootID, StreamID: o.streamID, TelemetrySchema: SchemaVersion,
-		Capabilities: []string{"telemetry_v1", "reservation_external_session_id", "job_tracking", "gpu_samples", "managed_user_keys_v1"},
+		Capabilities: []string{"telemetry_v1", "reservation_external_session_id", "job_tracking", "gpu_samples", "managed_user_keys_v1", "managed_key_authority_v1"},
 	}
 }
 

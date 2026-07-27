@@ -31,26 +31,27 @@ type Server struct {
 	Client   NodeAPI
 	History  *history.Store
 
-	fleetCacheMu   sync.Mutex
-	fleetCache     fleetSnapshot
-	fleetCacheAt   time.Time
-	fleetCacheOK   bool
-	fleetCacheTTL  time.Duration
-	fleetRefresh   *fleetRefreshCall
-	now            func() time.Time
-	sessionKey     []byte
-	sessionKeyErr  error
-	loginMu        sync.Mutex
-	loginAttempts  map[string]loginAttempt
-	requestMu      sync.Mutex
-	activeUsers    map[string]int
-	activeTotal    int
-	activeNonAdmin int
-	historySyncMu  sync.Mutex
-	historySync    map[string]historySyncState
-	managedKeySync chan struct{}
-	managedKeyMu   sync.Mutex
-	managedKeyNode map[string]managedKeyNodeState
+	fleetCacheMu        sync.Mutex
+	fleetCache          fleetSnapshot
+	fleetCacheAt        time.Time
+	fleetCacheOK        bool
+	fleetCacheTTL       time.Duration
+	fleetRefresh        *fleetRefreshCall
+	now                 func() time.Time
+	sessionKey          []byte
+	sessionKeyErr       error
+	loginMu             sync.Mutex
+	loginAttempts       map[string]loginAttempt
+	requestMu           sync.Mutex
+	activeUsers         map[string]int
+	activeTotal         int
+	activeNonAdmin      int
+	historySyncMu       sync.Mutex
+	historySync         map[string]historySyncState
+	managedKeyAuthority string
+	managedKeySync      chan struct{}
+	managedKeyMu        sync.Mutex
+	managedKeyNode      map[string]managedKeyNodeState
 }
 
 type addServerRequest struct {
@@ -165,6 +166,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.Users.InitializeFixedKeys(userKeyMaster); err != nil {
 		return fmt.Errorf("initialize fixed user keys: %w", err)
 	}
+	s.managedKeyAuthority = deriveManagedKeyAuthority(userKeyMaster)
 	historyPath := strings.TrimSpace(s.Cfg.WebDB)
 	if historyPath == "" {
 		historyPath = filepath.Join(filepath.Dir(s.Cfg.WebRegistry), "history.db")

@@ -18,6 +18,13 @@ const (
 	managedKeyFullSync = 5 * time.Minute
 )
 
+func deriveManagedKeyAuthority(master []byte) string {
+	digest := sha256.New()
+	_, _ = digest.Write([]byte("gpuardian-managed-key-authority-v1\x00"))
+	_, _ = digest.Write(master)
+	return "mka_" + hex.EncodeToString(digest.Sum(nil)[:16])
+}
+
 type managedKeyNodeState struct {
 	SnapshotID string
 	SyncedAt   time.Time
@@ -49,7 +56,11 @@ func (s *Server) managedKeySnapshot() (protocol.ManagedUserKeySnapshot, error) {
 		return protocol.ManagedUserKeySnapshot{}, err
 	}
 	digest := sha256.Sum256(raw)
-	return protocol.ManagedUserKeySnapshot{SnapshotID: "sha256:" + hex.EncodeToString(digest[:]), Keys: keys}, nil
+	return protocol.ManagedUserKeySnapshot{
+		SnapshotID:  "sha256:" + hex.EncodeToString(digest[:]),
+		AuthorityID: s.managedKeyAuthority,
+		Keys:        keys,
+	}, nil
 }
 
 func (s *Server) syncManagedKeysToNode(ctx context.Context, record ServerRecord) error {
@@ -77,6 +88,9 @@ func (s *Server) syncManagedKeysToNodeOnce(ctx context.Context, record ServerRec
 	snapshot, err := s.managedKeySnapshot()
 	if err != nil {
 		return err
+	}
+	if !telemetryCapability(info, "managed_key_authority_v1") {
+		snapshot.AuthorityID = ""
 	}
 	result, err := client.SyncManagedUserKeys(ctx, record, snapshot)
 	if err != nil {

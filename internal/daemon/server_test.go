@@ -401,7 +401,7 @@ func TestNodeHTTPTelemetryInfoAndPage(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s = %d %s", endpoint, response.Code, response.Body.String())
 		}
-		if endpoint == "/api/v1/info" && (!strings.Contains(response.Body.String(), `"node_id":"node_`) || !strings.Contains(response.Body.String(), `"telemetry_v1"`) || !strings.Contains(response.Body.String(), `"managed_user_keys_v1"`)) {
+		if endpoint == "/api/v1/info" && (!strings.Contains(response.Body.String(), `"node_id":"node_`) || !strings.Contains(response.Body.String(), `"telemetry_v1"`) || !strings.Contains(response.Body.String(), `"managed_user_keys_v1"`) || !strings.Contains(response.Body.String(), `"managed_key_authority_v1"`)) {
 			t.Fatalf("unexpected info response: %s", response.Body.String())
 		}
 		if strings.HasPrefix(endpoint, "/api/v1/telemetry") && !strings.Contains(response.Body.String(), `"daemon.started"`) {

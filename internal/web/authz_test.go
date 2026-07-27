@@ -30,11 +30,16 @@ type authzNodeClient struct {
 
 type managedAuthzNodeClient struct {
 	*authzNodeClient
-	snapshot protocol.ManagedUserKeySnapshot
+	snapshot     protocol.ManagedUserKeySnapshot
+	capabilities []string
 }
 
 func (c *managedAuthzNodeClient) Info(context.Context, ServerRecord) (telemetry.Info, error) {
-	return telemetry.Info{NodeID: "node-managed", Capabilities: []string{"managed_user_keys_v1"}}, nil
+	capabilities := c.capabilities
+	if len(capabilities) == 0 {
+		capabilities = []string{"managed_user_keys_v1"}
+	}
+	return telemetry.Info{NodeID: "node-managed", Capabilities: capabilities}, nil
 }
 
 func (c *managedAuthzNodeClient) Telemetry(context.Context, ServerRecord, string, int) (telemetry.Page, error) {
@@ -303,8 +308,12 @@ func TestManagedGatewayIgnoresClientKeyIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	managed := &managedAuthzNodeClient{authzNodeClient: legacy}
+	managed := &managedAuthzNodeClient{
+		authzNodeClient: legacy,
+		capabilities:    []string{"managed_user_keys_v1", "managed_key_authority_v1"},
+	}
 	server.Client = managed
+	server.managedKeyAuthority = "mka_gateway"
 	legacy.reservationResult = model.RegisterResult{Token: "must-not-leak", TokenID: aliceKey.ID, GroupID: "grp_test", Mode: model.TokenModeManaged, ReservationIDs: []string{"res_test"}, GPUs: []int{0}}
 	handler := server.routes()
 	cookie := testSessionCookie(t, server, "alice", RoleUser)
@@ -324,6 +333,26 @@ func TestManagedGatewayIgnoresClientKeyIdentity(t *testing.T) {
 	legacy.mu.Unlock()
 	if gotReservation.Name != "alice" || gotReservation.UserKeyID != aliceKey.ID {
 		t.Fatalf("client selected managed identity: %+v", gotReservation)
+	}
+	managed.mu.Lock()
+	gotAuthority := managed.snapshot.AuthorityID
+	managed.mu.Unlock()
+	if gotAuthority != server.managedKeyAuthority {
+		t.Fatalf("managed-key authority = %q, want %q", gotAuthority, server.managedKeyAuthority)
+	}
+	record, ok, err := server.Registry.Get(serverID)
+	if err != nil || !ok {
+		t.Fatalf("load test server: found=%v err=%v", ok, err)
+	}
+	managed.capabilities = []string{"managed_user_keys_v1"}
+	if err := server.syncManagedKeysToNodeOnce(t.Context(), record); err != nil {
+		t.Fatal(err)
+	}
+	managed.mu.Lock()
+	legacyAuthority := managed.snapshot.AuthorityID
+	managed.mu.Unlock()
+	if legacyAuthority != "" {
+		t.Fatalf("legacy node received unsupported managed-key authority %q", legacyAuthority)
 	}
 
 	allow := requestJSON(handler, http.MethodPost, "/api/servers/"+serverID+"/allow", `{"id":"uk_attacker","user_key_id":"uk_attacker","mode":"user","user":"alice"}`, cookie)

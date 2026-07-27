@@ -392,6 +392,13 @@ not create or change the key. Keep it private; use `Regenerate` only when the
 credential must be replaced, because the previous version stops working after
 the managed-key snapshot reaches each node.
 
+Each production node must be managed by exactly one web gateway. Current
+daemons bind managed-key sync to an authority derived from the gateway's
+`user-key.key` and reject snapshots from another gateway. When migrating a
+gateway, restore the complete `/var/lib/gpuardian-web` backup so the authority
+and encrypted fixed keys move together; do not register the same production
+node in an independent dev or no-TLS gateway.
+
 ### Run a workload
 
 Run normal commands through the GPUardian wrapper:

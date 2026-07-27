@@ -723,6 +723,9 @@ func TestManagedKeySyncPreservesReservationWhenOwnerIsTemporarilyMissing(t *test
 	if _, _, err := st.ValidateToken(aliceSecret, now.Add(91*time.Second)); err == nil {
 		t.Fatal("removed managed key remained valid")
 	}
+	if err := st.PruneUnreferencedInvalidEntitlements(now.Add(91 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	status, err := st.KeyStatus(rootKey, now.Add(91*time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -758,6 +761,54 @@ func TestManagedKeySyncPreservesReservationWhenOwnerIsTemporarilyMissing(t *test
 		if reservation.GroupID == groupID && reservation.TokenHash != HashToken(rotatedSecret) {
 			t.Fatalf("reservation did not converge to restored key: %+v", reservation)
 		}
+	}
+}
+
+func TestManagedKeySyncBindsGatewayAuthority(t *testing.T) {
+	st := testStore(t)
+	rootKey, err := st.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 26, 6, 0, 0, 0, time.UTC)
+	secret := "gk_" + strings.Repeat("a", 48)
+	initial := protocol.ManagedUserKeySnapshot{
+		SnapshotID:  "sha256:initial",
+		AuthorityID: "mka_primary",
+		Keys:        []protocol.ManagedUserKey{{ID: "uk_alice", Owner: "alice", Version: 1, Hash: HashToken(secret)}},
+	}
+	legacyInitial := initial
+	legacyInitial.AuthorityID = ""
+	if _, err := st.SyncManagedUserKeys(rootKey, legacyInitial, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SyncManagedUserKeys(rootKey, initial, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	competing := initial
+	competing.AuthorityID = "mka_competing"
+	if _, err := st.SyncManagedUserKeys(rootKey, competing, now.Add(time.Minute)); err == nil {
+		t.Fatal("competing gateway replaced the bound managed-key authority")
+	}
+	legacy := initial
+	legacy.AuthorityID = ""
+	if _, err := st.SyncManagedUserKeys(rootKey, legacy, now.Add(time.Minute)); err == nil {
+		t.Fatal("legacy gateway replaced an authority-bound managed-key snapshot")
+	}
+
+	state, err := st.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ManagedKeyAuthority != initial.AuthorityID || state.KeySnapshotID != initial.SnapshotID {
+		t.Fatalf("managed-key authority changed after rejected sync: %+v", state)
+	}
+
+	updated := initial
+	updated.SnapshotID = "sha256:updated"
+	if _, err := st.SyncManagedUserKeys(rootKey, updated, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("bound gateway could not update its snapshot: %v", err)
 	}
 }
 

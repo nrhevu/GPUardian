@@ -172,15 +172,16 @@ type AuditEvent struct {
 }
 
 type State struct {
-	ManagedKeys    bool            `json:"managed_keys,omitempty"`
-	KeySnapshotID  string          `json:"key_snapshot_id,omitempty"`
-	Tokens         []Token         `json:"tokens"`
-	Reservations   []Reservation   `json:"reservations,omitempty"`
-	Authorizations []Authorization `json:"authorizations,omitempty"`
-	SoftClaims     []SoftClaim     `json:"soft_claims,omitempty"`
-	Leases         []Lease         `json:"leases,omitempty"`
-	Bypasses       []BypassRule    `json:"bypasses"`
-	Audit          []AuditEvent    `json:"audit"`
+	ManagedKeys         bool            `json:"managed_keys,omitempty"`
+	KeySnapshotID       string          `json:"key_snapshot_id,omitempty"`
+	ManagedKeyAuthority string          `json:"managed_key_authority,omitempty"`
+	Tokens              []Token         `json:"tokens"`
+	Reservations        []Reservation   `json:"reservations,omitempty"`
+	Authorizations      []Authorization `json:"authorizations,omitempty"`
+	SoftClaims          []SoftClaim     `json:"soft_claims,omitempty"`
+	Leases              []Lease         `json:"leases,omitempty"`
+	Bypasses            []BypassRule    `json:"bypasses"`
+	Audit               []AuditEvent    `json:"audit"`
 }
 
 type Status struct {

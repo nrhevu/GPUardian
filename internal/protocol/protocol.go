@@ -75,8 +75,9 @@ type ManagedUserKey struct {
 }
 
 type ManagedUserKeySnapshot struct {
-	SnapshotID string           `json:"snapshot_id"`
-	Keys       []ManagedUserKey `json:"keys"`
+	SnapshotID  string           `json:"snapshot_id"`
+	AuthorityID string           `json:"authority_id,omitempty"`
+	Keys        []ManagedUserKey `json:"keys"`
 }
 
 type ManagedUserKeySyncResult struct {
