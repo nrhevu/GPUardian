@@ -1198,17 +1198,17 @@ h2 {
   display: grid;
   flex: 1 1 auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(4, minmax(112px, 1fr));
+  grid-template-rows: repeat(4, minmax(154px, 1fr));
+  grid-auto-rows: minmax(154px, auto);
   gap: 10px;
   min-height: 0;
 }
 
 .gpu-card {
   position: relative;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  align-content: stretch;
-  min-height: 0;
+  display: flex;
+  min-height: 154px;
+  flex-direction: column;
   border: 1px solid #bbf7d0;
   border-radius: 8px;
   padding: 12px;
@@ -1252,7 +1252,8 @@ h2 {
 .gpu-title-row {
   position: relative;
   display: flex;
-  align-self: start;
+  width: 100%;
+  align-self: stretch;
   min-width: 0;
   min-height: 22px;
   align-items: center;
@@ -1273,10 +1274,18 @@ h2 {
 }
 
 .gpu-subtitle {
-  margin: 8px 0 -5px;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+  margin: auto 0 0;
+  padding-top: 8px;
   text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   font-weight: 400;
+  line-height: 1.2;
   color: var(--muted);
 }
 
@@ -1318,7 +1327,8 @@ h2 {
 
 .gpu-metrics {
   display: grid;
-  align-self: start;
+  width: 100%;
+  flex: 0 0 auto;
   gap: 12px;
   margin-top: 0;
   padding-top: clamp(2px, 1vh, 12px);
@@ -1502,11 +1512,11 @@ h2 {
   position: absolute;
   appearance: none;
   box-sizing: border-box;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   width: max-content;
-  align-content: stretch;
-  gap: 1px;
+  min-width: 0;
+  gap: 2px;
   overflow: hidden;
   border: 1px solid var(--booking-border, #fecaca);
   border-radius: 8px;
@@ -1517,21 +1527,12 @@ h2 {
   text-align: left;
 }
 
-.booking-block.has-holder {
-  align-content: stretch;
-}
-
 .booking-block.compact {
-  display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 6px;
   min-height: 0;
   padding: 0 6px;
-}
-
-.booking-block.compact.has-holder {
-  align-content: center;
-  padding-right: var(--holder-space, 56px);
 }
 
 .booking-block:hover {
@@ -1545,24 +1546,19 @@ h2 {
 }
 
 .booking-topline {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  column-gap: 6px;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
 .booking-block.compact .booking-topline {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
+  flex: 1 1 auto;
 }
 
 .booking-block strong {
   display: block;
-  min-width: max-content;
-  overflow: visible;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
@@ -1574,9 +1570,74 @@ h2 {
   line-height: 1;
 }
 
+.booking-block.extended strong {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.booking-span {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 26px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  overflow: hidden;
+  padding: 6px 4px 6px 17px;
+}
+
+.booking-span::before {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 5px;
+  width: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+  opacity: 0.2;
+}
+
+.booking-duration {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.booking-block.extended .booking-duration {
+  font-size: 15px;
+}
+
+.booking-gpus {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.15;
+  opacity: 0.72;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.booking-footer {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: auto;
+}
+
 .booking-block .booking-time {
-  align-self: end;
-  min-width: max-content;
+  flex: 0 0 auto;
   color: var(--booking-text, #b91c1c);
   font-size: 11px;
   line-height: 1.15;
@@ -1584,14 +1645,18 @@ h2 {
 }
 
 .booking-block.compact .booking-time {
-  align-self: auto;
-  flex: 0 0 auto;
+  font-size: 10px;
   line-height: 1;
 }
 
+.booking-block.compact .booking-footer {
+  margin-top: 0;
+}
+
 .booking-block .booking-holder {
-  max-width: none;
-  overflow: visible;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
   color: var(--booking-text, #991b1b);
   font-size: 9px;
   font-weight: 600;
@@ -1603,11 +1668,7 @@ h2 {
 }
 
 .booking-block.compact .booking-holder {
-  position: absolute;
-  top: 1px;
-  right: 6px;
-  max-width: none;
-  pointer-events: none;
+  display: none;
 }
 
 .schedule-detail {
@@ -2263,6 +2324,8 @@ select:focus {
 
   .gpu-grid {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: minmax(154px, auto);
   }
 
   .rules-table-header,

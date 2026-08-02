@@ -1802,11 +1802,16 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
 }
 
 function ScheduleBlockButton({ block, colors = reservationPalette[0], onOpen }) {
+  const gpuText = scheduleGPUText(block.gpus);
+  const duration = durationLabel(block.durationMinutes * 60 * 1000);
+  const showSpan = block.density === "detailed" || block.density === "extended";
+  const description = `${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)} · ${gpuText}`;
   return (
     <button
       type="button"
-      className={`booking-block ${block.compact ? "compact" : ""} ${block.holder ? "has-holder" : ""}`}
-      title={`${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)}`}
+      className={`booking-block ${block.density}`}
+      title={description}
+      aria-label={description}
       style={{
         top: block.top,
         height: block.height,
@@ -1817,15 +1822,22 @@ function ScheduleBlockButton({ block, colors = reservationPalette[0], onOpen }) 
         "--booking-hover": colors.hover,
         "--booking-text": colors.text,
         "--booking-focus": colors.focus,
-        "--holder-space": block.holder ? `${Math.ceil(estimateTextWidth(block.holder, 9) + 12)}px` : "0px",
       }}
       onClick={() => onOpen(block)}
     >
       <div className="booking-topline">
         <strong>{block.label}</strong>
+      </div>
+      {showSpan && (
+        <div className="booking-span">
+          <span className="booking-duration">{duration}</span>
+          <span className="booking-gpus">{gpuText}</span>
+        </div>
+      )}
+      <div className="booking-footer">
+        <span className="booking-time">{timeLabel(block.start)} - {timeLabel(block.end)}</span>
         {block.holder && <span className="booking-holder">{block.holder}</span>}
       </div>
-      <span className="booking-time">{timeLabel(block.start)} - {timeLabel(block.end)}</span>
     </button>
   );
 }
@@ -2866,7 +2878,13 @@ function scheduleBlock(job, dayStart, dayEnd) {
   const endMinutes = (visibleEnd.getTime() - dayStart.getTime()) / 60000;
   const durationMinutes = (visibleEnd.getTime() - visibleStart.getTime()) / 60000;
   const heightPx = (durationMinutes / 60) * calendarHourHeight;
-  const compact = heightPx < 42;
+  const density = heightPx < 42
+    ? "compact"
+    : heightPx < 72
+      ? "regular"
+      : heightPx < 168
+        ? "detailed"
+        : "extended";
   return {
     id: job.id,
     gpus: job.gpus,
@@ -2877,9 +2895,11 @@ function scheduleBlock(job, dayStart, dayEnd) {
     end: visibleEnd,
     startMinutes,
     endMinutes,
+    durationMinutes,
     top: `${(startMinutes / 60) * calendarHourHeight}px`,
     height: `${heightPx}px`,
-    compact,
+    compact: density === "compact",
+    density,
     label: job.label,
   };
 }
@@ -2917,9 +2937,18 @@ function layoutScheduleGroup(group) {
     return { ...block, lane };
   });
   const lanes = Math.max(laneEnds.length, 1);
+  if (lanes === 1) {
+    return assigned.map((block) => ({
+      ...block,
+      laneCount: 1,
+      left: "0",
+      width: "calc(100% - 2px)",
+      timelineWidth: 0,
+    }));
+  }
   const laneWidths = Array.from({ length: lanes }, () => 0);
   for (const block of assigned) {
-    laneWidths[block.lane] = Math.max(laneWidths[block.lane], estimateScheduleBlockWidth(block, lanes));
+    laneWidths[block.lane] = Math.max(laneWidths[block.lane], estimateScheduleBlockWidth(block));
   }
   const laneOffsets = laneWidths.map((_, index) => (
     laneWidths.slice(0, index).reduce((sum, width) => sum + width, 0) + index * scheduleLaneGap
@@ -2929,29 +2958,44 @@ function layoutScheduleGroup(group) {
   return assigned.map((block) => ({
     ...block,
     laneCount: lanes,
-    compact: block.compact,
-    left: lanes === 1 ? "0" : `${laneOffsets[block.lane]}px`,
-    width: lanes === 1 ? `${laneWidths[block.lane]}px` : `${laneWidths[block.lane]}px`,
+    left: `${laneOffsets[block.lane]}px`,
+    width: `${laneWidths[block.lane]}px`,
     timelineWidth,
   }));
 }
 
-function estimateScheduleBlockWidth(block, laneCount) {
+function estimateScheduleBlockWidth(block) {
   const label = block.label || "";
   const holder = block.holder || "";
   const time = `${timeLabel(block.start)} - ${timeLabel(block.end)}`;
-  const compact = block.compact;
-  const labelWidth = estimateTextWidth(label, compact ? 11 : 12);
-  const holderWidth = holder ? estimateTextWidth(holder, compact ? 9 : 9) : 0;
+  const labelWidth = estimateTextWidth(label, block.compact ? 11 : 12);
+  const holderWidth = holder ? estimateTextWidth(holder, 9) : 0;
   const timeWidth = estimateTextWidth(time, 11);
-  const topLineWidth = labelWidth + (holder ? holderWidth + 6 : 0);
-  const contentWidth = compact
-    ? labelWidth + timeWidth + (holder ? holderWidth + 12 : 0) + 24
-    : Math.max(topLineWidth, timeWidth) + 18;
+  const gpuWidth = estimateTextWidth(scheduleGPUText(block.gpus), 10);
   if (block.compact) {
-    return Math.max(86, Math.ceil(contentWidth));
+    return clamp(Math.ceil(Math.min(labelWidth, 110) + timeWidth + 24), 110, 190);
   }
-  return Math.max(104, Math.ceil(contentWidth));
+  const footerWidth = timeWidth + (holder ? Math.min(holderWidth, 90) + 10 : 0);
+  return clamp(Math.ceil(Math.max(Math.min(labelWidth, 220), footerWidth, gpuWidth) + 18), 136, 240);
+}
+
+function scheduleGPUText(gpus = []) {
+  const values = Array.from(new Set(gpus)).sort((left, right) => left - right);
+  if (values.length === 0) return "No GPU";
+  const ranges = [];
+  let start = values[0];
+  let end = values[0];
+  for (const value of values.slice(1)) {
+    if (value === end + 1) {
+      end = value;
+      continue;
+    }
+    ranges.push(start === end ? `${start}` : `${start}–${end}`);
+    start = value;
+    end = value;
+  }
+  ranges.push(start === end ? `${start}` : `${start}–${end}`);
+  return `${values.length === 1 ? "GPU" : "GPUs"} ${ranges.join(", ")}`;
 }
 
 function estimateTextWidth(text, fontSize) {
