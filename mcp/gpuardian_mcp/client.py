@@ -261,12 +261,13 @@ class GpuardianClient:
         server_id: str,
         *,
         mode: str,
+        run_name: str,
         container: str | None = None,
         namespace: str | None = None,
         user: str | None = None,
     ) -> dict[str, Any]:
         """POST /api/servers/{id}/allow — grant an authorization scope."""
-        body: dict[str, Any] = {"mode": mode}
+        body: dict[str, Any] = {"mode": mode, "run_name": run_name}
         if container is not None:
             body["container"] = container
         if namespace is not None:

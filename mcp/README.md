@@ -103,7 +103,18 @@ client's docs for the exact file path and any client-specific fields.
 | `history_search` | Search reservation sessions with filter groups and sorting. |
 | `history_session` | Full record of a single reservation session. |
 | `history_session_jobs` | Paginated list of observed jobs for a session. |
-| `allow` | Grant an authorization scope (docker/k8s/user) on a node. |
+| `allow` | Grant an authorization scope (docker/k8s/user) on a node; `run_name` is required and labels claimed activity in GPU Activity. |
+
+Example `allow` arguments:
+
+```json
+{
+  "server_id": "node-id",
+  "mode": "docker",
+  "container": "trainer",
+  "run_name": "GLM TP4 benchmark"
+}
+```
 
 ## Security notes
 

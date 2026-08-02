@@ -235,18 +235,25 @@ TOOLS: list[Tool] = [
         description=(
             "Grant an authorization scope on a node for the caller's fixed "
             "key. Use mode 'docker' with container, 'k8s' with namespace, "
-            "or 'user' with a username. Wildcards are admin-only."
+            "or 'user' with a username. A run_name is required and is shown "
+            "for claimed activity in the dashboard. Wildcards are admin-only."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "server_id": {"type": "string"},
                 "mode": {"type": "string", "enum": ["docker", "k8s", "user"]},
+                "run_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": "Required name shown for the claimed run in GPU Activity.",
+                },
                 "container": {"type": "string", "description": "Container name or ID (mode=docker)."},
                 "namespace": {"type": "string", "description": "K8s namespace (mode=k8s)."},
                 "user": {"type": "string", "description": "Username (mode=user)."},
             },
-            "required": ["server_id", "mode"],
+            "required": ["server_id", "mode", "run_name"],
         },
     ),
 ]
@@ -320,10 +327,14 @@ def _dispatch(client: GpuardianClient, name: str, args: dict[str, Any]) -> list[
             )
         )
     if name == "allow":
+        run_name = args.get("run_name")
+        if not isinstance(run_name, str) or not run_name.strip():
+            raise ValueError("run_name is required")
         return _json_text(
             client.allow(
                 args["server_id"],
                 mode=args["mode"],
+                run_name=run_name.strip(),
                 container=args.get("container"),
                 namespace=args.get("namespace"),
                 user=args.get("user"),

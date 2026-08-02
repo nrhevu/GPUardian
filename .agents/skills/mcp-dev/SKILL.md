@@ -89,7 +89,7 @@ Add a `mcpServers` block to the client's config:
 | `list_keys` | List fixed user keys with node sync status |
 | `reveal_key` | Reveal the plaintext `gk_...` secret for a user |
 | `regenerate_key` | Rotate a user's fixed key |
-| `allow` | Grant an authorization scope (`docker`/`k8s`/`user`) on a node |
+| `allow` | Grant an authorization scope (`docker`/`k8s`/`user`) on a node; requires `run_name` for the claimed activity label |
 | `history_summary` | Dashboard summary with optional filters |
 | `history_search` | Search sessions with filters + sorting + pagination |
 | `history_session` | Full record of one session by ID |
