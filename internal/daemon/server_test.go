@@ -535,7 +535,7 @@ func TestObservedTelemetryRecordsClaimedJobWithoutReservation(t *testing.T) {
 	state := model.State{
 		Tokens: []model.Token{{ID: "tok_claimed", Hash: "hash", Mode: model.TokenModeClaimed}},
 		Authorizations: []model.Authorization{{
-			ID: "auth_claimed", TokenHash: "hash", TokenMode: model.TokenModeClaimed, Mode: model.ModeUser, Holder: "alice",
+			ID: "auth_claimed", TokenHash: "hash", TokenMode: model.TokenModeClaimed, Mode: model.ModeUser, Holder: "alice", RunName: "GLM TP4 benchmark",
 		}},
 	}
 	info := model.ProcInfo{PID: 42, StartTime: 99, Cmdline: []string{"python", "train.py"}}
@@ -555,9 +555,23 @@ func TestObservedTelemetryRecordsClaimedJobWithoutReservation(t *testing.T) {
 			}
 		}
 	}
-	if started.ExecutionID == "" || started.TokenMode != model.TokenModeClaimed || started.GroupID != "" ||
+	if started.ExecutionID == "" || started.RunName != "GLM TP4 benchmark" || started.TokenMode != model.TokenModeClaimed || started.GroupID != "" ||
 		len(started.GroupIDs) != 0 || len(started.GPUs) != 1 || started.GPUs[0] != 3 {
 		t.Fatalf("unexpected claimed job: %+v", started)
+	}
+}
+
+func TestRunTelemetryCarriesClaimedRunName(t *testing.T) {
+	server := testServer(t)
+	event := server.rememberRunJob(
+		model.Token{ID: "tok_claimed", Hash: "hash", Mode: model.TokenModeClaimed},
+		model.Authorization{ID: "auth_claimed", TokenMode: model.TokenModeClaimed, Mode: model.ModeBare, Holder: "alice", RunName: "GLM TP4 benchmark"},
+		42,
+		[]string{"python", "train.py"},
+		time.Now(),
+	)
+	if event.RunName != "GLM TP4 benchmark" {
+		t.Fatalf("run name = %q", event.RunName)
 	}
 }
 
@@ -647,9 +661,10 @@ func TestNodeHTTPAllowCreatesAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(protocol.AllowArgs{
-		ID:   token.ID,
-		Mode: model.ModeUser,
-		User: "alice*",
+		ID:      token.ID,
+		Mode:    model.ModeUser,
+		User:    "alice*",
+		RunName: "GLM TP4 benchmark",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -666,7 +681,7 @@ func TestNodeHTTPAllowCreatesAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Authorizations) != 1 || status.Authorizations[0].Username != "alice*" {
+	if len(status.Authorizations) != 1 || status.Authorizations[0].Username != "alice*" || status.Authorizations[0].RunName != "GLM TP4 benchmark" {
 		t.Fatalf("authorizations = %+v, want alice* user authorization", status.Authorizations)
 	}
 }
@@ -1037,7 +1052,7 @@ func TestDockerAllowAliasCreatesAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "trainer"})
+	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "trainer", RunName: "GLM TP4 benchmark"})
 	result, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
 	if err != nil {
 		t.Fatal(err)
@@ -1050,7 +1065,7 @@ func TestDockerAllowAliasCreatesAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Authorizations) != 1 || status.Authorizations[0].Mode != model.ModeDocker {
+	if len(status.Authorizations) != 1 || status.Authorizations[0].Mode != model.ModeDocker || status.Authorizations[0].RunName != "GLM TP4 benchmark" {
 		t.Fatalf("expected docker authorization, got %+v", status.Authorizations)
 	}
 }

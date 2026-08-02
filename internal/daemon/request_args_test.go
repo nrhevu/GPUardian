@@ -44,11 +44,11 @@ func TestDecodeRunArgsRejectsAmplifyingArrays(t *testing.T) {
 }
 
 func TestDecodeRunArgsAcceptsBoundedRequest(t *testing.T) {
-	args, err := decodeRunArgs([]byte(`{"command":["sh","-c","true"],"workdir":"/tmp","env":["PATH=/bin"]}`))
+	args, err := decodeRunArgs([]byte(`{"name":"GLM TP4 benchmark","command":["sh","-c","true"],"workdir":"/tmp","env":["PATH=/bin"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(args.Command) != 3 || args.Workdir != "/tmp" || len(args.Env) != 1 {
+	if args.Name != "GLM TP4 benchmark" || len(args.Command) != 3 || args.Workdir != "/tmp" || len(args.Env) != 1 {
 		t.Fatalf("unexpected decoded arguments: %+v", args)
 	}
 }

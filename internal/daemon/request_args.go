@@ -52,6 +52,8 @@ func decodeRunArgs(raw json.RawMessage) (protocol.RunArgs, error) {
 	var args protocol.RunArgs
 	err := decodeRPCArgsObject(raw, func(decoder *json.Decoder, field string) error {
 		switch field {
+		case "name":
+			return decoder.Decode(&args.Name)
 		case "command":
 			return decodeBoundedStringArray(decoder, &args.Command, maxRunCommandArgs, maxRunCommandBytes, "command")
 		case "workdir":
@@ -186,6 +188,9 @@ func decodeBoundedStringArray(decoder *json.Decoder, out *[]string, maxEntries, 
 }
 
 func validateRunArgs(args protocol.RunArgs) error {
+	if err := validateRequestValue("run name", args.Name); err != nil {
+		return err
+	}
 	if len(args.Command) == 0 {
 		return errors.New("command is required")
 	}

@@ -102,6 +102,7 @@ type Authorization struct {
 	TokenMode        string    `json:"token_mode"`
 	TokenVersion     int64     `json:"token_version,omitempty"`
 	Holder           string    `json:"holder"`
+	RunName          string    `json:"run_name,omitempty"`
 	UID              int       `json:"uid,omitempty"`
 	GID              int       `json:"gid,omitempty"`
 	Username         string    `json:"username,omitempty"`
@@ -254,6 +255,7 @@ type AuthorizationView struct {
 	Mode             string     `json:"mode"`
 	TokenMode        string     `json:"token_mode"`
 	Holder           string     `json:"holder"`
+	RunName          string     `json:"run_name,omitempty"`
 	UID              int        `json:"uid,omitempty"`
 	GID              int        `json:"gid,omitempty"`
 	Username         string     `json:"username,omitempty"`

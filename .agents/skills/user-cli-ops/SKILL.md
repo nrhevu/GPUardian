@@ -25,11 +25,14 @@ commands with `GPUARDIAN_SOCKET=/path/to/sock`.
 ```bash
 KEY=gk_xxx gpuardian run -- python train.py
 KEY=gk_xxx gpuardian run -- torchrun --nproc_per_node=8 train.py
+KEY=gk_xxx gpuardian run --name "GLM TP4 benchmark" -- python train.py
 ```
 
 Everything after `--` is the workload command. Child processes inherit the
 authorization. The CLI resolves the command via the caller's `PATH` and sends
 `Command`, `Workdir` (cwd), and `Env` (full `os.Environ()`) over the socket.
+For a claimed-mode key, optional `--name` labels the run in Dashboard → GPU
+Activity.
 
 ## Authorize a container / k8s / user (instead of `run -- docker`)
 
@@ -38,12 +41,13 @@ workload in a different cgroup, so GPUardian can't track or enforce it.
 Authorize the scope instead:
 
 ```bash
-KEY=gk_xxx gpuardian allow docker --container trainer
-KEY=gk_xxx gpuardian allow k8s   --namespace training
-KEY=gk_xxx gpuardian allow user  --name alice
+KEY=gk_xxx gpuardian allow docker --container trainer --run-name "GLM TP4 benchmark"
+KEY=gk_xxx gpuardian allow k8s   --namespace training --run-name "GLM TP4 benchmark"
+KEY=gk_xxx gpuardian allow user  --name alice --run-name "GLM TP4 benchmark"
 ```
 
-Use the **narrowest exact scope**. Wildcard scopes are admin-only.
+`--run-name` is optional; omit it to keep the default `Claimed run` label. Use
+the **narrowest exact scope**. Wildcard scopes are admin-only.
 
 ## Inspect status and keys
 

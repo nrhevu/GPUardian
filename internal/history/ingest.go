@@ -311,14 +311,19 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 		session = sessionID(nodeID, groupID)
 		kind = "claimed_run"
 		expiresMS = millis(endAt)
+		purpose := strings.TrimSpace(payload.RunName)
+		if purpose == "" {
+			purpose = "Claimed run"
+		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO reservation_sessions(session_id,node_id,server_id,server_name,group_id,kind,owner_username,owner_editable,purpose,source,
 			created_at_ms,starts_at_ms,expires_at_ms,finalized_at_ms,history_quality,provisioning,updated_at_ms)
-			VALUES(?,?,?,?,?,'claimed_run',?,0,'Claimed run','cli',?,?,?,?, 'complete',0,?)
+			VALUES(?,?,?,?,?,'claimed_run',?,0,?,'cli',?,?,?,?,'complete',0,?)
 			ON CONFLICT(node_id,group_id) DO UPDATE SET server_id=excluded.server_id,server_name=excluded.server_name,
-			owner_username=excluded.owner_username,starts_at_ms=MIN(reservation_sessions.starts_at_ms,excluded.starts_at_ms),
+			owner_username=excluded.owner_username,purpose=CASE WHEN excluded.purpose='Claimed run' THEN reservation_sessions.purpose ELSE excluded.purpose END,
+			starts_at_ms=MIN(reservation_sessions.starts_at_ms,excluded.starts_at_ms),
 			expires_at_ms=MAX(reservation_sessions.expires_at_ms,excluded.expires_at_ms),
 			finalized_at_ms=COALESCE(excluded.finalized_at_ms,reservation_sessions.finalized_at_ms),updated_at_ms=excluded.updated_at_ms`,
-			session, nodeID, serverID, serverName, groupID, payload.Holder, millis(startedAt), millis(startedAt), expiresMS,
+			session, nodeID, serverID, serverName, groupID, payload.Holder, purpose, millis(startedAt), millis(startedAt), expiresMS,
 			nullableMillis(payload.FinishedAt), millis(occurredAt))
 		if err != nil {
 			return err

@@ -41,6 +41,7 @@ type RegisterArgs struct {
 }
 
 type RunArgs struct {
+	Name    string   `json:"name,omitempty"`
 	Command []string `json:"command"`
 	Workdir string   `json:"workdir,omitempty"`
 	Env     []string `json:"env,omitempty"`
@@ -48,14 +49,17 @@ type RunArgs struct {
 
 type DockerAllowArgs struct {
 	Container string `json:"container"`
+	RunName   string `json:"run_name,omitempty"`
 }
 
 type K8sAllowArgs struct {
 	Namespace string `json:"namespace"`
+	RunName   string `json:"run_name,omitempty"`
 }
 
 type UserAllowArgs struct {
-	User string `json:"user"`
+	User    string `json:"user"`
+	RunName string `json:"run_name,omitempty"`
 }
 
 type AllowArgs struct {
@@ -65,6 +69,7 @@ type AllowArgs struct {
 	Container string `json:"container,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	User      string `json:"user,omitempty"`
+	RunName   string `json:"run_name,omitempty"`
 }
 
 type ManagedUserKey struct {

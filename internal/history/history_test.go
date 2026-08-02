@@ -363,7 +363,7 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 	startPage := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-1", Events: []telemetry.Event{
 		event(t, 1, telemetry.EventJobStarted, started, telemetry.JobEvent{
 			ExecutionID: "job-claimed", AuthorizationID: "auth-claimed", Source: "authorized_process",
-			Mode: "user", Holder: "alice", Command: []string{"python", "train.py"}, GPUs: []int{3}, StartedAt: &started, StartPrecision: "observed",
+			RunName: "GLM TP4 benchmark", Mode: "user", Holder: "alice", Command: []string{"python", "train.py"}, GPUs: []int{3}, StartedAt: &started, StartPrecision: "observed",
 		}),
 	}}
 	if err := store.ApplyPage(ctx, "server-a", "GPU node", startPage); err != nil {
@@ -392,7 +392,7 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 		t.Fatal(err)
 	}
 	if len(sessions) != 1 || sessions[0].Kind != "claimed_run" || sessions[0].Status != "completed" ||
-		sessions[0].Purpose != "Claimed run" || sessions[0].JobCount != 1 || len(sessions[0].GPUs) != 1 || sessions[0].GPUs[0] != 3 {
+		sessions[0].Purpose != "GLM TP4 benchmark" || sessions[0].JobCount != 1 || len(sessions[0].GPUs) != 1 || sessions[0].GPUs[0] != 3 {
 		t.Fatalf("claimed activity = %+v", sessions)
 	}
 	summary, _, _, err := store.Search(ctx, SearchExpression{}, SearchSort{}, 10, SearchCursor{})

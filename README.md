@@ -406,24 +406,30 @@ Run normal commands through the GPUardian wrapper:
 ```bash
 KEY=gk_xxx gpuardian run -- python train.py
 KEY=gk_xxx gpuardian run -- torchrun --nproc_per_node=8 train.py
+KEY=gk_xxx gpuardian run --name "GLM TP4 benchmark" -- python train.py
 ```
 
 Everything after `--` is the workload command. Child processes inherit the
-authorization.
+authorization. `--name` is optional; for claimed-mode keys it becomes the run
+name shown in Dashboard → GPU Activity.
 
 Do not use `gpuardian run -- docker run ...`; Docker places the real workload
 in a different cgroup. Authorize the container instead:
 
 ```bash
-KEY=gk_xxx gpuardian allow docker --container trainer
+KEY=gk_xxx gpuardian allow docker --container trainer --run-name "GLM TP4 benchmark"
 ```
 
 Other exact authorization scopes:
 
 ```bash
-KEY=gk_xxx gpuardian allow k8s --namespace training
-KEY=gk_xxx gpuardian allow user --name alice
+KEY=gk_xxx gpuardian allow k8s --namespace training --run-name "GLM TP4 benchmark"
+KEY=gk_xxx gpuardian allow user --name alice --run-name "GLM TP4 benchmark"
 ```
+
+`--run-name` is optional and labels claimed workloads observed through an
+`allow` authorization. Without a name, the dashboard keeps the default
+`Claimed run` label.
 
 Use the narrowest exact scope possible. Wildcard scopes are admin-only because
 they can authorize more workloads than intended.
@@ -466,10 +472,10 @@ logs, screenshots, or user documentation.
 gpuardian help
 gpuardian daemon [--dry-run]
 gpuardian register (--reserved | --claimed)
-KEY=... gpuardian run -- <command>
-KEY=... gpuardian allow docker --container <name-or-id>
-KEY=... gpuardian allow k8s --namespace <name>
-KEY=... gpuardian allow user --name <name>
+KEY=... gpuardian run [--name <name>] -- <command>
+KEY=... gpuardian allow docker --container <name-or-id> [--run-name <name>]
+KEY=... gpuardian allow k8s --namespace <name> [--run-name <name>]
+KEY=... gpuardian allow user --name <name> [--run-name <name>]
 KEY=... gpuardian status
 KEY=... gpuardian ps
 KEY=... gpuardian token info

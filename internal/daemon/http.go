@@ -347,21 +347,21 @@ func (s *Server) handleNodeAllow(w http.ResponseWriter, r *http.Request, rootKey
 	switch strings.TrimSpace(args.Mode) {
 	case model.ModeDocker:
 		if managed {
-			result, err = s.createDockerAuthorization(r.Context(), "", token, token.Hash, peer{}, protocol.DockerAllowArgs{Container: args.Container})
+			result, err = s.createDockerAuthorization(r.Context(), "", token, token.Hash, peer{}, protocol.DockerAllowArgs{Container: args.Container, RunName: args.RunName})
 		} else {
-			result, err = s.dispatch(r.Context(), peer{}, protocolRequest("allow_docker", protocol.DockerAllowArgs{Container: args.Container}, secret))
+			result, err = s.dispatch(r.Context(), peer{}, protocolRequest("allow_docker", protocol.DockerAllowArgs{Container: args.Container, RunName: args.RunName}, secret))
 		}
 	case model.ModeK8s:
 		if managed {
-			result, err = s.createK8sAuthorization(r.Context(), "", token, token.Hash, peer{}, protocol.K8sAllowArgs{Namespace: args.Namespace})
+			result, err = s.createK8sAuthorization(r.Context(), "", token, token.Hash, peer{}, protocol.K8sAllowArgs{Namespace: args.Namespace, RunName: args.RunName})
 		} else {
-			result, err = s.dispatch(r.Context(), peer{}, protocolRequest("allow_k8s", protocol.K8sAllowArgs{Namespace: args.Namespace}, secret))
+			result, err = s.dispatch(r.Context(), peer{}, protocolRequest("allow_k8s", protocol.K8sAllowArgs{Namespace: args.Namespace, RunName: args.RunName}, secret))
 		}
 	case model.ModeUser:
 		if managed {
-			result, err = s.createUserAuthorization("", token, token.Hash, peer{}, protocol.UserAllowArgs{User: args.User})
+			result, err = s.createUserAuthorization("", token, token.Hash, peer{}, protocol.UserAllowArgs{User: args.User, RunName: args.RunName})
 		} else {
-			result, err = s.dispatch(r.Context(), peer{}, protocolRequest("allow_user", protocol.UserAllowArgs{User: args.User}, secret))
+			result, err = s.dispatch(r.Context(), peer{}, protocolRequest("allow_user", protocol.UserAllowArgs{User: args.User, RunName: args.RunName}, secret))
 		}
 	default:
 		writeHTTPError(w, http.StatusBadRequest, "mode must be docker, k8s, or user")

@@ -656,6 +656,10 @@ func (s *Server) createDockerAuthorization(ctx context.Context, tokenSecret stri
 	if err := validateRequestValue("container", container); err != nil {
 		return model.AllowResult{}, err
 	}
+	runName := strings.TrimSpace(args.RunName)
+	if err := validateRequestValue("run name", runName); err != nil {
+		return model.AllowResult{}, err
+	}
 	if hasWildcard(container) && p.UID != 0 {
 		return model.AllowResult{}, errors.New("wildcard authorization requires root/admin access")
 	}
@@ -683,6 +687,7 @@ func (s *Server) createDockerAuthorization(ctx context.Context, tokenSecret stri
 		TokenMode:        store.NormalizeTokenMode(token.Mode),
 		TokenVersion:     token.Version,
 		Holder:           token.Name,
+		RunName:          runName,
 		UID:              p.UID,
 		GID:              p.GID,
 		ContainerID:      containerID,
@@ -724,6 +729,10 @@ func (s *Server) createK8sAuthorization(ctx context.Context, tokenSecret string,
 	if err := validateRequestValue("namespace", args.Namespace); err != nil {
 		return model.AllowResult{}, err
 	}
+	runName := strings.TrimSpace(args.RunName)
+	if err := validateRequestValue("run name", runName); err != nil {
+		return model.AllowResult{}, err
+	}
 	if hasWildcard(args.Namespace) && p.UID != 0 {
 		return model.AllowResult{}, errors.New("wildcard authorization requires root/admin access")
 	}
@@ -740,6 +749,7 @@ func (s *Server) createK8sAuthorization(ctx context.Context, tokenSecret string,
 		TokenMode:    store.NormalizeTokenMode(token.Mode),
 		TokenVersion: token.Version,
 		Holder:       token.Name,
+		RunName:      runName,
 		UID:          p.UID,
 		GID:          p.GID,
 		Namespace:    strings.TrimSpace(args.Namespace),
@@ -764,6 +774,10 @@ func (s *Server) createUserAuthorization(tokenSecret string, token model.Token, 
 	if err := validateRequestValue("user", username); err != nil {
 		return model.AllowResult{}, err
 	}
+	runName := strings.TrimSpace(args.RunName)
+	if err := validateRequestValue("run name", runName); err != nil {
+		return model.AllowResult{}, err
+	}
 	if hasWildcard(username) && p.UID != 0 {
 		return model.AllowResult{}, errors.New("wildcard authorization requires root/admin access")
 	}
@@ -783,6 +797,7 @@ func (s *Server) createUserAuthorization(tokenSecret string, token model.Token, 
 		TokenMode:    store.NormalizeTokenMode(token.Mode),
 		TokenVersion: token.Version,
 		Holder:       token.Name,
+		RunName:      runName,
 		UID:          uid,
 		GID:          p.GID,
 		Username:     username,
@@ -940,6 +955,7 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID, tokenSecr
 	if err := validateRunArgs(args); err != nil {
 		return model.RunResult{}, err
 	}
+	runName := strings.TrimSpace(args.Name)
 	now := time.Now()
 	authorization := model.Authorization{
 		ID:           store.NewAuthorizationID(),
@@ -948,6 +964,7 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID, tokenSecr
 		TokenMode:    store.NormalizeTokenMode(token.Mode),
 		TokenVersion: token.Version,
 		Holder:       token.Name,
+		RunName:      runName,
 		UID:          p.UID,
 		GID:          p.GID,
 		Command:      args.Command,

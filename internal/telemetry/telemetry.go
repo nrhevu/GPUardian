@@ -137,6 +137,7 @@ type JobEvent struct {
 	Source          string     `json:"source"`
 	Mode            string     `json:"mode"`
 	Holder          string     `json:"holder"`
+	RunName         string     `json:"run_name,omitempty"`
 	PID             int        `json:"pid,omitempty"`
 	ProcStartTicks  uint64     `json:"proc_start_ticks,omitempty"`
 	Command         []string   `json:"command,omitempty"`

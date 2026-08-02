@@ -1659,6 +1659,7 @@ func TestStateBoundsRejectUnboundedRowsAndValues(t *testing.T) {
 		{name: "leases", state: model.State{Leases: make([]model.Lease, maxTotalLeases+1)}},
 		{name: "soft claims", state: model.State{SoftClaims: make([]model.SoftClaim, maxTotalSoftClaims+1)}},
 		{name: "oversized token name", state: model.State{Tokens: []model.Token{{Name: strings.Repeat("x", maxPersistedValueBytes+1)}}}},
+		{name: "oversized run name", state: model.State{Authorizations: []model.Authorization{{RunName: strings.Repeat("x", maxPersistedValueBytes+1)}}}},
 		{name: "oversized command", state: model.State{Authorizations: []model.Authorization{{Command: []string{strings.Repeat("x", maxPersistedCommandBytes+1)}}}}},
 		{name: "invalid gpu", state: model.State{Reservations: []model.Reservation{{GPU: maxGPUIndex + 1}}}},
 	}

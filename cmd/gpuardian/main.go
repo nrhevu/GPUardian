@@ -223,15 +223,9 @@ func formatIntList(values []int) string {
 }
 
 func runCommand(cfg config.Config, args []string) error {
-	command := args
-	if len(command) > 0 && command[0] != "--" && strings.HasPrefix(command[0], "-") {
-		return errors.New("usage: KEY=... gpuardian run -- <command>")
-	}
-	if len(command) > 0 && command[0] == "--" {
-		command = command[1:]
-	}
-	if len(command) == 0 {
-		return errors.New("usage: KEY=... gpuardian run -- <command>")
+	runName, command, err := parseRunInvocation(args)
+	if err != nil {
+		return err
 	}
 	if !strings.ContainsRune(command[0], filepath.Separator) {
 		resolved, err := exec.LookPath(command[0])
@@ -243,6 +237,7 @@ func runCommand(cfg config.Config, args []string) error {
 	}
 	workdir, _ := os.Getwd()
 	raw, err := callRPC(cfg, "run", requiredToken(), protocol.RunArgs{
+		Name:    runName,
 		Command: command,
 		Workdir: workdir,
 		Env:     os.Environ(),
@@ -260,6 +255,37 @@ func runCommand(cfg config.Config, args []string) error {
 	return nil
 }
 
+func parseRunInvocation(args []string) (string, []string, error) {
+	const usage = "usage: KEY=... gpuardian run [--name <name>] -- <command>"
+	if len(args) == 0 {
+		return "", nil, errors.New(usage)
+	}
+	if args[0] != "--" && !strings.HasPrefix(args[0], "-") {
+		return "", args, nil
+	}
+	separator := -1
+	for i, arg := range args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 {
+		return "", nil, errors.New(usage)
+	}
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	name := fs.String("name", "", "claimed run name")
+	if err := fs.Parse(args[:separator]); err != nil || fs.NArg() != 0 {
+		return "", nil, errors.New(usage)
+	}
+	command := args[separator+1:]
+	if len(command) == 0 {
+		return "", nil, errors.New(usage)
+	}
+	return strings.TrimSpace(*name), command, nil
+}
+
 func allowCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: KEY=... gpuardian allow (docker|k8s|user) ...")
@@ -269,26 +295,29 @@ func allowCommand(cfg config.Config, args []string) error {
 		fs := flag.NewFlagSet("allow docker", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		container := fs.String("container", "", "container name or id")
+		runName := fs.String("run-name", "", "claimed run name")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return printRPC(cfg, "allow_docker", requiredToken(), protocol.DockerAllowArgs{Container: *container})
+		return printRPC(cfg, "allow_docker", requiredToken(), protocol.DockerAllowArgs{Container: *container, RunName: strings.TrimSpace(*runName)})
 	case "k8s":
 		fs := flag.NewFlagSet("allow k8s", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		namespace := fs.String("namespace", "", "namespace")
+		runName := fs.String("run-name", "", "claimed run name")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return printRPC(cfg, "allow_k8s", requiredToken(), protocol.K8sAllowArgs{Namespace: *namespace})
+		return printRPC(cfg, "allow_k8s", requiredToken(), protocol.K8sAllowArgs{Namespace: *namespace, RunName: strings.TrimSpace(*runName)})
 	case "user":
 		fs := flag.NewFlagSet("allow user", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		username := fs.String("name", "", "username")
+		runName := fs.String("run-name", "", "claimed run name")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return printRPC(cfg, "allow_user", requiredToken(), protocol.UserAllowArgs{User: *username})
+		return printRPC(cfg, "allow_user", requiredToken(), protocol.UserAllowArgs{User: *username, RunName: strings.TrimSpace(*runName)})
 	default:
 		return fmt.Errorf("unknown allow scope %q", args[0])
 	}
@@ -676,10 +705,10 @@ func usageText() string {
   gpuardian daemon [--dry-run]
   gpuardian web [--addr <host:port>] [--registry <path>] [--ui-dir <path>]
   gpuardian register (--reserved | --claimed)
-  KEY=... gpuardian run -- <command>
-  KEY=... gpuardian allow docker --container <name-or-id>
-  KEY=... gpuardian allow k8s --namespace <name>
-  KEY=... gpuardian allow user --name <name>
+  KEY=... gpuardian run [--name <name>] -- <command>
+  KEY=... gpuardian allow docker --container <name-or-id> [--run-name <name>]
+  KEY=... gpuardian allow k8s --namespace <name> [--run-name <name>]
+  KEY=... gpuardian allow user --name <name> [--run-name <name>]
   KEY=... gpuardian status  (root may omit KEY)
   KEY=... gpuardian ps      (root may omit KEY)
   KEY=... gpuardian token info

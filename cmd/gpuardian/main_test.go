@@ -65,8 +65,36 @@ func TestRunCommandRejectsLeadingFlag(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "gpuardian run -- <command>") {
+	if !strings.Contains(err.Error(), "gpuardian run [--name <name>] -- <command>") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseRunInvocationAcceptsOptionalName(t *testing.T) {
+	name, command, err := parseRunInvocation([]string{"--name", " GLM TP4 benchmark ", "--", "python", "train.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "GLM TP4 benchmark" || len(command) != 2 || command[0] != "python" || command[1] != "train.py" {
+		t.Fatalf("unexpected parsed run: name=%q command=%v", name, command)
+	}
+}
+
+func TestParseRunInvocationPreservesLegacyForms(t *testing.T) {
+	for _, args := range [][]string{{"--", "echo", "ok"}, {"echo", "ok"}} {
+		name, command, err := parseRunInvocation(args)
+		if err != nil {
+			t.Fatalf("parseRunInvocation(%v): %v", args, err)
+		}
+		if name != "" || len(command) != 2 || command[0] != "echo" || command[1] != "ok" {
+			t.Fatalf("parseRunInvocation(%v) = name %q command %v", args, name, command)
+		}
+	}
+}
+
+func TestParseRunInvocationRequiresSeparatorAfterOptions(t *testing.T) {
+	if _, _, err := parseRunInvocation([]string{"--name", "benchmark", "echo", "ok"}); err == nil {
+		t.Fatal("run options without -- separator unexpectedly parsed")
 	}
 }
 
@@ -88,7 +116,7 @@ func TestUsageTextShowsOnlyCurrentCommands(t *testing.T) {
 	for _, want := range []string{
 		"gpuardian help",
 		"gpuardian register (--reserved | --claimed)",
-		"KEY=... gpuardian run -- <command>",
+		"KEY=... gpuardian run [--name <name>] -- <command>",
 		"KEY=... gpuardian allow docker --container <name-or-id>",
 		"KEY=... gpuardian allow user --name <name>",
 		"ROOT_KEY=... gpuardian show-keys",
