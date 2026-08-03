@@ -102,8 +102,8 @@ the MCP client.
 
 - A **regular user** sees only their own resources: `fleet_snapshot`,
   `list_keys`, `history_*` are filtered to their own; `reveal_key`,
-  `regenerate_key`, `revoke` work only on their own; `allow` wildcards are
-  forbidden.
+  `regenerate_key`, `revoke` work only on their own. Docker `allow` rules may
+  use wildcards; wildcard K8s namespaces and usernames are forbidden.
 - An **admin** sees and can act on everything.
 - The MCP user **never sees the raw node token** — the gateway strips
   `Token`/`TokenID` from reservation responses. To run the node CLI, retrieve

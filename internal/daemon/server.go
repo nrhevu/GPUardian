@@ -660,9 +660,6 @@ func (s *Server) createDockerAuthorization(ctx context.Context, tokenSecret stri
 	if err := validateRequestValue("run name", runName); err != nil {
 		return model.AllowResult{}, err
 	}
-	if hasWildcard(container) && p.UID != 0 {
-		return model.AllowResult{}, errors.New("wildcard authorization requires root/admin access")
-	}
 	var containerID string
 	var containerPattern string
 	if hasWildcard(container) {
@@ -675,9 +672,14 @@ func (s *Server) createDockerAuthorization(ctx context.Context, tokenSecret stri
 		defer release()
 		resolvedID, err := s.Runtime.ResolveDockerContainer(ctx, container)
 		if err != nil {
-			return model.AllowResult{}, fmt.Errorf("resolve docker container: %w", err)
+			if errors.Is(err, runtime.ErrNotFound) {
+				containerPattern = container
+			} else {
+				return model.AllowResult{}, fmt.Errorf("resolve docker container: %w", err)
+			}
+		} else {
+			containerID = resolvedID
 		}
-		containerID = resolvedID
 	}
 	now := time.Now()
 	authorization := model.Authorization{

@@ -431,8 +431,11 @@ KEY=gk_xxx gpuardian allow user --name alice --run-name "GLM TP4 benchmark"
 `allow` authorization. Without a name, the dashboard keeps the default
 `Claimed run` label.
 
-Use the narrowest exact scope possible. Wildcard scopes are admin-only because
-they can authorize more workloads than intended.
+Docker rules may use an exact future container name or a wildcard such as
+`trainer*`; both are stored immediately even when no matching container is
+running. Use the narrowest scope possible. Wildcard Kubernetes namespaces and
+usernames remain admin-only because they can authorize more workloads than
+intended.
 
 ### Inspect status and keys
 

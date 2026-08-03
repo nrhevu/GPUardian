@@ -536,7 +536,7 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 			args.ID = key.ID
 			args.UserKeyID = key.ID
 		}
-		if session.Role != RoleAdmin && allowArgsHaveWildcard(args) {
+		if session.Role != RoleAdmin && allowArgsHavePrivilegedWildcard(args) {
 			writeJSONError(w, http.StatusForbidden, "wildcard authorization requires admin access")
 			return
 		}
@@ -1034,8 +1034,8 @@ func sameOwner(left, right string) bool {
 	return leftErr == nil && rightErr == nil && leftName == rightName
 }
 
-func allowArgsHaveWildcard(args protocol.AllowArgs) bool {
-	return strings.Contains(args.Container, "*") || strings.Contains(args.Namespace, "*") || strings.Contains(args.User, "*")
+func allowArgsHavePrivilegedWildcard(args protocol.AllowArgs) bool {
+	return strings.Contains(args.Namespace, "*") || strings.Contains(args.User, "*")
 }
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {

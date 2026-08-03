@@ -19,6 +19,7 @@ import (
 	"gpuardian/internal/enforce"
 	"gpuardian/internal/model"
 	"gpuardian/internal/protocol"
+	runtimepkg "gpuardian/internal/runtime"
 	"gpuardian/internal/store"
 	"gpuardian/internal/telemetry"
 )
@@ -103,7 +104,7 @@ func TestNodeHTTPRejectsPlaintextWithoutExplicitOptIn(t *testing.T) {
 type daemonMissingDockerRuntime struct{}
 
 func (daemonMissingDockerRuntime) ResolveDockerContainer(context.Context, string) (string, error) {
-	return "", errors.New("container not found")
+	return "", runtimepkg.ErrNotFound
 }
 
 func (daemonMissingDockerRuntime) DockerContainerName(context.Context, string) (string, error) {
@@ -112,6 +113,12 @@ func (daemonMissingDockerRuntime) DockerContainerName(context.Context, string) (
 
 func (daemonMissingDockerRuntime) NamespaceForContainer(context.Context, string) (string, error) {
 	return "", errors.New("namespace not found")
+}
+
+type daemonFailingDockerRuntime struct{ daemonMissingDockerRuntime }
+
+func (daemonFailingDockerRuntime) ResolveDockerContainer(context.Context, string) (string, error) {
+	return "", errors.New("docker unavailable")
 }
 
 func TestRegisterRPC(t *testing.T) {
@@ -1053,7 +1060,7 @@ func TestDockerAllowAliasCreatesAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "trainer", RunName: "GLM TP4 benchmark"})
-	result, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
+	result, err := server.dispatch(context.Background(), peer{UID: 1000, GID: 1000}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1081,7 +1088,7 @@ func TestDockerAllowWildcardStoresPattern(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "codex*"})
-	result, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
+	result, err := server.dispatch(context.Background(), peer{UID: 1000, GID: 1000}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1098,7 +1105,7 @@ func TestDockerAllowWildcardStoresPattern(t *testing.T) {
 	}
 }
 
-func TestDockerAllowRejectsContainerWhenResolutionFails(t *testing.T) {
+func TestDockerAllowDefersExactContainerWhenNotFound(t *testing.T) {
 	server := testServer(t)
 	server.Runtime = daemonMissingDockerRuntime{}
 	key, err := server.Store.ReadOrCreateRootKey()
@@ -1110,15 +1117,37 @@ func TestDockerAllowRejectsContainerWhenResolutionFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "future-container"})
-	if _, err := server.dispatch(context.Background(), peer{}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args}); err == nil {
-		t.Fatal("unresolved exact container created a deferred authorization")
+	result, err := server.dispatch(context.Background(), peer{UID: 1000, GID: 1000}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := result.(model.AllowResult)
+	if allow.AuthorizationID == "" || allow.ContainerPattern != "future-container" || allow.ContainerID != "" {
+		t.Fatalf("unexpected deferred allow result: %+v", allow)
 	}
 	status, err := server.Store.Status(time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Authorizations) != 0 {
-		t.Fatalf("failed container resolution persisted authorization: %+v", status.Authorizations)
+	if len(status.Authorizations) != 1 || status.Authorizations[0].ContainerPattern != "future-container" {
+		t.Fatalf("deferred container authorization was not persisted: %+v", status.Authorizations)
+	}
+}
+
+func TestDockerAllowRejectsTransientResolutionFailure(t *testing.T) {
+	server := testServer(t)
+	server.Runtime = daemonFailingDockerRuntime{}
+	key, err := server.Store.ReadOrCreateRootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := server.Store.RegisterSoftToken(key, "alice", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(protocol.DockerAllowArgs{Container: "future-container"})
+	if _, err := server.dispatch(context.Background(), peer{UID: 1000, GID: 1000}, protocol.Request{ID: "1", Method: "allow_docker", Token: secret, Args: args}); err == nil {
+		t.Fatal("transient Docker resolution failure created an authorization")
 	}
 }
 

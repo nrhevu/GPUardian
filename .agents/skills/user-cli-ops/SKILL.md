@@ -46,8 +46,10 @@ KEY=gk_xxx gpuardian allow k8s   --namespace training --run-name "GLM TP4 benchm
 KEY=gk_xxx gpuardian allow user  --name alice --run-name "GLM TP4 benchmark"
 ```
 
-`--run-name` is optional; omit it to keep the default `Claimed run` label. Use
-the **narrowest exact scope**. Wildcard scopes are admin-only.
+`--run-name` is optional; omit it to keep the default `Claimed run` label.
+Docker rules may use a future exact name or a wildcard and are stored even
+before a matching container exists. Use the **narrowest scope**. Wildcard K8s
+namespaces and usernames remain admin-only.
 
 ## Inspect status and keys
 

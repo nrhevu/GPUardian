@@ -236,7 +236,8 @@ TOOLS: list[Tool] = [
             "Grant an authorization scope on a node for the caller's fixed "
             "key. Use mode 'docker' with container, 'k8s' with namespace, "
             "or 'user' with a username. A run_name is required and is shown "
-            "for claimed activity in the dashboard. Wildcards are admin-only."
+            "for claimed activity in the dashboard. Docker rules may use "
+            "wildcards; K8s and user wildcards are admin-only."
         ),
         inputSchema={
             "type": "object",

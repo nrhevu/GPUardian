@@ -221,6 +221,14 @@ func TestGatewayFiltersAndAuthorizesOwnedKeys(t *testing.T) {
 	if ownAllow.Code != http.StatusCreated {
 		t.Fatalf("own allow = %d, body=%s", ownAllow.Code, ownAllow.Body.String())
 	}
+	ownWildcardAllow := requestJSON(handler, http.MethodPost, "/api/servers/"+serverID+"/allow", `{"id":"tok_alice","mode":"docker","container":"traine*"}`, userCookie)
+	if ownWildcardAllow.Code != http.StatusCreated {
+		t.Fatalf("own wildcard docker allow = %d, body=%s", ownWildcardAllow.Code, ownWildcardAllow.Body.String())
+	}
+	userWildcardAllow := requestJSON(handler, http.MethodPost, "/api/servers/"+serverID+"/allow", `{"id":"tok_alice","mode":"user","user":"alice*"}`, userCookie)
+	if userWildcardAllow.Code != http.StatusForbidden {
+		t.Fatalf("user wildcard allow = %d, body=%s", userWildcardAllow.Code, userWildcardAllow.Body.String())
+	}
 
 	otherRuleRevoke := requestJSON(handler, http.MethodPost, "/api/servers/"+serverID+"/revoke", `{"id":"auth_bob"}`, userCookie)
 	if otherRuleRevoke.Code != http.StatusForbidden {
@@ -246,8 +254,8 @@ func TestGatewayFiltersAndAuthorizesOwnedKeys(t *testing.T) {
 	if len(client.revoked) != 3 || client.revoked[0] != "auth_alice" || client.revoked[1] != "tok_alice" || client.revoked[2] != "tok_bob" {
 		t.Fatalf("revoked ids = %+v, want auth_alice, tok_alice, then tok_bob", client.revoked)
 	}
-	if len(client.allowed) != 1 || client.allowed[0].ID != "tok_alice" || client.allowed[0].Container != "trainer" {
-		t.Fatalf("allowed args = %+v, want tok_alice docker trainer", client.allowed)
+	if len(client.allowed) != 2 || client.allowed[0].ID != "tok_alice" || client.allowed[0].Container != "trainer" || client.allowed[1].Container != "traine*" {
+		t.Fatalf("allowed args = %+v, want exact and wildcard Docker rules", client.allowed)
 	}
 }
 
