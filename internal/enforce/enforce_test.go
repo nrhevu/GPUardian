@@ -1235,7 +1235,7 @@ func TestManagedKeyCannotUseAnotherOwnersReservation(t *testing.T) {
 	}
 }
 
-func TestSoftClaimRejectsAuthorizedProcessOnBusyGPU(t *testing.T) {
+func TestSoftClaimEvictsUnauthorizedProcessOnBusyGPU(t *testing.T) {
 	killer := &fakeKiller{}
 	authz := Authorizer{
 		Proc: fakeProc{infos: map[int]model.ProcInfo{
@@ -1253,15 +1253,15 @@ func TestSoftClaimRejectsAuthorizedProcessOnBusyGPU(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decisions) != 2 || decisions[0].Action != "skip" || decisions[1].Action != "kill" {
-		t.Fatalf("expected existing process to be skipped and gpuardian process to be killed: %+v", decisions)
+	if len(decisions) != 3 || decisions[0].Action != "claim" || decisions[1].Action != "allow" || decisions[2].Action != "kill" {
+		t.Fatalf("expected claim to be created and unauthorized process to be killed: %+v", decisions)
 	}
-	if len(killer.killed) != 1 || killer.killed[0] != 10 {
-		t.Fatalf("expected gpuardian pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
+	if len(killer.killed) != 1 || killer.killed[0] != 11 {
+		t.Fatalf("expected unauthorized pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
 	}
 }
 
-func TestSoftClaimRejectsRunCgroupOnBusyGPU(t *testing.T) {
+func TestSoftClaimRunCgroupEvictsUnauthorizedProcessOnBusyGPU(t *testing.T) {
 	killer := &fakeKiller{}
 	authz := Authorizer{
 		Proc: fakeProc{infos: map[int]model.ProcInfo{
@@ -1282,11 +1282,11 @@ func TestSoftClaimRejectsRunCgroupOnBusyGPU(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decisions) != 2 || decisions[0].Action != "skip" || decisions[1].Action != "kill" {
-		t.Fatalf("expected existing process to be skipped and run cgroup pid to be killed: %+v", decisions)
+	if len(decisions) != 3 || decisions[0].Action != "claim" || decisions[1].Action != "allow" || decisions[2].Action != "kill" {
+		t.Fatalf("expected claim to be created and unauthorized process to be killed: %+v", decisions)
 	}
-	if len(killer.killed) != 1 || killer.killed[0] != 20 {
-		t.Fatalf("expected run cgroup pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
+	if len(killer.killed) != 1 || killer.killed[0] != 21 {
+		t.Fatalf("expected unauthorized pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
 	}
 }
 

@@ -809,21 +809,6 @@ func (a Authorizer) enforceSoft(ctx context.Context, state model.State, gpu int,
 		}
 		return nil
 	}
-	if len(unauthorized) > 0 {
-		msg := fmt.Sprintf("claimed-mode authorization rejected on gpu=%d because non-authorized GPU processes are already present", gpu)
-		a.audit(model.AuditEvent{Time: now.UTC(), Kind: "claim_rejected", Message: msg, GPU: gpu, User: authorized[0].auth.Holder})
-		for _, view := range unauthorized {
-			*decisions = append(*decisions, Decision{Process: view.Process, Info: view.Info, Action: "skip", Reason: "gpu already has non-authorized process"})
-		}
-		for _, item := range authorized {
-			reason := fmt.Sprintf("claimed GPU access rejected on gpu=%d pid=%d; gpu already has non-authorized process", gpu, item.view.Process.PID)
-			if err := a.killOnce(decisions, targeted, item.view, reason, "", item.auth.ID, "existing GPU process", item.auth.TokenHash, now); err != nil {
-				enforcementErrors = append(enforcementErrors, err)
-			}
-		}
-		return errors.Join(enforcementErrors...)
-	}
-
 	claimAuth := authorized[0].auth
 	claim := model.SoftClaim{
 		GPU:             gpu,

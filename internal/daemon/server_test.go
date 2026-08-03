@@ -693,7 +693,7 @@ func TestNodeHTTPAllowCreatesAuthorization(t *testing.T) {
 	}
 }
 
-func TestClaimedMonitorRejectsRunGPUWhenBusy(t *testing.T) {
+func TestClaimedMonitorClaimsGPUAndEvictsUnauthorizedProcess(t *testing.T) {
 	server := testServer(t)
 	key, err := server.Store.ReadOrCreateRootKey()
 	if err != nil {
@@ -742,11 +742,11 @@ func TestClaimedMonitorRejectsRunGPUWhenBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.SoftClaims) != 0 {
-		t.Fatalf("busy GPU should not be claimed, got %+v", status.SoftClaims)
+	if len(status.SoftClaims) != 1 || status.SoftClaims[0].GPU != 0 || status.SoftClaims[0].AuthorizationID != auth.ID {
+		t.Fatalf("authorized run did not claim GPU: %+v", status.SoftClaims)
 	}
-	if len(killer.killed) != 1 || killer.killed[0] != 100 {
-		t.Fatalf("expected gpuardian pid to be killed, got %v", killer.killed)
+	if len(killer.killed) != 1 || killer.killed[0] != 200 {
+		t.Fatalf("expected unauthorized pid to be killed, got %v", killer.killed)
 	}
 }
 
