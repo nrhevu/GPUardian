@@ -92,6 +92,9 @@ func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
 	if len(detail.Authorizations) != 1 || len(detail.Authorizations[0].Command) != 2 {
 		t.Fatalf("unexpected authorization scopes: %#v", detail.Authorizations)
 	}
+	if !strings.HasPrefix(detail.Authorizations[0].ID, "scope_") {
+		t.Fatalf("authorization scope has no public ID: %#v", detail.Authorizations[0])
+	}
 	summary, err := store.Summary(ctx, SessionFilter{})
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +112,9 @@ func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
 	if jobs[0].RuntimeContext == nil || jobs[0].RuntimeContext.UID == nil || *jobs[0].RuntimeContext.UID != 0 ||
 		jobs[0].RuntimeContext.Username != "root" || jobs[0].AuthorizationSelector != "alice" {
 		t.Fatalf("runtime context or authorization fallback was lost: %#v", jobs[0])
+	}
+	if jobs[0].AuthorizationScopeID != detail.Authorizations[0].ID {
+		t.Fatalf("job scope ID %q does not match authorization scope %q", jobs[0].AuthorizationScopeID, detail.Authorizations[0].ID)
 	}
 	publicJSON, err := json.Marshal(jobs)
 	if err != nil {

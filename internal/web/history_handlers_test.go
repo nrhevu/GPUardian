@@ -97,7 +97,9 @@ func TestHistoryAPIReadForUsersAndResultOwnerOnly(t *testing.T) {
 	readRequest := httptest.NewRequest(http.MethodGet, "/api/history/sessions/sess_public", nil)
 	readRequest.AddCookie(testSessionCookie(t, server, "bob", RoleUser))
 	handler.ServeHTTP(read, readRequest)
-	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"owner":"alice"`) || strings.Contains(read.Body.String(), "group-private") || strings.Contains(read.Body.String(), "reservation-private") {
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"owner":"alice"`) ||
+		!strings.Contains(read.Body.String(), `"authorization_scopes":[{"id":"scope_`) ||
+		strings.Contains(read.Body.String(), "group-private") || strings.Contains(read.Body.String(), "reservation-private") || strings.Contains(read.Body.String(), "auth-private") {
 		t.Fatalf("history read = %d %s", read.Code, read.Body.String())
 	}
 
@@ -108,6 +110,7 @@ func TestHistoryAPIReadForUsersAndResultOwnerOnly(t *testing.T) {
 	if jobsRead.Code != http.StatusOK || !strings.Contains(jobsRead.Body.String(), `"uid":0`) ||
 		!strings.Contains(jobsRead.Body.String(), `"docker_container_name":"trainer-0"`) ||
 		!strings.Contains(jobsRead.Body.String(), `"authorization_selector":"trainer-*"`) ||
+		!strings.Contains(jobsRead.Body.String(), `"authorization_scope_id":"scope_`) ||
 		strings.Contains(jobsRead.Body.String(), "job-private") || strings.Contains(jobsRead.Body.String(), "auth-private") {
 		t.Fatalf("history jobs read = %d %s", jobsRead.Code, jobsRead.Body.String())
 	}

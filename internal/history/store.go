@@ -154,6 +154,11 @@ func publicJobID(nodeID, jobID string) string {
 	return "job_" + hex.EncodeToString(sum[:12])
 }
 
+func publicAuthorizationScopeID(nodeID, authorizationID string) string {
+	sum := sha256.Sum256([]byte(nodeID + "\x00" + authorizationID))
+	return "scope_" + hex.EncodeToString(sum[:12])
+}
+
 func millis(value time.Time) int64 { return value.UTC().UnixMilli() }
 
 func nullableMillis(value *time.Time) any {

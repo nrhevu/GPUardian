@@ -1214,6 +1214,11 @@ function HistoryRuleValue({ field, rule, onChange }) {
 function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
   const canEdit = session.result_editable && sameText(session.owner, currentUser);
   const timeline = (session.timeline || []).slice(-180);
+  const authorizationRules = (session.authorization_scopes || []).map((scope, index) => ({
+    ...scope,
+    displayID: `Rule #${index + 1}`,
+  }));
+  const authorizationRulesByID = new Map(authorizationRules.map((scope) => [scope.id, scope]));
   return (
     <Modal title={session.purpose || (session.kind === "claimed_run" ? "Claimed run" : "Reservation session")} onClose={onClose} className="history-modal">
       <div className="history-detail">
@@ -1261,18 +1266,20 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
             </div>
           </section>
         )}
-        {(session.authorization_scopes || []).length > 0 && (
+        {authorizationRules.length > 0 && (
           <section className="history-jobs">
             <div className="section-heading compact"><div><h3>Authorization scopes</h3><p className="muted">Permissions active during this activity.</p></div></div>
             <div className="rules-table history-scopes-table">
               <div className="rules-table-header">
+                <span>ID</span>
                 <span>Scope</span>
                 <span>By</span>
                 <span>Value</span>
               </div>
               <div className="rules-table-body">
-                {session.authorization_scopes.map((scope, index) => (
-                  <div className="rules-table-row history-scope-row" key={`${scope.created_at}-${index}`}>
+                {authorizationRules.map((scope) => (
+                  <div className="rules-table-row history-scope-row" key={scope.id || scope.displayID}>
+                    <strong className="history-rule-id">{scope.displayID}</strong>
                     <span>{authorizationRuleScope(scope.mode)}</span>
                     <span>{authorizationRuleBy(scope.mode)}</span>
                     <strong title={authorizationHistoryScopeValue(scope)}>{authorizationHistoryScopeValue(scope)}</strong>
@@ -1288,7 +1295,10 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
           {jobs.map((job) => (
             <article className="history-job" key={job.id}>
               <div><strong>{job.source === "gpuardian_run" ? "gpuardian run" : `${authorizationRuleScope(job.mode)} process`}</strong><span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span></div>
-              <HistoryJobLocation job={job} />
+              <HistoryJobRule
+                job={job}
+                rule={authorizationRulesByID.get(job.authorization_scope_id) || authorizationRules.find((scope) => scope.mode === job.mode && scope.selector === job.authorization_selector)}
+              />
               <code>{job.command?.join(" ") || "—"}</code>
               <small>{job.started_at ? compactDateTime(job.started_at) : "unknown start"}{job.start_precision ? ` (${job.start_precision})` : ""} → {job.finished_at ? compactDateTime(job.finished_at) : "running"}{job.finish_precision ? ` (${job.finish_precision})` : ""}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}{job.reason ? ` · ${job.reason}` : ""}</small>
             </article>
@@ -1301,53 +1311,27 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
   );
 }
 
-function HistoryJobLocation({ job }) {
-  const runtime = job.runtime_context || null;
-  const chips = [{ label: "Scope", value: authorizationRuleScope(job.mode) }];
-  const containerID = runtime?.container_id || "";
-  if (job.mode === "docker") {
-    if (runtime?.docker_container_name) chips.push({ label: "Container", value: runtime.docker_container_name });
-    else if (job.authorization_selector) chips.push({ label: "Rule", value: job.authorization_selector });
-  } else if (job.mode === "k8s") {
-    if (runtime?.kubernetes_namespace) chips.push({ label: "Namespace", value: runtime.kubernetes_namespace });
-    else if (job.authorization_selector) chips.push({ label: "Rule", value: job.authorization_selector });
-    if (runtime?.kubernetes_pod_name) chips.push({ label: "Pod", value: runtime.kubernetes_pod_name });
-    if (runtime?.kubernetes_container_name) chips.push({ label: "Container", value: runtime.kubernetes_container_name });
-  } else {
-    if (runtime?.username) chips.push({ label: "User", value: runtime.username });
-    else if (job.authorization_selector) chips.push({ label: "Rule", value: job.authorization_selector });
-    if (runtime?.uid != null) chips.push({ label: "UID", value: String(runtime.uid) });
-  }
-  if (containerID) chips.push({ label: "ID", value: shortRuntimeID(containerID), title: containerID, copy: containerID });
+function HistoryJobRule({ job, rule }) {
+  const details = rule ? [
+    ["Scope", authorizationRuleScope(rule.mode)],
+    ["By", authorizationRuleBy(rule.mode)],
+    ["Value", authorizationHistoryScopeValue(rule)],
+    ["User", rule.holder || "—"],
+    ["Window", `${compactDateTime(rule.created_at)} → ${rule.ended_at ? compactDateTime(rule.ended_at) : rule.expires_at ? compactDateTime(rule.expires_at) : "active"}`],
+    ["Status", rule.end_reason || (rule.ended_at ? "ended" : "active")],
+  ] : [
+    ["Scope", authorizationRuleScope(job.mode)],
+    ["Value", job.authorization_selector || "Not recorded"],
+  ];
   return (
-    <div className="history-job-location-wrap">
-      <div className="history-job-location" aria-label="Runtime location">
-        {chips.map((chip, index) => (
-          chip.copy ? (
-            <button
-              type="button"
-              className="history-location-chip copyable"
-              key={`${chip.label}-${index}`}
-              title={`Copy container ID: ${chip.title}`}
-              aria-label={`Copy container ID ${chip.title}`}
-              onClick={() => navigator.clipboard?.writeText(chip.copy)}
-            >
-              <span>{chip.label}</span><strong>{chip.value}</strong>
-            </button>
-          ) : (
-            <span className="history-location-chip" key={`${chip.label}-${index}`} title={chip.title || chip.value}>
-              <span>{chip.label}</span><strong>{chip.value}</strong>
-            </span>
-          )
-        ))}
-      </div>
-      {!runtime && job.authorization_selector && <small className="history-runtime-fallback">Runtime details not captured for this job.</small>}
-    </div>
+    <span className="history-rule-reference" tabIndex={0}>
+      {rule?.displayID || "Rule unavailable"}
+      <span className="history-rule-tooltip" role="tooltip">
+        <strong>{rule?.displayID || "Rule unavailable"}</strong>
+        {details.map(([label, value]) => <span key={label}><small>{label}</small><b>{value}</b></span>)}
+      </span>
+    </span>
   );
-}
-
-function shortRuntimeID(value) {
-  return value.length > 12 ? value.slice(0, 12) : value;
 }
 
 function HistoryResultForm({ result, canEdit, onSave }) {

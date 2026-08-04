@@ -46,6 +46,7 @@ type MinuteRollup struct {
 }
 
 type AuthorizationScope struct {
+	ID        string     `json:"id"`
 	Mode      string     `json:"mode"`
 	Holder    string     `json:"holder"`
 	Selector  string     `json:"selector,omitempty"`
@@ -86,6 +87,7 @@ type Session struct {
 type Job struct {
 	ID                    string          `json:"id"`
 	CursorID              string          `json:"-"`
+	AuthorizationScopeID  string          `json:"authorization_scope_id,omitempty"`
 	Source                string          `json:"source"`
 	Mode                  string          `json:"mode"`
 	Holder                string          `json:"holder"`

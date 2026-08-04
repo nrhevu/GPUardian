@@ -134,7 +134,7 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 	if limit > 100 {
 		limit = 100
 	}
-	query := `SELECT j.node_id,j.job_id,j.source,j.mode,j.holder,j.command_json,j.started_at_ms,j.root_exited_at_ms,j.finished_at_ms,
+	query := `SELECT j.node_id,j.job_id,j.authorization_id,j.source,j.mode,j.holder,j.command_json,j.started_at_ms,j.root_exited_at_ms,j.finished_at_ms,
 		j.start_precision,j.finish_precision,j.exit_code,j.end_reason,COALESCE(a.selector,''),j.runtime_uid,j.runtime_username,
 		j.runtime_container_id,j.runtime_docker_container_name,j.runtime_kubernetes_namespace,j.runtime_kubernetes_pod_name,
 		j.runtime_kubernetes_container_name FROM jobs j LEFT JOIN authorization_scopes a
@@ -159,13 +159,13 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 	var pending []pendingJob
 	for rows.Next() {
 		var nodeID, commandJSON string
-		var internalID string
+		var internalID, internalAuthorizationID string
 		var started, rootExited, finished sql.NullInt64
 		var exitCode sql.NullInt64
 		var runtimeUID sql.NullInt64
 		var runtimeContext RuntimeContext
 		var job Job
-		if err := rows.Scan(&nodeID, &internalID, &job.Source, &job.Mode, &job.Holder, &commandJSON, &started, &rootExited, &finished,
+		if err := rows.Scan(&nodeID, &internalID, &internalAuthorizationID, &job.Source, &job.Mode, &job.Holder, &commandJSON, &started, &rootExited, &finished,
 			&job.StartPrecision, &job.FinishPrecision, &exitCode, &job.Reason, &job.AuthorizationSelector, &runtimeUID,
 			&runtimeContext.Username, &runtimeContext.ContainerID, &runtimeContext.DockerContainerName,
 			&runtimeContext.KubernetesNamespace, &runtimeContext.KubernetesPodName, &runtimeContext.KubernetesContainerName); err != nil {
@@ -174,6 +174,7 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 		}
 		_ = json.Unmarshal([]byte(commandJSON), &job.Command)
 		job.ID = publicJobID(nodeID, internalID)
+		job.AuthorizationScopeID = publicAuthorizationScopeID(nodeID, internalAuthorizationID)
 		job.CursorID = internalID
 		job.StartedAt = timePtrFromNull(started)
 		job.RootExitedAt = timePtrFromNull(rootExited)
@@ -647,10 +648,10 @@ func (s *Store) timeline(ctx context.Context, id string) ([]MinuteRollup, error)
 }
 
 func (s *Store) authorizationScopes(ctx context.Context, id string) ([]AuthorizationScope, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT mode,holder,selector,command_json,created_at_ms,expires_at_ms,ended_at_ms,end_reason
+	rows, err := s.db.QueryContext(ctx, `SELECT a.node_id,a.authorization_id,mode,holder,selector,command_json,created_at_ms,expires_at_ms,ended_at_ms,end_reason
 		FROM authorization_scopes a WHERE a.session_id=? OR EXISTS (
 			SELECT 1 FROM authorization_sessions s WHERE s.node_id=a.node_id AND s.authorization_id=a.authorization_id AND s.session_id=?
-		) ORDER BY created_at_ms`, id, id)
+		) ORDER BY created_at_ms,a.node_id,a.authorization_id`, id, id)
 	if err != nil {
 		return nil, err
 	}
@@ -658,12 +659,13 @@ func (s *Store) authorizationScopes(ctx context.Context, id string) ([]Authoriza
 	var values []AuthorizationScope
 	for rows.Next() {
 		var item AuthorizationScope
-		var commandJSON string
+		var nodeID, authorizationID, commandJSON string
 		var created int64
 		var expires, ended sql.NullInt64
-		if err := rows.Scan(&item.Mode, &item.Holder, &item.Selector, &commandJSON, &created, &expires, &ended, &item.EndReason); err != nil {
+		if err := rows.Scan(&nodeID, &authorizationID, &item.Mode, &item.Holder, &item.Selector, &commandJSON, &created, &expires, &ended, &item.EndReason); err != nil {
 			return nil, err
 		}
+		item.ID = publicAuthorizationScopeID(nodeID, authorizationID)
 		_ = json.Unmarshal([]byte(commandJSON), &item.Command)
 		item.CreatedAt = timeFromMillis(created)
 		item.ExpiresAt = timePtrFromNull(expires)
