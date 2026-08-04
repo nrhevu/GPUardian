@@ -626,6 +626,10 @@ textarea:focus {
   box-shadow: 0 0 0 2px var(--color-accent-subtle);
 }
 
+.node-search-input {
+  padding-left: 2rem;
+}
+
 .modal-backdrop {
   background: rgba(0, 0, 0, 0.7);
 }

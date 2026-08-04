@@ -748,7 +748,7 @@ function App() {
           <div className="relative mb-2">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <input
-              className="h-9 w-full rounded-md border border-input bg-card pr-3 pl-8 text-xs outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
+              className="node-search-input h-9 w-full rounded-md border border-input bg-card pr-3 text-xs outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
               placeholder="Search nodes..."
               value={search}
               onChange={(event) => setSearch(event.target.value)}
