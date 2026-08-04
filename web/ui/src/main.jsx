@@ -1301,7 +1301,7 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
                 />
                 <span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span>
               </div>
-              <p className="history-job-command">{job.command?.join(" ") || "—"}</p>
+              <pre className="history-job-command"><code>{job.command?.join(" ") || "—"}</code></pre>
               <small>{job.started_at ? compactDateTime(job.started_at) : "unknown start"}{job.start_precision ? ` (${job.start_precision})` : ""} → {job.finished_at ? compactDateTime(job.finished_at) : "running"}{job.finish_precision ? ` (${job.finish_precision})` : ""}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}{job.reason ? ` · ${job.reason}` : ""}</small>
             </article>
           ))}

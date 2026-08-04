@@ -671,12 +671,23 @@
 .history-job-command {
   min-width: 0;
   margin: 0;
-  color: var(--text);
+  overflow-x: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 11px;
+  color: #dbeafe;
+  background: #17232f;
+  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.45;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.history-job-command code {
+  font: inherit;
+  white-space: inherit;
 }
 
 .history-result label {
