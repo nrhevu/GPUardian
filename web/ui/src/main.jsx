@@ -1216,7 +1216,7 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
   const timeline = (session.timeline || []).slice(-180);
   const authorizationRules = (session.authorization_scopes || []).map((scope, index) => ({
     ...scope,
-    displayID: `Rule #${index + 1}`,
+    displayID: `#${index + 1}`,
   }));
   const authorizationRulesByID = new Map(authorizationRules.map((scope) => [scope.id, scope]));
   return (
@@ -1294,12 +1294,14 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
           <div className="section-heading compact"><div><h3>Observed jobs</h3><p className="muted">Full command lines are visible to every signed-in user and may contain sensitive arguments.</p></div></div>
           {jobs.map((job) => (
             <article className="history-job" key={job.id}>
-              <div><strong>{job.source === "gpuardian_run" ? "gpuardian run" : `${authorizationRuleScope(job.mode)} process`}</strong><span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span></div>
-              <HistoryJobRule
-                job={job}
-                rule={authorizationRulesByID.get(job.authorization_scope_id) || authorizationRules.find((scope) => scope.mode === job.mode && scope.selector === job.authorization_selector)}
-              />
-              <code>{job.command?.join(" ") || "—"}</code>
+              <div>
+                <HistoryJobRule
+                  job={job}
+                  rule={authorizationRulesByID.get(job.authorization_scope_id) || authorizationRules.find((scope) => scope.mode === job.mode && scope.selector === job.authorization_selector)}
+                />
+                <span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span>
+              </div>
+              <p className="history-job-command">{job.command?.join(" ") || "—"}</p>
               <small>{job.started_at ? compactDateTime(job.started_at) : "unknown start"}{job.start_precision ? ` (${job.start_precision})` : ""} → {job.finished_at ? compactDateTime(job.finished_at) : "running"}{job.finish_precision ? ` (${job.finish_precision})` : ""}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}{job.reason ? ` · ${job.reason}` : ""}</small>
             </article>
           ))}
