@@ -105,6 +105,36 @@ func TestFindNamespaceRejectsUntrustedNestedFields(t *testing.T) {
 	}
 }
 
+func TestFindKubernetesWorkloadUsesTrustedCRIStatusMetadata(t *testing.T) {
+	var value any
+	if err := json.Unmarshal([]byte(`{
+		"status": {
+			"metadata": {"name": "worker"},
+			"labels": {
+				"io.kubernetes.pod.namespace": "training",
+				"io.kubernetes.pod.name": "trainer-0",
+				"io.kubernetes.container.name": "trainer"
+			}
+		}
+	}`), &value); err != nil {
+		t.Fatal(err)
+	}
+	got := findKubernetesWorkload(value)
+	want := (KubernetesWorkload{Namespace: "training", PodName: "trainer-0", ContainerName: "trainer"})
+	if got != want {
+		t.Fatalf("workload = %+v, want %+v", got, want)
+	}
+}
+
+func TestMatchingContainerNameIncludesInitContainers(t *testing.T) {
+	full := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	statuses := []KubeContainerStatus{{Name: "setup", ContainerID: "containerd://" + full}}
+	name, ok := matchingContainerName(statuses, full, shortID(full))
+	if !ok || name != "setup" {
+		t.Fatalf("matching container = %q, %v", name, ok)
+	}
+}
+
 type countingResolver struct {
 	dockerNameCalls int
 	onDockerName    func()
@@ -127,6 +157,27 @@ type blockingResolver struct {
 	calls   int
 	started chan struct{}
 	release chan struct{}
+}
+
+type countingWorkloadResolver struct {
+	calls int
+}
+
+func (r *countingWorkloadResolver) ResolveDockerContainer(context.Context, string) (string, error) {
+	return "id", nil
+}
+
+func (r *countingWorkloadResolver) DockerContainerName(context.Context, string) (string, error) {
+	return "trainer", nil
+}
+
+func (r *countingWorkloadResolver) NamespaceForContainer(context.Context, string) (string, error) {
+	return "training", nil
+}
+
+func (r *countingWorkloadResolver) KubernetesWorkloadForContainer(context.Context, string) (KubernetesWorkload, error) {
+	r.calls++
+	return KubernetesWorkload{Namespace: "training", PodName: "trainer-0", ContainerName: "worker"}, nil
 }
 
 func (r *blockingResolver) ResolveDockerContainer(context.Context, string) (string, error) {
@@ -224,5 +275,22 @@ func TestCachedResolverReusesAndExpiresLookup(t *testing.T) {
 	}
 	if base.dockerNameCalls != 2 {
 		t.Fatalf("runtime lookups after expiry = %d, want 2", base.dockerNameCalls)
+	}
+}
+
+func TestCachedResolverReusesFullKubernetesWorkload(t *testing.T) {
+	base := &countingWorkloadResolver{}
+	resolver := NewCachedResolver(base)
+	for i := 0; i < 2; i++ {
+		workload, err := resolver.KubernetesWorkloadForContainer(context.Background(), "ABC")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if workload.PodName != "trainer-0" || workload.ContainerName != "worker" {
+			t.Fatalf("workload = %+v", workload)
+		}
+	}
+	if base.calls != 1 {
+		t.Fatalf("runtime workload lookups = %d, want 1", base.calls)
 	}
 }

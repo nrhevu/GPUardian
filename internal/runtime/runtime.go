@@ -18,6 +18,16 @@ type Resolver interface {
 	NamespaceForContainer(ctx context.Context, containerID string) (string, error)
 }
 
+type KubernetesWorkload struct {
+	Namespace     string
+	PodName       string
+	ContainerName string
+}
+
+type KubernetesWorkloadResolver interface {
+	KubernetesWorkloadForContainer(ctx context.Context, containerID string) (KubernetesWorkload, error)
+}
+
 var ErrNotFound = errors.New("runtime object not found")
 
 type CLIResolver struct {
@@ -36,6 +46,18 @@ type resolveCall struct {
 	err   error
 }
 
+type workloadCacheEntry struct {
+	value     KubernetesWorkload
+	err       error
+	expiresAt time.Time
+}
+
+type workloadResolveCall struct {
+	done  chan struct{}
+	value KubernetesWorkload
+	err   error
+}
+
 type CachedResolver struct {
 	Base Resolver
 	TTL  time.Duration
@@ -43,10 +65,10 @@ type CachedResolver struct {
 	mu              sync.Mutex
 	dockerIDs       map[string]cacheEntry
 	dockerNames     map[string]cacheEntry
-	namespaces      map[string]cacheEntry
 	dockerIDCalls   map[string]*resolveCall
 	dockerNameCalls map[string]*resolveCall
-	namespaceCalls  map[string]*resolveCall
+	workloads       map[string]workloadCacheEntry
+	workloadCalls   map[string]*workloadResolveCall
 	now             func() time.Time
 }
 
@@ -90,8 +112,9 @@ func (b *boundedOutput) Write(data []byte) (int, error) {
 func NewCachedResolver(base Resolver) *CachedResolver {
 	return &CachedResolver{
 		Base:      base,
-		dockerIDs: make(map[string]cacheEntry), dockerNames: make(map[string]cacheEntry), namespaces: make(map[string]cacheEntry),
-		dockerIDCalls: make(map[string]*resolveCall), dockerNameCalls: make(map[string]*resolveCall), namespaceCalls: make(map[string]*resolveCall),
+		dockerIDs: make(map[string]cacheEntry), dockerNames: make(map[string]cacheEntry),
+		dockerIDCalls: make(map[string]*resolveCall), dockerNameCalls: make(map[string]*resolveCall),
+		workloads: make(map[string]workloadCacheEntry), workloadCalls: make(map[string]*workloadResolveCall),
 		now: time.Now,
 	}
 }
@@ -111,10 +134,69 @@ func (r *CachedResolver) DockerContainerName(ctx context.Context, containerID st
 }
 
 func (r *CachedResolver) NamespaceForContainer(ctx context.Context, containerID string) (string, error) {
+	workload, err := r.KubernetesWorkloadForContainer(ctx, containerID)
+	return workload.Namespace, err
+}
+
+func (r *CachedResolver) KubernetesWorkloadForContainer(ctx context.Context, containerID string) (KubernetesWorkload, error) {
+	if r == nil || r.Base == nil {
+		return KubernetesWorkload{}, errors.New("runtime resolver is unavailable")
+	}
 	key := strings.ToLower(strings.TrimSpace(containerID))
-	return r.resolve(ctx, r.namespaces, r.namespaceCalls, key, func() (string, error) {
-		return r.Base.NamespaceForContainer(ctx, containerID)
-	})
+	now := r.nowTime()
+	r.mu.Lock()
+	entry, found := r.workloads[key]
+	if found && now.Before(entry.expiresAt) {
+		r.mu.Unlock()
+		return entry.value, entry.err
+	}
+	if found {
+		delete(r.workloads, key)
+	}
+	if pending := r.workloadCalls[key]; pending != nil {
+		r.mu.Unlock()
+		select {
+		case <-pending.done:
+			return pending.value, pending.err
+		case <-ctx.Done():
+			return KubernetesWorkload{}, ctx.Err()
+		}
+	}
+	pending := &workloadResolveCall{done: make(chan struct{})}
+	r.workloadCalls[key] = pending
+	r.mu.Unlock()
+
+	var value KubernetesWorkload
+	var err error
+	if resolver, ok := r.Base.(KubernetesWorkloadResolver); ok {
+		value, err = resolver.KubernetesWorkloadForContainer(ctx, containerID)
+	} else {
+		value.Namespace, err = r.Base.NamespaceForContainer(ctx, containerID)
+	}
+	completedAt := r.nowTime()
+	r.mu.Lock()
+	if ctx.Err() == nil && len(r.workloads) >= maxResolverCacheEntries {
+		for candidate, candidateEntry := range r.workloads {
+			if !completedAt.Before(candidateEntry.expiresAt) {
+				delete(r.workloads, candidate)
+			}
+		}
+		for len(r.workloads) >= maxResolverCacheEntries {
+			for candidate := range r.workloads {
+				delete(r.workloads, candidate)
+				break
+			}
+		}
+	}
+	if ctx.Err() == nil {
+		r.workloads[key] = workloadCacheEntry{value: value, err: err, expiresAt: completedAt.Add(r.ttl())}
+	}
+	pending.value = value
+	pending.err = err
+	delete(r.workloadCalls, key)
+	close(pending.done)
+	r.mu.Unlock()
+	return value, err
 }
 
 func (r *CachedResolver) resolve(ctx context.Context, cache map[string]cacheEntry, calls map[string]*resolveCall, key string, call func() (string, error)) (string, error) {
@@ -228,19 +310,36 @@ func (r CLIResolver) DockerContainerName(ctx context.Context, containerID string
 }
 
 func (r CLIResolver) NamespaceForContainer(ctx context.Context, containerID string) (string, error) {
+	workload, err := r.KubernetesWorkloadForContainer(ctx, containerID)
+	return workload.Namespace, err
+}
+
+func (r CLIResolver) KubernetesWorkloadForContainer(ctx context.Context, containerID string) (KubernetesWorkload, error) {
 	containerID = strings.TrimSpace(containerID)
 	if containerID == "" {
-		return "", errors.New("container id is empty")
+		return KubernetesWorkload{}, errors.New("container id is empty")
 	}
-	ns, criErr := r.namespaceFromCRICTL(ctx, containerID)
-	if criErr == nil && ns != "" {
-		return ns, nil
+	workload, criErr := r.workloadFromCRICTL(ctx, containerID)
+	if criErr == nil && workload.Namespace != "" {
+		if workload.PodName != "" && workload.ContainerName != "" {
+			return workload, nil
+		}
+		fallback, kubectlErr := r.workloadFromKubectl(ctx, containerID)
+		if kubectlErr == nil {
+			if workload.PodName == "" {
+				workload.PodName = fallback.PodName
+			}
+			if workload.ContainerName == "" {
+				workload.ContainerName = fallback.ContainerName
+			}
+		}
+		return workload, nil
 	}
-	ns, kubectlErr := r.namespaceFromKubectl(ctx, containerID)
-	if kubectlErr == nil && ns != "" {
-		return ns, nil
+	workload, kubectlErr := r.workloadFromKubectl(ctx, containerID)
+	if kubectlErr == nil && workload.Namespace != "" {
+		return workload, nil
 	}
-	return "", combineNamespaceErrors(criErr, kubectlErr)
+	return KubernetesWorkload{}, combineNamespaceErrors(criErr, kubectlErr)
 }
 
 func combineNamespaceErrors(criErr, kubectlErr error) error {
@@ -263,38 +362,39 @@ func combineNamespaceErrors(criErr, kubectlErr error) error {
 	return errors.New("kubernetes namespace resolution was inconclusive")
 }
 
-func (r CLIResolver) namespaceFromCRICTL(ctx context.Context, containerID string) (string, error) {
+func (r CLIResolver) workloadFromCRICTL(ctx context.Context, containerID string) (KubernetesWorkload, error) {
 	ctx, cancel := r.withTimeout(ctx)
 	defer cancel()
 	out, err := limitedCommandOutput(ctx, "crictl", "inspect", containerID)
 	if err != nil {
 		if commandReportsNotFound(err) {
-			return "", fmt.Errorf("%w: CRI container", ErrNotFound)
+			return KubernetesWorkload{}, fmt.Errorf("%w: CRI container", ErrNotFound)
 		}
-		return "", err
+		return KubernetesWorkload{}, err
 	}
 	var raw any
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return "", err
+		return KubernetesWorkload{}, err
 	}
-	ns := findNamespace(raw)
-	if ns == "" {
-		return "", errors.New("namespace not found in crictl inspect")
+	workload := findKubernetesWorkload(raw)
+	if workload.Namespace == "" {
+		return KubernetesWorkload{}, errors.New("namespace not found in crictl inspect")
 	}
-	return ns, nil
+	return workload, nil
 }
 
-func (r CLIResolver) namespaceFromKubectl(ctx context.Context, containerID string) (string, error) {
+func (r CLIResolver) workloadFromKubectl(ctx context.Context, containerID string) (KubernetesWorkload, error) {
 	ctx, cancel := r.withTimeout(ctx)
 	defer cancel()
 	out, err := limitedCommandOutput(ctx, "kubectl", "get", "pod", "-A", "-o", "json")
 	if err != nil {
-		return "", err
+		return KubernetesWorkload{}, err
 	}
 	var list struct {
 		Items []struct {
 			Metadata struct {
 				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
 			} `json:"metadata"`
 			Status struct {
 				ContainerStatuses     []KubeContainerStatus `json:"containerStatuses"`
@@ -303,16 +403,18 @@ func (r CLIResolver) namespaceFromKubectl(ctx context.Context, containerID strin
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
-		return "", err
+		return KubernetesWorkload{}, err
 	}
 	short := shortID(containerID)
 	for _, item := range list.Items {
-		if statusHasContainer(item.Status.ContainerStatuses, containerID, short) ||
-			statusHasContainer(item.Status.InitContainerStatuses, containerID, short) {
-			return item.Metadata.Namespace, nil
+		if name, ok := matchingContainerName(item.Status.ContainerStatuses, containerID, short); ok {
+			return KubernetesWorkload{Namespace: item.Metadata.Namespace, PodName: item.Metadata.Name, ContainerName: name}, nil
+		}
+		if name, ok := matchingContainerName(item.Status.InitContainerStatuses, containerID, short); ok {
+			return KubernetesWorkload{Namespace: item.Metadata.Namespace, PodName: item.Metadata.Name, ContainerName: name}, nil
 		}
 	}
-	return "", fmt.Errorf("%w: container namespace", ErrNotFound)
+	return KubernetesWorkload{}, fmt.Errorf("%w: kubernetes container", ErrNotFound)
 }
 
 func (r CLIResolver) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -355,32 +457,53 @@ func commandReportsNotFound(err error) bool {
 }
 
 func findNamespace(value any) string {
+	return findKubernetesWorkload(value).Namespace
+}
+
+func findKubernetesWorkload(value any) KubernetesWorkload {
 	root, ok := value.(map[string]any)
 	if !ok {
-		return ""
+		return KubernetesWorkload{}
 	}
 	status, ok := root["status"].(map[string]any)
 	if !ok {
-		return ""
+		return KubernetesWorkload{}
 	}
+	var workload KubernetesWorkload
 	for _, field := range []string{"labels", "annotations"} {
 		metadata, ok := status[field].(map[string]any)
 		if !ok {
 			continue
 		}
-		namespace, ok := metadata["io.kubernetes.pod.namespace"].(string)
-		if ok && strings.TrimSpace(namespace) != "" {
-			return strings.TrimSpace(namespace)
+		if workload.Namespace == "" {
+			workload.Namespace = trustedMetadataValue(metadata, "io.kubernetes.pod.namespace")
+		}
+		if workload.PodName == "" {
+			workload.PodName = trustedMetadataValue(metadata, "io.kubernetes.pod.name")
+		}
+		if workload.ContainerName == "" {
+			workload.ContainerName = trustedMetadataValue(metadata, "io.kubernetes.container.name")
 		}
 	}
-	return ""
+	if workload.ContainerName == "" {
+		if metadata, ok := status["metadata"].(map[string]any); ok {
+			workload.ContainerName = trustedMetadataValue(metadata, "name")
+		}
+	}
+	return workload
+}
+
+func trustedMetadataValue(metadata map[string]any, key string) string {
+	value, _ := metadata[key].(string)
+	return strings.TrimSpace(value)
 }
 
 type KubeContainerStatus struct {
+	Name        string `json:"name"`
 	ContainerID string `json:"containerID"`
 }
 
-func statusHasContainer(statuses []KubeContainerStatus, full, short string) bool {
+func matchingContainerName(statuses []KubeContainerStatus, full, short string) (string, bool) {
 	for _, status := range statuses {
 		id := extractID(status.ContainerID)
 		if id == "" {
@@ -389,10 +512,10 @@ func statusHasContainer(statuses []KubeContainerStatus, full, short string) bool
 		if id == full || id == short ||
 			(len(id) >= 12 && strings.HasPrefix(full, id)) ||
 			(len(short) >= 12 && strings.HasPrefix(id, short)) {
-			return true
+			return strings.TrimSpace(status.Name), true
 		}
 	}
-	return false
+	return "", false
 }
 
 func extractID(value string) string {

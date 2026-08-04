@@ -27,6 +27,7 @@ func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
 	memory := uint64(1024)
 	missingUtilMemory := uint64(2048)
 	exitCode := 0
+	rootUID := 0
 	jobStarted := start.Add(2 * time.Second)
 	jobFinished := start.Add(12 * time.Second)
 	page := telemetry.Page{
@@ -37,7 +38,7 @@ func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
 				StartsAt: start, ExpiresAt: end, Members: []telemetry.ReservationMember{{ReservationID: "r0", GPU: 0}, {ReservationID: "r1", GPU: 1}},
 			}),
 			event(t, 2, telemetry.EventAuthorizationUpsert, start, telemetry.AuthorizationUpsert{
-				AuthorizationID: "auth-internal", GroupID: "group-a", Mode: "run", Holder: "alice", Command: []string{"python", "train.py"}, CreatedAt: start,
+				AuthorizationID: "auth-internal", GroupID: "group-a", Mode: "user", Holder: "alice", Username: "alice", Command: []string{"python", "train.py"}, CreatedAt: start,
 			}),
 			event(t, 3, telemetry.EventGPUSample, start.Add(20*time.Second), telemetry.GPUSample{
 				WindowStart: start, WindowEnd: start.Add(20 * time.Second), Status: "ok",
@@ -47,11 +48,12 @@ func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
 				},
 			}),
 			event(t, 4, telemetry.EventJobStarted, jobStarted, telemetry.JobEvent{
-				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "gpuardian_run", Mode: "run",
+				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "gpuardian_run", Mode: "user",
 				Holder: "alice", Command: []string{"python", "train.py", "--token=possibly-secret"}, GPUs: []int{0, 1}, StartedAt: &jobStarted, StartPrecision: "exact",
+				RuntimeContext: &telemetry.RuntimeContext{UID: &rootUID, Username: "root"},
 			}),
 			event(t, 5, telemetry.EventJobFinished, jobFinished, telemetry.JobEvent{
-				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "gpuardian_run", Mode: "run",
+				ExecutionID: "job-internal", AuthorizationID: "auth-internal", GroupID: "group-a", Source: "gpuardian_run", Mode: "user",
 				Holder: "alice", FinishedAt: &jobFinished, FinishPrecision: "exact", ExitCode: &exitCode, Reason: "cgroup_empty",
 			}),
 		},
@@ -103,6 +105,10 @@ func TestApplyPageAggregatesAndDeduplicates(t *testing.T) {
 	}
 	if len(jobs) != 1 || len(jobs[0].Command) != 3 || jobs[0].ExitCode == nil || *jobs[0].ExitCode != 0 || len(jobs[0].GPUs) != 2 {
 		t.Fatalf("unexpected jobs: %#v", jobs)
+	}
+	if jobs[0].RuntimeContext == nil || jobs[0].RuntimeContext.UID == nil || *jobs[0].RuntimeContext.UID != 0 ||
+		jobs[0].RuntimeContext.Username != "root" || jobs[0].AuthorizationSelector != "alice" {
+		t.Fatalf("runtime context or authorization fallback was lost: %#v", jobs[0])
 	}
 	publicJSON, err := json.Marshal(jobs)
 	if err != nil {
@@ -315,6 +321,54 @@ func TestNodeGPURollupMigrationPreservesReservationMetrics(t *testing.T) {
 	if math.Abs(summary.BusyGPUHours-10.0/3600.0) > 0.0001 || summary.BusyRatio != 1 ||
 		summary.AverageUtilization == nil || *summary.AverageUtilization != utilization {
 		t.Fatalf("migrated node metrics = %+v", summary)
+	}
+}
+
+func TestRuntimeContextMigrationUpgradesV4Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{
+		"runtime_kubernetes_container_name", "runtime_kubernetes_pod_name", "runtime_kubernetes_namespace",
+		"runtime_docker_container_name", "runtime_container_id", "runtime_username", "runtime_uid",
+	} {
+		if _, err := store.DB().Exec("ALTER TABLE jobs DROP COLUMN " + column); err != nil {
+			t.Fatalf("drop %s: %v", column, err)
+		}
+	}
+	if _, err := store.DB().Exec("DELETE FROM schema_migrations WHERE version=5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rows, err := store.DB().Query("PRAGMA table_info(jobs)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		found[name] = true
+	}
+	for _, column := range []string{"runtime_uid", "runtime_username", "runtime_container_id", "runtime_docker_container_name", "runtime_kubernetes_namespace", "runtime_kubernetes_pod_name", "runtime_kubernetes_container_name"} {
+		if !found[column] {
+			t.Fatalf("migration did not add %s", column)
+		}
 	}
 }
 
@@ -581,7 +635,7 @@ func TestMigrationReopenWALAndRejectNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if _, err := store.DB().Exec("INSERT INTO schema_migrations(version,checksum,applied_at_ms) VALUES(5,'future',?)", time.Now().UnixMilli()); err != nil {
+	if _, err := store.DB().Exec("INSERT INTO schema_migrations(version,checksum,applied_at_ms) VALUES(6,'future',?)", time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

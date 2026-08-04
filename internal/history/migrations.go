@@ -204,3 +204,13 @@ WHERE r.kind='reservation'
 GROUP BY r.node_id,g.gpu,g.minute_ms;
 CREATE INDEX IF NOT EXISTS node_gpu_rollups_time_idx ON node_gpu_minute_rollups(minute_ms);
 `
+
+const migrationV5 = `
+ALTER TABLE jobs ADD COLUMN runtime_uid INTEGER;
+ALTER TABLE jobs ADD COLUMN runtime_username TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN runtime_container_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN runtime_docker_container_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN runtime_kubernetes_namespace TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN runtime_kubernetes_pod_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN runtime_kubernetes_container_name TEXT NOT NULL DEFAULT '';
+`

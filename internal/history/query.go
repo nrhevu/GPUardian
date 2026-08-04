@@ -135,7 +135,10 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 		limit = 100
 	}
 	query := `SELECT j.node_id,j.job_id,j.source,j.mode,j.holder,j.command_json,j.started_at_ms,j.root_exited_at_ms,j.finished_at_ms,
-		j.start_precision,j.finish_precision,j.exit_code,j.end_reason FROM jobs j WHERE
+		j.start_precision,j.finish_precision,j.exit_code,j.end_reason,COALESCE(a.selector,''),j.runtime_uid,j.runtime_username,
+		j.runtime_container_id,j.runtime_docker_container_name,j.runtime_kubernetes_namespace,j.runtime_kubernetes_pod_name,
+		j.runtime_kubernetes_container_name FROM jobs j LEFT JOIN authorization_scopes a
+		ON a.node_id=j.node_id AND a.authorization_id=j.authorization_id WHERE
 		(j.session_id=? OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=?))`
 	args := []any{sessionID, sessionID}
 	if afterMS > 0 {
@@ -159,9 +162,13 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 		var internalID string
 		var started, rootExited, finished sql.NullInt64
 		var exitCode sql.NullInt64
+		var runtimeUID sql.NullInt64
+		var runtimeContext RuntimeContext
 		var job Job
 		if err := rows.Scan(&nodeID, &internalID, &job.Source, &job.Mode, &job.Holder, &commandJSON, &started, &rootExited, &finished,
-			&job.StartPrecision, &job.FinishPrecision, &exitCode, &job.Reason); err != nil {
+			&job.StartPrecision, &job.FinishPrecision, &exitCode, &job.Reason, &job.AuthorizationSelector, &runtimeUID,
+			&runtimeContext.Username, &runtimeContext.ContainerID, &runtimeContext.DockerContainerName,
+			&runtimeContext.KubernetesNamespace, &runtimeContext.KubernetesPodName, &runtimeContext.KubernetesContainerName); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -174,6 +181,15 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 		if exitCode.Valid {
 			value := int(exitCode.Int64)
 			job.ExitCode = &value
+		}
+		if runtimeUID.Valid {
+			value := int(runtimeUID.Int64)
+			runtimeContext.UID = &value
+		}
+		if runtimeContext.UID != nil || runtimeContext.Username != "" || runtimeContext.ContainerID != "" ||
+			runtimeContext.DockerContainerName != "" || runtimeContext.KubernetesNamespace != "" ||
+			runtimeContext.KubernetesPodName != "" || runtimeContext.KubernetesContainerName != "" {
+			job.RuntimeContext = &runtimeContext
 		}
 		pending = append(pending, pendingJob{job: job, nodeID: nodeID, internalID: internalID})
 	}

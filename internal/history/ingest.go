@@ -345,17 +345,31 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 		payload.FinishedAt = clampTime(payload.FinishedAt, effectiveEnd)
 	}
 	command, _ := json.Marshal(payload.Command)
+	var runtimeContext telemetry.RuntimeContext
+	if payload.RuntimeContext != nil {
+		runtimeContext = *payload.RuntimeContext
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO jobs(node_id,job_id,session_id,authorization_id,source,mode,holder,command_json,started_at_ms,
-		root_exited_at_ms,finished_at_ms,start_precision,finish_precision,exit_code,end_reason,updated_at_ms)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		root_exited_at_ms,finished_at_ms,start_precision,finish_precision,exit_code,end_reason,updated_at_ms,runtime_uid,runtime_username,
+		runtime_container_id,runtime_docker_container_name,runtime_kubernetes_namespace,runtime_kubernetes_pod_name,runtime_kubernetes_container_name)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(node_id,job_id) DO UPDATE SET command_json=CASE WHEN excluded.command_json IN ('[]','null') THEN jobs.command_json ELSE excluded.command_json END,
 		started_at_ms=COALESCE(jobs.started_at_ms,excluded.started_at_ms),root_exited_at_ms=COALESCE(excluded.root_exited_at_ms,jobs.root_exited_at_ms),
 		finished_at_ms=COALESCE(excluded.finished_at_ms,jobs.finished_at_ms),start_precision=CASE WHEN excluded.start_precision='' THEN jobs.start_precision ELSE excluded.start_precision END,
 		finish_precision=CASE WHEN excluded.finish_precision='' THEN jobs.finish_precision ELSE excluded.finish_precision END,
 		exit_code=COALESCE(excluded.exit_code,jobs.exit_code),end_reason=CASE WHEN excluded.end_reason='' THEN jobs.end_reason ELSE excluded.end_reason END,
+		runtime_uid=COALESCE(jobs.runtime_uid,excluded.runtime_uid),
+		runtime_username=CASE WHEN jobs.runtime_username='' THEN excluded.runtime_username ELSE jobs.runtime_username END,
+		runtime_container_id=CASE WHEN jobs.runtime_container_id='' THEN excluded.runtime_container_id ELSE jobs.runtime_container_id END,
+		runtime_docker_container_name=CASE WHEN jobs.runtime_docker_container_name='' THEN excluded.runtime_docker_container_name ELSE jobs.runtime_docker_container_name END,
+		runtime_kubernetes_namespace=CASE WHEN jobs.runtime_kubernetes_namespace='' THEN excluded.runtime_kubernetes_namespace ELSE jobs.runtime_kubernetes_namespace END,
+		runtime_kubernetes_pod_name=CASE WHEN jobs.runtime_kubernetes_pod_name='' THEN excluded.runtime_kubernetes_pod_name ELSE jobs.runtime_kubernetes_pod_name END,
+		runtime_kubernetes_container_name=CASE WHEN jobs.runtime_kubernetes_container_name='' THEN excluded.runtime_kubernetes_container_name ELSE jobs.runtime_kubernetes_container_name END,
 		updated_at_ms=excluded.updated_at_ms`, nodeID, payload.ExecutionID, session, payload.AuthorizationID, payload.Source, payload.Mode,
 		payload.Holder, string(command), nullableMillis(payload.StartedAt), nullableMillis(payload.RootExitedAt), nullableMillis(payload.FinishedAt),
-		payload.StartPrecision, payload.FinishPrecision, nullableInt(payload.ExitCode), payload.Reason, millis(occurredAt))
+		payload.StartPrecision, payload.FinishPrecision, nullableInt(payload.ExitCode), payload.Reason, millis(occurredAt), nullableInt(runtimeContext.UID),
+		runtimeContext.Username, runtimeContext.ContainerID, runtimeContext.DockerContainerName, runtimeContext.KubernetesNamespace,
+		runtimeContext.KubernetesPodName, runtimeContext.KubernetesContainerName)
 	if err != nil {
 		return err
 	}

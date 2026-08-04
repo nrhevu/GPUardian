@@ -14,6 +14,8 @@ import (
 	"gpuardian/internal/enforce"
 	"gpuardian/internal/gpusmi"
 	"gpuardian/internal/model"
+	"gpuardian/internal/proc"
+	"gpuardian/internal/runtime"
 	"gpuardian/internal/telemetry"
 )
 
@@ -318,6 +320,7 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 				GPUs:            []int{decision.Process.GPU},
 				StartedAt:       &started,
 				StartPrecision:  "observed",
+				RuntimeContext:  s.jobRuntimeContext(decision.Info, authorization.Mode),
 			}
 			if len(groupIDs) > 0 {
 				event.GroupID = groupIDs[0]
@@ -376,6 +379,9 @@ func (s *Server) rememberRunJob(token model.Token, authorization model.Authoriza
 		Command:         boundedTelemetryCommand(command),
 		StartedAt:       &started,
 		StartPrecision:  "exact",
+		RuntimeContext: s.jobRuntimeContext(model.ProcInfo{
+			UID: authorization.UID, Username: authorization.Username, ContainerID: authorization.ContainerID,
+		}, authorization.Mode),
 	}
 	if len(groupIDs) > 0 {
 		event.GroupID = groupIDs[0]
@@ -391,6 +397,42 @@ func (s *Server) rememberRunJob(token model.Token, authorization model.Authoriza
 	s.telemetryJobsMu.Unlock()
 	s.emitTelemetry(telemetry.EventJobStarted, event, at)
 	return event
+}
+
+func (s *Server) jobRuntimeContext(info model.ProcInfo, mode string) *telemetry.RuntimeContext {
+	value := telemetry.RuntimeContext{ContainerID: strings.TrimSpace(info.ContainerID)}
+	if info.UID >= 0 {
+		uid := info.UID
+		value.UID = &uid
+		value.Username = strings.TrimSpace(info.Username)
+		if value.Username == "" {
+			value.Username, _ = proc.LookupUsername(info.UID)
+		}
+	}
+	if s.Runtime != nil && value.ContainerID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		switch mode {
+		case model.ModeDocker:
+			value.DockerContainerName, _ = s.Runtime.DockerContainerName(ctx, value.ContainerID)
+		case model.ModeK8s:
+			if resolver, ok := s.Runtime.(runtime.KubernetesWorkloadResolver); ok {
+				workload, err := resolver.KubernetesWorkloadForContainer(ctx, value.ContainerID)
+				if err == nil {
+					value.KubernetesNamespace = workload.Namespace
+					value.KubernetesPodName = workload.PodName
+					value.KubernetesContainerName = workload.ContainerName
+				}
+			} else {
+				value.KubernetesNamespace, _ = s.Runtime.NamespaceForContainer(ctx, value.ContainerID)
+			}
+		}
+	}
+	if value.UID == nil && value.Username == "" && value.ContainerID == "" && value.DockerContainerName == "" &&
+		value.KubernetesNamespace == "" && value.KubernetesPodName == "" && value.KubernetesContainerName == "" {
+		return nil
+	}
+	return &value
 }
 
 func reservationTelemetryGroup(reservation model.Reservation, fallback string) string {

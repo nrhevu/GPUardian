@@ -89,6 +89,10 @@ func (daemonFakeRuntime) NamespaceForContainer(context.Context, string) (string,
 	return "training", nil
 }
 
+func (daemonFakeRuntime) KubernetesWorkloadForContainer(context.Context, string) (runtimepkg.KubernetesWorkload, error) {
+	return runtimepkg.KubernetesWorkload{Namespace: "training", PodName: "trainer-0", ContainerName: "worker"}, nil
+}
+
 func TestNodeHTTPRejectsPlaintextWithoutExplicitOptIn(t *testing.T) {
 	server := testServer(t)
 	server.Cfg.NodeAddr = "127.0.0.1:0"
@@ -119,6 +123,12 @@ type daemonFailingDockerRuntime struct{ daemonMissingDockerRuntime }
 
 func (daemonFailingDockerRuntime) ResolveDockerContainer(context.Context, string) (string, error) {
 	return "", errors.New("docker unavailable")
+}
+
+type daemonFailingMetadataRuntime struct{ daemonFakeRuntime }
+
+func (daemonFailingMetadataRuntime) DockerContainerName(context.Context, string) (string, error) {
+	return "", errors.New("docker inspect unavailable")
 }
 
 func TestRegisterRPC(t *testing.T) {
@@ -491,7 +501,7 @@ func TestObservedTelemetryJobGroupsGPUsAndDebouncesFinish(t *testing.T) {
 		Tokens:         []model.Token{{ID: "tok_group", Hash: "hash", Mode: model.TokenModeReserved}},
 		Authorizations: []model.Authorization{{ID: "auth_private", TokenHash: "hash", TokenMode: model.TokenModeReserved, Mode: model.ModeDocker, Holder: "alice"}},
 	}
-	info := model.ProcInfo{PID: 42, StartTime: 99, Cmdline: []string{"python", "train.py"}}
+	info := model.ProcInfo{PID: 42, StartTime: 99, UID: 1001, Username: "alice", Cmdline: []string{"python", "train.py"}, ContainerID: strings.Repeat("a", 64)}
 	decisions := []enforce.Decision{
 		{Action: "allow", AuthID: "auth_private", Process: model.GPUProcess{PID: 42, GPU: 0}, Info: info},
 		{Action: "allow", AuthID: "auth_private", Process: model.GPUProcess{PID: 42, GPU: 1}, Info: info},
@@ -527,6 +537,10 @@ func TestObservedTelemetryJobGroupsGPUsAndDebouncesFinish(t *testing.T) {
 	if started.TokenMode != model.TokenModeReserved {
 		t.Fatalf("token mode = %q, want reserved", started.TokenMode)
 	}
+	if started.RuntimeContext == nil || started.RuntimeContext.Username != "alice" || started.RuntimeContext.DockerContainerName != "trainer" ||
+		started.RuntimeContext.ContainerID != strings.Repeat("a", 64) || started.RuntimeContext.UID == nil || *started.RuntimeContext.UID != 1001 {
+		t.Fatalf("docker runtime context = %+v", started.RuntimeContext)
+	}
 }
 
 func TestObservedTelemetryRecordsClaimedJobWithoutReservation(t *testing.T) {
@@ -545,7 +559,7 @@ func TestObservedTelemetryRecordsClaimedJobWithoutReservation(t *testing.T) {
 			ID: "auth_claimed", TokenHash: "hash", TokenMode: model.TokenModeClaimed, Mode: model.ModeUser, Holder: "alice", RunName: "GLM TP4 benchmark",
 		}},
 	}
-	info := model.ProcInfo{PID: 42, StartTime: 99, Cmdline: []string{"python", "train.py"}}
+	info := model.ProcInfo{PID: 42, StartTime: 99, UID: 1001, Username: "alice", Cmdline: []string{"python", "train.py"}}
 	now := time.Now().UTC()
 	server.trackObservedTelemetryJobs(state, []enforce.Decision{{
 		Action: "allow", AuthID: "auth_claimed", Process: model.GPUProcess{PID: 42, GPU: 3}, Info: info,
@@ -565,6 +579,31 @@ func TestObservedTelemetryRecordsClaimedJobWithoutReservation(t *testing.T) {
 	if started.ExecutionID == "" || started.RunName != "GLM TP4 benchmark" || started.TokenMode != model.TokenModeClaimed || started.GroupID != "" ||
 		len(started.GroupIDs) != 0 || len(started.GPUs) != 1 || started.GPUs[0] != 3 {
 		t.Fatalf("unexpected claimed job: %+v", started)
+	}
+	if started.RuntimeContext == nil || started.RuntimeContext.Username != "alice" || started.RuntimeContext.UID == nil || *started.RuntimeContext.UID != 1001 {
+		t.Fatalf("user runtime context = %+v", started.RuntimeContext)
+	}
+}
+
+func TestJobRuntimeContextIncludesKubernetesLocation(t *testing.T) {
+	server := testServer(t)
+	context := server.jobRuntimeContext(model.ProcInfo{
+		UID: 1001, Username: "alice", ContainerID: strings.Repeat("b", 64),
+	}, model.ModeK8s)
+	if context == nil || context.KubernetesNamespace != "training" || context.KubernetesPodName != "trainer-0" ||
+		context.KubernetesContainerName != "worker" || context.ContainerID != strings.Repeat("b", 64) {
+		t.Fatalf("kubernetes runtime context = %+v", context)
+	}
+}
+
+func TestJobRuntimeContextResolutionFailureKeepsObservedIdentity(t *testing.T) {
+	server := testServer(t)
+	server.Runtime = daemonFailingMetadataRuntime{}
+	context := server.jobRuntimeContext(model.ProcInfo{
+		UID: 1001, Username: "alice", ContainerID: strings.Repeat("c", 64),
+	}, model.ModeDocker)
+	if context == nil || context.Username != "alice" || context.ContainerID != strings.Repeat("c", 64) || context.DockerContainerName != "" {
+		t.Fatalf("runtime context after resolver failure = %+v", context)
 	}
 }
 

@@ -84,20 +84,32 @@ type Session struct {
 }
 
 type Job struct {
-	ID              string     `json:"id"`
-	CursorID        string     `json:"-"`
-	Source          string     `json:"source"`
-	Mode            string     `json:"mode"`
-	Holder          string     `json:"holder"`
-	Command         []string   `json:"command,omitempty"`
-	GPUs            []int      `json:"gpus,omitempty"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	RootExitedAt    *time.Time `json:"root_exited_at,omitempty"`
-	FinishedAt      *time.Time `json:"finished_at,omitempty"`
-	StartPrecision  string     `json:"start_precision,omitempty"`
-	FinishPrecision string     `json:"finish_precision,omitempty"`
-	ExitCode        *int       `json:"exit_code,omitempty"`
-	Reason          string     `json:"reason,omitempty"`
+	ID                    string          `json:"id"`
+	CursorID              string          `json:"-"`
+	Source                string          `json:"source"`
+	Mode                  string          `json:"mode"`
+	Holder                string          `json:"holder"`
+	Command               []string        `json:"command,omitempty"`
+	GPUs                  []int           `json:"gpus,omitempty"`
+	StartedAt             *time.Time      `json:"started_at,omitempty"`
+	RootExitedAt          *time.Time      `json:"root_exited_at,omitempty"`
+	FinishedAt            *time.Time      `json:"finished_at,omitempty"`
+	StartPrecision        string          `json:"start_precision,omitempty"`
+	FinishPrecision       string          `json:"finish_precision,omitempty"`
+	ExitCode              *int            `json:"exit_code,omitempty"`
+	Reason                string          `json:"reason,omitempty"`
+	RuntimeContext        *RuntimeContext `json:"runtime_context,omitempty"`
+	AuthorizationSelector string          `json:"authorization_selector,omitempty"`
+}
+
+type RuntimeContext struct {
+	UID                     *int   `json:"uid,omitempty"`
+	Username                string `json:"username,omitempty"`
+	ContainerID             string `json:"container_id,omitempty"`
+	DockerContainerName     string `json:"docker_container_name,omitempty"`
+	KubernetesNamespace     string `json:"kubernetes_namespace,omitempty"`
+	KubernetesPodName       string `json:"kubernetes_pod_name,omitempty"`
+	KubernetesContainerName string `json:"kubernetes_container_name,omitempty"`
 }
 
 type DashboardSummary struct {

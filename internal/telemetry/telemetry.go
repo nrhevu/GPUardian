@@ -129,26 +129,37 @@ type AuthorizationEnded struct {
 }
 
 type JobEvent struct {
-	ExecutionID     string     `json:"execution_id"`
-	AuthorizationID string     `json:"authorization_id"`
-	GroupID         string     `json:"group_id"`
-	GroupIDs        []string   `json:"group_ids,omitempty"`
-	TokenMode       string     `json:"token_mode,omitempty"`
-	Source          string     `json:"source"`
-	Mode            string     `json:"mode"`
-	Holder          string     `json:"holder"`
-	RunName         string     `json:"run_name,omitempty"`
-	PID             int        `json:"pid,omitempty"`
-	ProcStartTicks  uint64     `json:"proc_start_ticks,omitempty"`
-	Command         []string   `json:"command,omitempty"`
-	GPUs            []int      `json:"gpus,omitempty"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	RootExitedAt    *time.Time `json:"root_exited_at,omitempty"`
-	FinishedAt      *time.Time `json:"finished_at,omitempty"`
-	StartPrecision  string     `json:"start_precision,omitempty"`
-	FinishPrecision string     `json:"finish_precision,omitempty"`
-	ExitCode        *int       `json:"exit_code,omitempty"`
-	Reason          string     `json:"reason,omitempty"`
+	ExecutionID     string          `json:"execution_id"`
+	AuthorizationID string          `json:"authorization_id"`
+	GroupID         string          `json:"group_id"`
+	GroupIDs        []string        `json:"group_ids,omitempty"`
+	TokenMode       string          `json:"token_mode,omitempty"`
+	Source          string          `json:"source"`
+	Mode            string          `json:"mode"`
+	Holder          string          `json:"holder"`
+	RunName         string          `json:"run_name,omitempty"`
+	PID             int             `json:"pid,omitempty"`
+	ProcStartTicks  uint64          `json:"proc_start_ticks,omitempty"`
+	Command         []string        `json:"command,omitempty"`
+	GPUs            []int           `json:"gpus,omitempty"`
+	StartedAt       *time.Time      `json:"started_at,omitempty"`
+	RootExitedAt    *time.Time      `json:"root_exited_at,omitempty"`
+	FinishedAt      *time.Time      `json:"finished_at,omitempty"`
+	StartPrecision  string          `json:"start_precision,omitempty"`
+	FinishPrecision string          `json:"finish_precision,omitempty"`
+	ExitCode        *int            `json:"exit_code,omitempty"`
+	Reason          string          `json:"reason,omitempty"`
+	RuntimeContext  *RuntimeContext `json:"runtime_context,omitempty"`
+}
+
+type RuntimeContext struct {
+	UID                     *int   `json:"uid,omitempty"`
+	Username                string `json:"username,omitempty"`
+	ContainerID             string `json:"container_id,omitempty"`
+	DockerContainerName     string `json:"docker_container_name,omitempty"`
+	KubernetesNamespace     string `json:"kubernetes_namespace,omitempty"`
+	KubernetesPodName       string `json:"kubernetes_pod_name,omitempty"`
+	KubernetesContainerName string `json:"kubernetes_container_name,omitempty"`
 }
 
 type GPUSample struct {

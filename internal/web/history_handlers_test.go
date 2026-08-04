@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,24 @@ func TestHistoryAPIReadForUsersAndResultOwnerOnly(t *testing.T) {
 	if err := store.ConfirmSession(t.Context(), "sess_public", "group-private", []string{"reservation-private"}, []int{0}); err != nil {
 		t.Fatal(err)
 	}
+	rootUID := 0
+	jobStart := start.Add(time.Minute)
+	authorizationPayload, _ := json.Marshal(telemetry.AuthorizationUpsert{
+		AuthorizationID: "auth-private", GroupID: "group-private", Mode: "docker", Holder: "alice", ContainerPattern: "trainer-*", CreatedAt: start,
+	})
+	jobPayload, _ := json.Marshal(telemetry.JobEvent{
+		ExecutionID: "job-private", AuthorizationID: "auth-private", GroupID: "group-private", Source: "authorized_process", Mode: "docker",
+		Holder: "alice", Command: []string{"python", "train.py"}, GPUs: []int{0}, StartedAt: &jobStart, StartPrecision: "observed",
+		RuntimeContext: &telemetry.RuntimeContext{UID: &rootUID, Username: "root", ContainerID: strings.Repeat("a", 64), DockerContainerName: "trainer-0"},
+	})
+	if err := store.ApplyPage(t.Context(), "server-a", "GPU node", telemetry.Page{
+		NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-2", Events: []telemetry.Event{
+			{Seq: 1, OccurredAt: start, Type: telemetry.EventAuthorizationUpsert, Payload: authorizationPayload},
+			{Seq: 2, OccurredAt: jobStart, Type: telemetry.EventJobStarted, Payload: jobPayload},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	handler := server.routes()
 
 	read := httptest.NewRecorder()
@@ -80,6 +99,17 @@ func TestHistoryAPIReadForUsersAndResultOwnerOnly(t *testing.T) {
 	handler.ServeHTTP(read, readRequest)
 	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"owner":"alice"`) || strings.Contains(read.Body.String(), "group-private") || strings.Contains(read.Body.String(), "reservation-private") {
 		t.Fatalf("history read = %d %s", read.Code, read.Body.String())
+	}
+
+	jobsRead := httptest.NewRecorder()
+	jobsRequest := httptest.NewRequest(http.MethodGet, "/api/history/sessions/sess_public/jobs", nil)
+	jobsRequest.AddCookie(testSessionCookie(t, server, "bob", RoleUser))
+	handler.ServeHTTP(jobsRead, jobsRequest)
+	if jobsRead.Code != http.StatusOK || !strings.Contains(jobsRead.Body.String(), `"uid":0`) ||
+		!strings.Contains(jobsRead.Body.String(), `"docker_container_name":"trainer-0"`) ||
+		!strings.Contains(jobsRead.Body.String(), `"authorization_selector":"trainer-*"`) ||
+		strings.Contains(jobsRead.Body.String(), "job-private") || strings.Contains(jobsRead.Body.String(), "auth-private") {
+		t.Fatalf("history jobs read = %d %s", jobsRead.Code, jobsRead.Body.String())
 	}
 
 	adminWrite := httptest.NewRecorder()

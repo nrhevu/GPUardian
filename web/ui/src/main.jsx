@@ -1218,7 +1218,7 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
     <Modal title={session.purpose || (session.kind === "claimed_run" ? "Claimed run" : "Reservation session")} onClose={onClose} className="history-modal">
       <div className="history-detail">
         <div className="history-detail-meta">
-          <KeyDetail label="Type" value={session.kind === "claimed_run" ? "Claimed run" : "Reservation"} />
+          <KeyDetail label="Type" value={session.kind === "claimed_run" ? "Claimed" : "Reservation"} />
           <KeyDetail label="Owner" value={session.owner} />
           <KeyDetail label="Node" value={session.server_name} />
           <KeyDetail label="Window" value={`${dateTimeLabel(session.starts_at)} – ${dateTimeLabel(session.expires_at)}`} />
@@ -1242,30 +1242,53 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
         {timeline.length > 0 && (
           <section className="history-chart-section">
             <h3>Recent minute utilization</h3>
-            <div className="history-chart" title="Latest 180 GPU-minute buckets">
-              {timeline.map((point, index) => (
-                <span key={`${point.gpu}-${point.minute}-${index}`} style={{ height: `${Math.max(2, point.average_utilization_percent || 0)}%` }} title={`GPU ${point.gpu} · ${compactDateTime(point.minute)} · ${(point.average_utilization_percent || 0).toFixed(1)}%`} />
-              ))}
+            <div className="history-chart-frame">
+              <div className="history-chart-y-axis" aria-hidden="true">
+                <span>100%</span>
+                <span>50%</span>
+                <span>0%</span>
+              </div>
+              <div className="history-chart" title="Latest 180 GPU-minute buckets" role="img" aria-label="GPU utilization by minute, from 0 to 100 percent">
+                {timeline.map((point, index) => (
+                  <span key={`${point.gpu}-${point.minute}-${index}`} style={{ height: `${Math.max(2, point.average_utilization_percent || 0)}%` }} title={`GPU ${point.gpu} · ${compactDateTime(point.minute)} · ${(point.average_utilization_percent || 0).toFixed(1)}%`} />
+                ))}
+              </div>
+              <div className="history-chart-x-axis" aria-hidden="true">
+                <span>{compactDateTime(timeline[0].minute)}</span>
+                <span>{compactDateTime(timeline[Math.floor((timeline.length - 1) / 2)].minute)}</span>
+                <span>{compactDateTime(timeline[timeline.length - 1].minute)}</span>
+              </div>
             </div>
           </section>
         )}
         {(session.authorization_scopes || []).length > 0 && (
           <section className="history-jobs">
             <div className="section-heading compact"><div><h3>Authorization scopes</h3><p className="muted">Permissions active during this activity.</p></div></div>
-            {session.authorization_scopes.map((scope, index) => (
-              <article className="history-job" key={`${scope.created_at}-${index}`}>
-                <div><strong>{scope.mode}</strong><span>{scope.holder}</span></div>
-                <code>{scope.command?.length ? scope.command.join(" ") : scope.selector || "—"}</code>
-                <small>{compactDateTime(scope.created_at)} → {scope.ended_at ? compactDateTime(scope.ended_at) : scope.expires_at ? compactDateTime(scope.expires_at) : "active"}{scope.end_reason ? ` · ${scope.end_reason}` : ""}</small>
-              </article>
-            ))}
+            <div className="rules-table history-scopes-table">
+              <div className="rules-table-header">
+                <span>Scope</span>
+                <span>By</span>
+                <span>Value</span>
+              </div>
+              <div className="rules-table-body">
+                {session.authorization_scopes.map((scope, index) => (
+                  <div className="rules-table-row history-scope-row" key={`${scope.created_at}-${index}`}>
+                    <span>{authorizationRuleScope(scope.mode)}</span>
+                    <span>{authorizationRuleBy(scope.mode)}</span>
+                    <strong title={authorizationHistoryScopeValue(scope)}>{authorizationHistoryScopeValue(scope)}</strong>
+                    <small>{scope.holder} · {compactDateTime(scope.created_at)} → {scope.ended_at ? compactDateTime(scope.ended_at) : scope.expires_at ? compactDateTime(scope.expires_at) : "active"}{scope.end_reason ? ` · ${scope.end_reason}` : ""}</small>
+                  </div>
+                ))}
+              </div>
+            </div>
           </section>
         )}
         <section className="history-jobs">
           <div className="section-heading compact"><div><h3>Observed jobs</h3><p className="muted">Full command lines are visible to every signed-in user and may contain sensitive arguments.</p></div></div>
           {jobs.map((job) => (
             <article className="history-job" key={job.id}>
-              <div><strong>{job.source === "gpuardian_run" ? "gpuardian run" : `${job.mode} process`}</strong><span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span></div>
+              <div><strong>{job.source === "gpuardian_run" ? "gpuardian run" : `${authorizationRuleScope(job.mode)} process`}</strong><span>{job.gpus?.length ? `GPU ${job.gpus.join(", ")}` : "No GPU observed"}</span></div>
+              <HistoryJobLocation job={job} />
               <code>{job.command?.join(" ") || "—"}</code>
               <small>{job.started_at ? compactDateTime(job.started_at) : "unknown start"}{job.start_precision ? ` (${job.start_precision})` : ""} → {job.finished_at ? compactDateTime(job.finished_at) : "running"}{job.finish_precision ? ` (${job.finish_precision})` : ""}{job.exit_code != null ? ` · exit ${job.exit_code}` : ""}{job.reason ? ` · ${job.reason}` : ""}</small>
             </article>
@@ -1276,6 +1299,55 @@ function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
       </div>
     </Modal>
   );
+}
+
+function HistoryJobLocation({ job }) {
+  const runtime = job.runtime_context || null;
+  const chips = [{ label: "Scope", value: authorizationRuleScope(job.mode) }];
+  const containerID = runtime?.container_id || "";
+  if (job.mode === "docker") {
+    if (runtime?.docker_container_name) chips.push({ label: "Container", value: runtime.docker_container_name });
+    else if (job.authorization_selector) chips.push({ label: "Rule", value: job.authorization_selector });
+  } else if (job.mode === "k8s") {
+    if (runtime?.kubernetes_namespace) chips.push({ label: "Namespace", value: runtime.kubernetes_namespace });
+    else if (job.authorization_selector) chips.push({ label: "Rule", value: job.authorization_selector });
+    if (runtime?.kubernetes_pod_name) chips.push({ label: "Pod", value: runtime.kubernetes_pod_name });
+    if (runtime?.kubernetes_container_name) chips.push({ label: "Container", value: runtime.kubernetes_container_name });
+  } else {
+    if (runtime?.username) chips.push({ label: "User", value: runtime.username });
+    else if (job.authorization_selector) chips.push({ label: "Rule", value: job.authorization_selector });
+    if (runtime?.uid != null) chips.push({ label: "UID", value: String(runtime.uid) });
+  }
+  if (containerID) chips.push({ label: "ID", value: shortRuntimeID(containerID), title: containerID, copy: containerID });
+  return (
+    <div className="history-job-location-wrap">
+      <div className="history-job-location" aria-label="Runtime location">
+        {chips.map((chip, index) => (
+          chip.copy ? (
+            <button
+              type="button"
+              className="history-location-chip copyable"
+              key={`${chip.label}-${index}`}
+              title={`Copy container ID: ${chip.title}`}
+              aria-label={`Copy container ID ${chip.title}`}
+              onClick={() => navigator.clipboard?.writeText(chip.copy)}
+            >
+              <span>{chip.label}</span><strong>{chip.value}</strong>
+            </button>
+          ) : (
+            <span className="history-location-chip" key={`${chip.label}-${index}`} title={chip.title || chip.value}>
+              <span>{chip.label}</span><strong>{chip.value}</strong>
+            </span>
+          )
+        ))}
+      </div>
+      {!runtime && job.authorization_selector && <small className="history-runtime-fallback">Runtime details not captured for this job.</small>}
+    </div>
+  );
+}
+
+function shortRuntimeID(value) {
+  return value.length > 12 ? value.slice(0, 12) : value;
 }
 
 function HistoryResultForm({ result, canEdit, onSave }) {
@@ -2227,6 +2299,13 @@ function authorizationRuleValue(rule) {
     return rule.command?.join(" ") || `PID ${rule.root_pid}`;
   }
   return rule.mode;
+}
+
+function authorizationHistoryScopeValue(scope) {
+  if (scope.mode === "bare") {
+    return scope.command?.join(" ") || scope.selector || "Process";
+  }
+  return scope.selector || "—";
 }
 
 function UsersView({ users, currentUser, onCreate, onDelete }) {
