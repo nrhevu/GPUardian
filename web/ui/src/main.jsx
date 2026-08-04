@@ -1,6 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  BarChart3,
+  CalendarDays,
+  KeyRound,
+  LockKeyhole,
+  LogOut,
+  Plus,
+  Search,
+  Server,
+  ShieldCheck,
+  Users,
+} from "lucide-react";
 import "./styles.css";
+import "./index.css";
 
 const statusLabels = {
   available: "Available",
@@ -670,96 +683,169 @@ function App() {
     );
   }
 
+  const viewTitle = {
+    gpu: "GPU schedule",
+    keys: "API keys",
+    history: "GPU activity",
+    users: "Users",
+  }[view];
+
+  const navItemClass = (active) => [
+    "flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left text-[13px] font-medium whitespace-nowrap transition-colors max-md:w-auto max-md:shrink-0",
+    active
+      ? "border-sidebar-border bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+      : "border-transparent text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+  ].join(" ");
+
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-row">
-          <BrandLockup className="brand" showMark={false} />
-          <div className="settings-menu" ref={settingsRef}>
+    <div className="flex h-screen overflow-hidden bg-background max-md:flex-col">
+      <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r bg-sidebar max-md:relative max-md:h-auto max-md:w-full">
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b px-3">
+          <ShieldCheck className="h-5 w-5 shrink-0" />
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate text-sm leading-tight font-semibold">GPUardian</span>
+            <span className="truncate text-[11px] leading-tight text-muted-foreground">GPU access control</span>
+          </div>
+        </div>
+
+        <nav className="space-y-0.5 px-2 py-3 max-md:flex max-md:gap-1 max-md:space-y-0 max-md:overflow-x-auto">
+          <button type="button" className={navItemClass(view === "gpu")} onClick={() => setView("gpu")}>
+            <CalendarDays className="h-4 w-4 shrink-0" />
+            <span>Schedule</span>
+          </button>
+          <button type="button" className={navItemClass(view === "keys")} onClick={() => setView("keys")}>
+            <KeyRound className="h-4 w-4 shrink-0" />
+            <span>API keys</span>
+          </button>
+          <button type="button" className={navItemClass(view === "history")} onClick={() => setView("history")}>
+            <BarChart3 className="h-4 w-4 shrink-0" />
+            <span>History</span>
+          </button>
+          {isAdmin && (
+            <button type="button" className={navItemClass(view === "users")} onClick={() => setView("users")}>
+              <Users className="h-4 w-4 shrink-0" />
+              <span>Users</span>
+            </button>
+          )}
+        </nav>
+
+        <div className="mx-2 border-t max-md:hidden" />
+        <div className="flex min-h-0 flex-1 flex-col px-2 py-3 max-md:hidden">
+          <div className="flex items-center justify-between px-2.5 py-1.5">
+            <p className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Nodes</p>
+            {isAdmin && (
+              <button
+                type="button"
+                className="rounded-md p-1 text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                onClick={() => setAddOpen(true)}
+                aria-label="Add node"
+                title="Add node"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="relative mb-2">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              className="h-9 w-full rounded-md border border-input bg-card pr-3 pl-8 text-xs outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
+              placeholder="Search nodes..."
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </div>
+          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
+            {visibleServers.map((server) => {
+              const item = fleet.find((entry) => entry.server.id === server.id);
+              const active = server.id === currentServerId;
+              return (
+                <button
+                  key={server.id}
+                  className={navItemClass(active)}
+                  onClick={() => selectServer(server.id)}
+                  onContextMenu={isAdmin ? (event) => {
+                    event.preventDefault();
+                    setServerMenu({ server, x: event.clientX, y: event.clientY });
+                  } : undefined}
+                >
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${item?.online ? "bg-status-success-fg" : "bg-destructive"}`} />
+                  <span className="truncate">{server.name}</span>
+                </button>
+              );
+            })}
+            {visibleServers.length === 0 && (
+              <p className="px-2.5 py-3 text-xs text-muted-foreground">No nodes found.</p>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-4">
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-sm font-semibold">{viewTitle}</h1>
+            <StatusPill tone={current?.online ? "success" : current?.server ? "danger" : "neutral"}>
+              {current?.server?.name || "No node selected"}
+            </StatusPill>
+          </div>
+          <div className="flex-1" />
+          <div className="relative hidden max-md:block">
+            <Server className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <select
+              className="h-9 max-w-40 rounded-md border border-input bg-card pr-7 pl-8 text-xs outline-none focus:border-ring focus:ring-2 focus:ring-accent-subtle"
+              value={currentServerId}
+              onChange={(event) => selectServer(event.target.value)}
+              aria-label="Selected node"
+            >
+              {servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
+            </select>
+          </div>
+          <div className="relative" ref={settingsRef}>
             <button
               type="button"
-              className="settings-button"
-              aria-label="Settings menu"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-status-info-bg text-xs font-medium text-status-info-fg outline-none transition-shadow focus:ring-2 focus:ring-ring"
+              aria-label="Account menu"
               aria-expanded={settingsOpen}
               aria-haspopup="menu"
-              title="Settings menu"
+              title={auth.user}
               onClick={() => setSettingsOpen((open) => !open)}
             >
-              <MenuIcon />
+              {userInitials(auth.user)}
             </button>
             {settingsOpen && (
-              <div className="settings-popover" role="menu">
+              <div className="absolute top-10 right-0 z-40 w-64 rounded-lg border bg-popover p-1.5 text-popover-foreground shadow-lg" role="menu">
+                <div className="flex items-center gap-2.5 px-2.5 py-2">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-status-info-bg text-[13px] font-medium text-status-info-fg">
+                    {userInitials(auth.user)}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-medium">{auth.user}</p>
+                    <p className="text-[11px] text-muted-foreground capitalize">{auth.role}</p>
+                  </div>
+                </div>
+                <div className="my-1 border-t" />
                 <button
                   type="button"
                   role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] hover:bg-accent"
                   onClick={() => {
                     setSettingsOpen(false);
                     setPasswordOpen(true);
                   }}
                 >
+                  <LockKeyhole className="h-4 w-4" />
                   Change password
                 </button>
-                <button type="button" role="menuitem" onClick={logout}>
-                  Log out
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-destructive hover:bg-status-danger-bg"
+                  onClick={logout}
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign out
                 </button>
               </div>
-            )}
-          </div>
-        </div>
-        <input
-          className="sidebar-search"
-          placeholder="Search nodes..."
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
-        <div className="nav-title">Nodes</div>
-        <div className="server-list">
-          {visibleServers.map((server) => {
-            const item = fleet.find((entry) => entry.server.id === server.id);
-            return (
-              <button
-                key={server.id}
-                className={`server-row ${server.id === currentServerId ? "active" : ""}`}
-                onClick={() => selectServer(server.id)}
-                onContextMenu={isAdmin ? (e) => {
-                  e.preventDefault();
-                  setServerMenu({ server, x: e.clientX, y: e.clientY });
-                } : undefined}
-              >
-                <span className={`server-dot ${item?.online ? "online" : "offline"}`} />
-                <span className="server-name">{server.name}</span>
-              </button>
-            );
-          })}
-        </div>
-        {isAdmin && (
-          <button className="sidebar-add" onClick={() => setAddOpen(true)}>
-            Add server
-          </button>
-        )}
-      </aside>
-
-      <main className="workspace">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">{view === "history" ? "History" : "Nodes"}</p>
-            <h1>{view === "history" ? "GPU activity dashboard" : current?.server?.name || "No server selected"}</h1>
-            {view !== "history" && !current?.server && <p className="muted">Add a GPUardian node to begin.</p>}
-          </div>
-          <div className="topbar-actions">
-            <button className={view === "gpu" ? "tab active" : "tab"} onClick={() => setView("gpu")}>
-              Schedule
-            </button>
-            <button className={view === "keys" ? "tab active" : "tab"} onClick={() => setView("keys")}>
-              Key
-            </button>
-            <button className={view === "history" ? "tab active" : "tab"} onClick={() => setView("history")}>
-              Dashboard
-            </button>
-            {isAdmin && (
-              <button className={view === "users" ? "tab active" : "tab"} onClick={() => setView("users")}>
-                Users
-              </button>
             )}
           </div>
         </header>
@@ -1546,9 +1632,10 @@ function compactDateTime(value) {
 
 function LoadingScreen() {
   return (
-    <div className="login-shell">
-      <div className="login-panel">
-        <BrandLockup className="login-brand" showMark={false} />
+    <div className="grid min-h-screen place-items-center bg-background p-6">
+      <div className="flex items-center gap-2 rounded-lg border bg-card px-5 py-4 shadow-sm">
+        <ShieldCheck className="h-5 w-5" />
+        <span className="text-sm font-semibold">GPUardian</span>
       </div>
     </div>
   );
@@ -1571,9 +1658,9 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
   }
 
   return (
-    <div className="login-shell">
+    <div className="grid min-h-screen place-items-center bg-background p-6">
       <form
-        className="login-panel"
+        className="grid w-full max-w-sm gap-4 rounded-lg border bg-card p-6 shadow-sm"
         onSubmit={async (event) => {
           event.preventDefault();
           if (pending) {
@@ -1596,13 +1683,23 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
           }
         }}
       >
-        <div>
-          <BrandLockup className="login-brand" showMark={false} />
-          <h1>{creating ? "Create account" : "Sign in"}</h1>
+        <div className="mb-1">
+          <div className="mb-5 flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5" />
+            <div className="flex flex-col">
+              <span className="text-sm leading-tight font-semibold">GPUardian</span>
+              <span className="text-[11px] leading-tight text-muted-foreground">GPU access control</span>
+            </div>
+          </div>
+          <h1 className="text-lg font-semibold tracking-tight">{creating ? "Create account" : "Sign in"}</h1>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {creating ? "Create your gateway account." : "Sign in to manage GPU reservations."}
+          </p>
         </div>
-        <label>
+        <label className="grid gap-1.5 text-xs font-medium">
           Username
           <input
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
             autoComplete="username"
             value={form.username}
             onChange={(event) => setForm({ ...form, username: event.target.value })}
@@ -1610,9 +1707,10 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
             required
           />
         </label>
-        <label>
+        <label className="grid gap-1.5 text-xs font-medium">
           Password
           <input
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
             autoComplete={creating ? "new-password" : "current-password"}
             type="password"
             value={form.password}
@@ -1622,9 +1720,10 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
           />
         </label>
         {creating && (
-          <label>
+          <label className="grid gap-1.5 text-xs font-medium">
             Confirm password
             <input
+              className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
               autoComplete="new-password"
               type="password"
               value={form.confirmPassword}
@@ -1634,14 +1733,14 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
             />
           </label>
         )}
-        {(localError || error) && <div className="login-error">{localError || error}</div>}
-        <button className="primary-button" disabled={pending}>
+        {(localError || error) && <div className="rounded-md bg-status-danger-bg px-3 py-2 text-xs text-status-danger-fg" role="alert">{localError || error}</div>}
+        <button className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50" disabled={pending}>
           {pending ? (creating ? "Creating account" : "Signing in") : (creating ? "Create account" : "Sign in")}
         </button>
         {registrationEnabled && (
-          <div className="login-switch-row">
+          <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
             <span>{creating ? "Already have an account?" : "New to GPUardian?"}</span>
-            <button type="button" className="login-switch-button" onClick={switchMode} disabled={pending}>
+            <button type="button" className="font-medium text-accent-strong hover:underline disabled:opacity-50" onClick={switchMode} disabled={pending}>
               {creating ? "Sign in" : "Create account"}
             </button>
           </div>
@@ -1651,32 +1750,26 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
   );
 }
 
-function BrandLockup({ className, showMark = true }) {
+const statusPillClasses = {
+  info: "bg-status-info-bg text-status-info-fg",
+  success: "bg-status-success-bg text-status-success-fg",
+  warning: "bg-status-warning-bg text-status-warning-fg",
+  danger: "bg-status-danger-bg text-status-danger-fg",
+  neutral: "bg-status-neutral-bg text-status-neutral-fg",
+};
+
+function StatusPill({ tone = "neutral", children, className = "" }) {
   return (
-    <div className={className}>
-      {showMark && <img className="brand-mark" src="/gpuardian-icon.svg" alt="" />}
-      <span>GPUardian</span>
-    </div>
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] leading-5 font-medium whitespace-nowrap ${statusPillClasses[tone] || statusPillClasses.neutral} ${className}`.trim()}>
+      {children}
+    </span>
   );
 }
 
-function MenuIcon() {
-  return (
-    <svg
-      className="settings-icon"
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        d="M4 7h16M4 12h16M4 17h16"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="2"
-      />
-    </svg>
-  );
+function userInitials(value) {
+  const text = String(value || "U").trim();
+  const parts = text.split(/[\s@._-]+/).filter(Boolean);
+  return `${parts[0]?.[0] || "U"}${parts[1]?.[0] || parts[0]?.[1] || ""}`.toUpperCase();
 }
 
 function GPUCard({ gpu, selected, onClick }) {

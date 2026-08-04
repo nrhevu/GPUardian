@@ -9,11 +9,14 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "lucide-react": "^0.469.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "4.0.17",
     "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "4.0.17",
     "vite": "^6.0.7"
   }
 }

@@ -1,22 +1,23 @@
 :root {
   color-scheme: light;
-  --bg: #f6f8fa;
+  --bg: #faf9f5;
   --surface: #ffffff;
-  --sidebar: #0e1821;
-  --sidebar-soft: #17232f;
-  --text: #111827;
-  --muted: #6b7280;
-  --line: #e2e8f0;
-  --line-strong: #cbd5e1;
-  --green: #16a34a;
-  --green-soft: #dcfce7;
-  --amber: #f59e0b;
-  --amber-soft: #fef3c7;
+  --sidebar: #f3f2ec;
+  --sidebar-soft: #ffffff;
+  --text: #1c1c1a;
+  --muted: #8a897f;
+  --line: rgba(0, 0, 0, 0.12);
+  --line-strong: rgba(0, 0, 0, 0.22);
+  --green: #3b7d18;
+  --green-soft: #eaf3de;
+  --amber: #ef9f27;
+  --amber-soft: #faeeda;
   --orange: #f97316;
   --orange-soft: #ffedd5;
-  --red: #ef4444;
-  --red-soft: #fee2e2;
-  --shadow: 0 16px 38px rgba(15, 23, 42, 0.11);
+  --red: #e24b4a;
+  --red-soft: #fcebeb;
+  --accent: #378add;
+  --shadow: 0 16px 38px rgba(28, 28, 26, 0.11);
   --font-sans:
     ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
     "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
