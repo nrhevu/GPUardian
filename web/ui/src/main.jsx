@@ -1869,9 +1869,8 @@ function ScheduleBlockButton({ block, colors = reservationPalette[0], nowMS, onO
   const gpuText = scheduleGPUText(block.gpus);
   const isActive = block.start.getTime() <= nowMS && block.end.getTime() > nowMS;
   const duration = durationLabel(isActive ? block.end.getTime() - nowMS : block.durationMinutes * 60 * 1000);
-  const durationKind = isActive ? "remaining" : "duration";
   const showSpan = block.density === "detailed" || block.density === "extended";
-  const description = `${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)} · ${duration} ${durationKind} · ${gpuText}`;
+  const description = `${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)} · ${duration} · ${gpuText}`;
   return (
     <button
       type="button"
@@ -1896,7 +1895,7 @@ function ScheduleBlockButton({ block, colors = reservationPalette[0], nowMS, onO
       </div>
       {showSpan && (
         <div className="booking-span">
-          <span className="booking-duration">{duration}<small>{durationKind}</small></span>
+          <span className="booking-duration">{duration}</span>
           <span className="booking-gpus">{gpuText}</span>
         </div>
       )}
