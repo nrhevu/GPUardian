@@ -1759,13 +1759,6 @@ function LoginScreen({ error, registrationEnabled, theme, onLogin, onRegister, o
         }}
       >
         <div className="mb-1">
-          <div className="mb-5 flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5" />
-            <div className="flex flex-col">
-              <span className="text-sm leading-tight font-semibold">GPUardian</span>
-              <span className="text-[11px] leading-tight text-muted-foreground">GPU access control</span>
-            </div>
-          </div>
           <h1 className="text-lg font-semibold tracking-tight">{creating ? "Create account" : "Sign in"}</h1>
           <p className="mt-1 text-xs text-muted-foreground">
             {creating ? "Create your gateway account." : "Sign in to manage GPU reservations."}
