@@ -1,0 +1,757 @@
+@import "tailwindcss";
+
+/*
+ * Console design tokens — "North Star" palette ported from the OneNexus
+ * tenant-admin console. Warm off-white surfaces, near-black ink, a single blue
+ * accent, and four status hues.
+ */
+@theme {
+  --color-background: #faf9f5;
+  --color-foreground: #1c1c1a;
+
+  --color-card: #ffffff;
+  --color-card-foreground: #1c1c1a;
+
+  --color-popover: #ffffff;
+  --color-popover-foreground: #1c1c1a;
+
+  --color-primary: #1c1c1a;
+  --color-primary-foreground: #faf9f5;
+
+  --color-secondary: #f3f2ec;
+  --color-secondary-foreground: #1c1c1a;
+
+  --color-muted: #f3f2ec;
+  --color-muted-foreground: #8a897f;
+
+  --color-accent: #f3f2ec;
+  --color-accent-foreground: #1c1c1a;
+
+  --color-destructive: #e24b4a;
+  --color-destructive-foreground: #ffffff;
+
+  --color-border: rgba(0, 0, 0, 0.12);
+  --color-input: rgba(0, 0, 0, 0.22);
+  --color-ring: #378add;
+
+  --color-accent-brand: #378add;
+  --color-accent-brand-foreground: #ffffff;
+  --color-accent-subtle: #e6f1fb;
+  --color-accent-strong: #0c447c;
+
+  --color-status-info-bg: #e6f1fb;
+  --color-status-info-fg: #0c447c;
+  --color-status-success-bg: #eaf3de;
+  --color-status-success-fg: #27500a;
+  --color-status-warning-bg: #faeeda;
+  --color-status-warning-fg: #633806;
+  --color-status-warning-fill: #ef9f27;
+  --color-status-danger-bg: #fcebeb;
+  --color-status-danger-fg: #791f1f;
+  --color-status-neutral-bg: #f3f2ec;
+  --color-status-neutral-fg: #5f5e5a;
+
+  --color-sidebar: #f3f2ec;
+  --color-sidebar-foreground: #5f5e5a;
+  --color-sidebar-primary: #ffffff;
+  --color-sidebar-primary-foreground: #1c1c1a;
+  --color-sidebar-accent: #ffffff;
+  --color-sidebar-accent-foreground: #1c1c1a;
+  --color-sidebar-border: rgba(0, 0, 0, 0.12);
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas,
+    monospace;
+}
+
+/* GitHub dark-default palette. The @theme block emits its tokens as CSS custom
+   properties under :root, so these overrides re-theme Tailwind utilities. */
+:root {
+  color-scheme: light;
+}
+
+:root.dark {
+  color-scheme: dark;
+
+  --color-background: #0d1117;
+  --color-foreground: #c9d1d9;
+
+  --color-card: #161b22;
+  --color-card-foreground: #c9d1d9;
+
+  --color-popover: #161b22;
+  --color-popover-foreground: #c9d1d9;
+
+  --color-primary: #f0f6fc;
+  --color-primary-foreground: #0d1117;
+
+  --color-secondary: #21262d;
+  --color-secondary-foreground: #c9d1d9;
+
+  --color-muted: #21262d;
+  --color-muted-foreground: #8b949e;
+
+  --color-accent: #21262d;
+  --color-accent-foreground: #f0f6fc;
+
+  --color-destructive: #da3633;
+  --color-destructive-foreground: #ffffff;
+
+  --color-border: #30363d;
+  --color-input: #484f58;
+  --color-ring: #58a6ff;
+
+  --color-accent-brand: #58a6ff;
+  --color-accent-brand-foreground: #ffffff;
+  --color-accent-subtle: #1f2d41;
+  --color-accent-strong: #79c0ff;
+
+  --color-status-info-bg: #1f2d41;
+  --color-status-info-fg: #58a6ff;
+  --color-status-success-bg: #1b2a20;
+  --color-status-success-fg: #3fb950;
+  --color-status-warning-bg: #2d2618;
+  --color-status-warning-fg: #d29922;
+  --color-status-warning-fill: #d29922;
+  --color-status-danger-bg: #351b1d;
+  --color-status-danger-fg: #f85149;
+  --color-status-neutral-bg: #21262d;
+  --color-status-neutral-fg: #8b949e;
+
+  --color-sidebar: #010409;
+  --color-sidebar-foreground: #8b949e;
+  --color-sidebar-primary: #21262d;
+  --color-sidebar-primary-foreground: #f0f6fc;
+  --color-sidebar-accent: #161b22;
+  --color-sidebar-accent-foreground: #f0f6fc;
+  --color-sidebar-border: #21262d;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="menuitem"],
+  [role="option"],
+  [role="tab"],
+  a[href],
+  summary {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-muted-foreground) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-muted);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-muted-foreground);
+  }
+}
+
+/*
+ * The schedule timeline uses absolute positioning and inline CSS custom
+ * properties for booking-block colors — these can't be expressed with Tailwind
+ * utilities, so they live here.
+ */
+.timeline-canvas {
+  position: relative;
+  min-height: 100%;
+}
+
+.hour-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  min-height: 28px;
+}
+
+.hour-row > time {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  column-gap: 3px;
+  align-items: start;
+  padding-top: 4px;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hour-day-offset {
+  text-align: left;
+}
+
+.hour-row > span {
+  border-bottom: 1px solid var(--color-border);
+  border-left: 1px solid var(--color-border);
+}
+
+.timeline-events {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  left: 74px;
+}
+
+.timeline-empty {
+  position: absolute;
+  top: 14px;
+  right: 10px;
+  left: 74px;
+  border: 1px solid var(--color-status-success-fg);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--color-status-success-fg);
+  background: var(--color-status-success-bg);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.booking-block {
+  position: absolute;
+  appearance: none;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 0;
+  gap: 2px;
+  overflow: hidden;
+  border: 1px solid var(--booking-border, #fecaca);
+  border-radius: 8px;
+  padding: 5px 8px;
+  color: var(--booking-text, #991b1b);
+  background: var(--booking-bg, #fee2e2);
+  box-shadow: 0 1px 2px rgba(153, 27, 27, 0.08);
+  text-align: left;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.booking-block.compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+  padding: 0 6px;
+}
+
+.booking-block:hover {
+  border-color: var(--booking-text, #dc2626);
+  background: var(--booking-hover, #fecaca);
+}
+
+.booking-block:focus-visible {
+  outline: 3px solid var(--booking-focus, rgba(220, 38, 38, 0.18));
+  outline-offset: 2px;
+}
+
+.booking-topline {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.booking-block.compact .booking-topline {
+  flex: 1 1 auto;
+}
+
+.booking-block strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.booking-block.compact strong {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.booking-block.extended strong {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.booking-span {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 26px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  overflow: hidden;
+  padding: 6px 4px 6px 17px;
+}
+
+.booking-span::before {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 5px;
+  width: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+  opacity: 0.2;
+}
+
+.booking-duration {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.booking-block.extended .booking-duration {
+  font-size: 15px;
+}
+
+.booking-gpus {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.15;
+  opacity: 0.72;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.booking-footer {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.booking-block .booking-time {
+  flex: 0 0 auto;
+  color: var(--booking-text, #b91c1c);
+  font-size: 11px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.booking-block.compact .booking-time {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.booking-block.compact .booking-footer {
+  margin-top: 0;
+}
+
+.booking-block .booking-holder {
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  color: var(--booking-text, #991b1b);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.15;
+  opacity: 0.72;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.booking-block.compact .booking-holder {
+  display: none;
+}
+
+:root.dark .booking-block {
+  border-color: color-mix(in srgb, var(--booking-border, #fca5a5) 55%, var(--color-border));
+  color: color-mix(in srgb, var(--booking-text, #991b1b) 22%, var(--color-foreground));
+  background: color-mix(in srgb, var(--booking-bg, #fee2e2) 16%, var(--color-card));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+:root.dark .booking-block:hover {
+  border-color: color-mix(in srgb, var(--booking-border, #fca5a5) 75%, var(--color-foreground));
+  background: color-mix(in srgb, var(--booking-hover, #fecaca) 24%, var(--color-card));
+}
+
+:root.dark .booking-block:focus-visible {
+  outline-color: color-mix(in srgb, var(--booking-border, #fca5a5) 70%, transparent);
+}
+
+:root.dark .booking-block .booking-time,
+:root.dark .booking-block .booking-holder {
+  color: inherit;
+}
+
+/* The splitter drag bar between GPU grid and inspector */
+.splitter {
+  align-self: stretch;
+  justify-self: center;
+  width: 4px;
+  margin: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  cursor: col-resize;
+  transition: background 0.15s ease;
+  position: relative;
+}
+.splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0 -5px;
+}
+.splitter:hover,
+.splitter:active {
+  background: var(--color-border);
+}
+
+/* Utilization chart bars in the history session modal */
+.history-chart {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  align-items: end;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  padding: 8px;
+  background: linear-gradient(
+      to bottom,
+      transparent calc(50% - 0.5px),
+      var(--color-border) 50%,
+      transparent calc(50% + 0.5px)
+    ),
+    linear-gradient(to top, var(--color-muted), var(--color-card));
+}
+
+.history-chart span {
+  min-width: 3px;
+  flex: 1 1 5px;
+  max-width: 9px;
+  border-radius: 2px 2px 0 0;
+  background: var(--color-accent-strong);
+}
+
+/* Rule reference tooltip in history session modal */
+.history-rule-tooltip {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  z-index: 4;
+  display: grid;
+  visibility: hidden;
+  width: min(340px, calc(100vw - 96px));
+  gap: 8px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 11px 12px;
+  color: #f8fafc !important;
+  background: #17232f;
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.18);
+  font-weight: 400;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+
+.history-rule-reference:hover .history-rule-tooltip,
+.history-rule-reference:focus .history-rule-tooltip {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.history-rule-tooltip > strong {
+  font-size: 12px;
+}
+
+.history-rule-tooltip > span {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px;
+  color: #f8fafc;
+  font-size: 11px;
+}
+
+.history-rule-tooltip small {
+  color: #94a3b8;
+}
+
+.history-rule-tooltip b {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* OneNexus treatment for the retained behavior-heavy legacy components. */
+.dashboard-grid {
+  padding: 24px;
+}
+
+.content-panel,
+.inspector,
+.keys-panel,
+.schedule-card,
+.reserve-form,
+.history-list-panel {
+  border-color: var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+}
+
+.content-panel,
+.keys-panel,
+.history-list-panel {
+  padding: 20px;
+}
+
+.keys-panel,
+.history-page {
+  width: calc(100% - 48px);
+  max-width: 1152px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.history-page {
+  padding-top: 24px;
+}
+
+.history-summary-card {
+  min-height: 78px;
+  border-color: transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-muted);
+}
+
+.history-summary-card span,
+.muted,
+.eyebrow,
+.key-subtitle,
+.reserved-key-detail span {
+  color: var(--color-muted-foreground);
+}
+
+.history-list-panel,
+.history-table-row,
+.rules-table,
+.rules-table-row,
+.key-output,
+.modal,
+.success-panel {
+  background: var(--color-card);
+}
+
+.history-table-head,
+.history-load-more,
+.rules-table-header,
+.rules-toolbar,
+.history-filter-group,
+.modal-owner,
+.add-rule-fields input[readonly] {
+  background: var(--color-muted);
+}
+
+.history-table-row:hover,
+.rules-table-row:hover,
+.key-button:hover {
+  background: color-mix(in srgb, var(--color-muted) 60%, transparent);
+}
+
+.gpu-card,
+.gpu-card.reserved,
+.gpu-card.claimed {
+  border-color: var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-card);
+}
+
+.gpu-card:hover,
+.gpu-card.selected {
+  border-color: var(--color-accent-brand);
+  box-shadow: 0 0 0 2px var(--color-accent-subtle);
+}
+
+.gpu-card.selected .checkbox,
+.select-all-button.active .select-all-box {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+}
+
+.history-status,
+.reserved-key-status.completed {
+  color: var(--color-status-neutral-fg);
+  background: var(--color-status-neutral-bg);
+}
+
+.status-chip.available,
+.reserved-key-status.active,
+.history-status.active {
+  color: var(--color-status-success-fg);
+  background: var(--color-status-success-bg);
+}
+
+.status-chip.reserved,
+.reserved-key-status.unknown,
+.history-status.revoked {
+  color: var(--color-status-danger-fg);
+  background: var(--color-status-danger-bg);
+}
+
+.status-chip.claimed,
+.reserved-key-status.scheduled,
+.history-status.scheduled {
+  color: var(--color-status-warning-fg);
+  background: var(--color-status-warning-bg);
+}
+
+.primary-button,
+.tab.active {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+.small-button,
+.plain-button,
+.key-button,
+.select-all-button {
+  border-color: var(--color-input);
+  background: var(--color-card);
+}
+
+.danger-button {
+  border-color: var(--color-destructive);
+  background: var(--color-destructive);
+  color: var(--color-destructive-foreground);
+}
+
+.small-danger-button {
+  border-color: var(--color-status-danger-bg);
+  color: var(--color-status-danger-fg);
+}
+
+input,
+select,
+textarea,
+.history-filter-rule input,
+.history-filter-rule select,
+.history-result input,
+.history-result select,
+.history-result textarea {
+  border-color: var(--color-input);
+  border-radius: var(--radius-md);
+  color: var(--color-foreground);
+  background: var(--color-card);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 2px var(--color-accent-subtle);
+}
+
+.node-search-input {
+  padding-left: 2rem;
+}
+
+.modal-backdrop {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.modal,
+.success-panel {
+  border-radius: var(--radius-lg);
+}
+
+.modal header h2,
+.section-heading h2,
+.section-heading h3 {
+  font-weight: 500;
+}
+
+.banner,
+.modal-error,
+.form-warning,
+.revoke-summary {
+  border-color: var(--color-destructive);
+  color: var(--color-status-danger-fg);
+  background: var(--color-status-danger-bg);
+}
+
+.history-chart span {
+  background: var(--color-accent-brand);
+}
+
+@media (max-width: 760px) {
+  .dashboard-grid,
+  .keys-panel,
+  .history-page {
+    width: 100%;
+    padding: 16px;
+  }
+
+  .keys-panel,
+  .history-page {
+    margin: 0;
+  }
+}
