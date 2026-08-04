@@ -6,10 +6,12 @@ import {
   KeyRound,
   LockKeyhole,
   LogOut,
+  Moon,
   Plus,
   Search,
   Server,
   ShieldCheck,
+  Sun,
   Users,
 } from "lucide-react";
 import "./styles.css";
@@ -27,10 +29,32 @@ const scheduleLaneGap = 2;
 const hourMs = 60 * 60 * 1000;
 const dayMs = 24 * hourMs;
 const historyPageSize = 50;
+const themeStorageKey = "gpuardian-theme";
 
 let historyFilterID = 0;
 
+function readStoredTheme() {
+  try {
+    const theme = window.localStorage.getItem(themeStorageKey);
+    return theme === "light" || theme === "dark" ? theme : null;
+  } catch {
+    return null;
+  }
+}
+
+function initialTheme() {
+  const stored = readStoredTheme();
+  if (stored) return stored;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
 function App() {
+  const [theme, setTheme] = useState(initialTheme);
+  const [themeIsExplicit, setThemeIsExplicit] = useState(() => readStoredTheme() !== null);
   const [auth, setAuth] = useState({ checking: true, authenticated: false, user: "", role: "" });
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [servers, setServers] = useState([]);
@@ -70,6 +94,30 @@ function App() {
   const settingsRef = useRef(null);
   const historyRequestRef = useRef(0);
   const dashboardRef = useRef(null);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (themeIsExplicit) return undefined;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (event) => setTheme(event.matches ? "dark" : "light");
+    media.addEventListener("change", handleChange);
+    return () => media.removeEventListener("change", handleChange);
+  }, [themeIsExplicit]);
+
+  function toggleTheme() {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    applyTheme(nextTheme);
+    setTheme(nextTheme);
+    setThemeIsExplicit(true);
+    try {
+      window.localStorage.setItem(themeStorageKey, nextTheme);
+    } catch {
+      // The selected theme still applies for this page when storage is blocked.
+    }
+  }
 
   // Draggable splitter between the GPU grid (left) and the inspector/schedule
   // (right). startInspectorDrag attaches mousemove/mouseup listeners on the
@@ -676,9 +724,11 @@ function App() {
       <LoginScreen
         error={loginError}
         registrationEnabled={registrationEnabled}
+        theme={theme}
         onLogin={login}
         onRegister={register}
         onResetError={() => setLoginError("")}
+        onToggleTheme={toggleTheme}
       />
     );
   }
@@ -701,7 +751,11 @@ function App() {
     <div className="flex h-screen overflow-hidden bg-background max-md:flex-col">
       <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r bg-sidebar max-md:relative max-md:h-auto max-md:w-full">
         <div className="flex h-14 shrink-0 items-center gap-2 border-b px-3">
-          <ShieldCheck className="h-5 w-5 shrink-0" />
+          <img
+            className="h-7 w-7 shrink-0 rounded-md"
+            src="/gpuardian-icon.svg"
+            alt="GPUardian"
+          />
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm leading-tight font-semibold">GPUardian</span>
             <span className="truncate text-[11px] leading-tight text-muted-foreground">GPU access control</span>
@@ -824,6 +878,18 @@ function App() {
                   </div>
                 </div>
                 <div className="my-1 border-t" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] hover:bg-accent"
+                  onClick={() => {
+                    toggleTheme();
+                    setSettingsOpen(false);
+                  }}
+                >
+                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  {theme === "dark" ? "Light theme" : "Dark theme"}
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -1641,7 +1707,7 @@ function LoadingScreen() {
   );
 }
 
-function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetError }) {
+function LoginScreen({ error, registrationEnabled, theme, onLogin, onRegister, onResetError, onToggleTheme }) {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ username: "", password: "", confirmPassword: "" });
   const [localError, setLocalError] = useState("");
@@ -1658,7 +1724,16 @@ function LoginScreen({ error, registrationEnabled, onLogin, onRegister, onResetE
   }
 
   return (
-    <div className="grid min-h-screen place-items-center bg-background p-6">
+    <div className="relative grid min-h-screen place-items-center bg-background p-6">
+      <button
+        type="button"
+        className="absolute top-4 right-4 flex h-9 w-9 items-center justify-center rounded-md border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:ring-2 focus:ring-ring focus:outline-none"
+        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+        title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+        onClick={onToggleTheme}
+      >
+        {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      </button>
       <form
         className="grid w-full max-w-sm gap-4 rounded-lg border bg-card p-6 shadow-sm"
         onSubmit={async (event) => {

@@ -70,6 +70,69 @@
     monospace;
 }
 
+/* GitHub dark-default palette. The @theme block emits its tokens as CSS custom
+   properties under :root, so these overrides re-theme Tailwind utilities. */
+:root {
+  color-scheme: light;
+}
+
+:root.dark {
+  color-scheme: dark;
+
+  --color-background: #0d1117;
+  --color-foreground: #c9d1d9;
+
+  --color-card: #161b22;
+  --color-card-foreground: #c9d1d9;
+
+  --color-popover: #161b22;
+  --color-popover-foreground: #c9d1d9;
+
+  --color-primary: #f0f6fc;
+  --color-primary-foreground: #0d1117;
+
+  --color-secondary: #21262d;
+  --color-secondary-foreground: #c9d1d9;
+
+  --color-muted: #21262d;
+  --color-muted-foreground: #8b949e;
+
+  --color-accent: #21262d;
+  --color-accent-foreground: #f0f6fc;
+
+  --color-destructive: #da3633;
+  --color-destructive-foreground: #ffffff;
+
+  --color-border: #30363d;
+  --color-input: #484f58;
+  --color-ring: #58a6ff;
+
+  --color-accent-brand: #58a6ff;
+  --color-accent-brand-foreground: #ffffff;
+  --color-accent-subtle: #1f2d41;
+  --color-accent-strong: #79c0ff;
+
+  --color-status-info-bg: #1f2d41;
+  --color-status-info-fg: #58a6ff;
+  --color-status-success-bg: #1b2a20;
+  --color-status-success-fg: #3fb950;
+  --color-status-warning-bg: #2d2618;
+  --color-status-warning-fg: #d29922;
+  --color-status-warning-fill: #d29922;
+  --color-status-danger-bg: #351b1d;
+  --color-status-danger-fg: #f85149;
+  --color-status-neutral-bg: #21262d;
+  --color-status-neutral-fg: #8b949e;
+
+  --color-sidebar: #010409;
+  --color-sidebar-foreground: #8b949e;
+  --color-sidebar-primary: #21262d;
+  --color-sidebar-primary-foreground: #f0f6fc;
+  --color-sidebar-accent: #161b22;
+  --color-sidebar-accent-foreground: #f0f6fc;
+  --color-sidebar-border: #21262d;
+}
+
 @layer base {
   * {
     border-color: var(--color-border);
@@ -179,11 +242,11 @@
   top: 14px;
   right: 10px;
   left: 74px;
-  border: 1px solid #bbf7d0;
+  border: 1px solid var(--color-status-success-fg);
   border-radius: 8px;
   padding: 8px 10px;
-  color: #15803d;
-  background: #f0fdf4;
+  color: var(--color-status-success-fg);
+  background: var(--color-status-success-bg);
   font-size: 12px;
   font-weight: 500;
 }
@@ -352,6 +415,27 @@
   display: none;
 }
 
+:root.dark .booking-block {
+  border-color: color-mix(in srgb, var(--booking-border, #fca5a5) 55%, var(--color-border));
+  color: color-mix(in srgb, var(--booking-text, #991b1b) 22%, var(--color-foreground));
+  background: color-mix(in srgb, var(--booking-bg, #fee2e2) 16%, var(--color-card));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+:root.dark .booking-block:hover {
+  border-color: color-mix(in srgb, var(--booking-border, #fca5a5) 75%, var(--color-foreground));
+  background: color-mix(in srgb, var(--booking-hover, #fecaca) 24%, var(--color-card));
+}
+
+:root.dark .booking-block:focus-visible {
+  outline-color: color-mix(in srgb, var(--booking-border, #fca5a5) 70%, transparent);
+}
+
+:root.dark .booking-block .booking-time,
+:root.dark .booking-block .booking-holder {
+  color: inherit;
+}
+
 /* The splitter drag bar between GPU grid and inspector */
 .splitter {
   align-self: stretch;
@@ -393,7 +477,7 @@
       var(--color-border) 50%,
       transparent calc(50% + 0.5px)
     ),
-    linear-gradient(to top, var(--color-muted), #fff);
+    linear-gradient(to top, var(--color-muted), var(--color-card));
 }
 
 .history-chart span {
