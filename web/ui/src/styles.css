@@ -1783,12 +1783,23 @@ h2 {
 }
 
 .booking-duration {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
   overflow: hidden;
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.booking-duration small {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  opacity: 0.62;
+  text-transform: uppercase;
 }
 
 .booking-block.extended .booking-duration {

@@ -1753,6 +1753,7 @@ function Legend() {
 function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
   const [selectedDay, setSelectedDay] = useState(() => dateInputValue(new Date()));
   const [fitHours, setFitHours] = useState(minCalendarHours);
+  const [nowMS, setNowMS] = useState(() => Date.now());
   const calendarRef = useRef(null);
   // Measure the day-calendar viewport and derive how many hour rows fit, so
   // the timeline fills the available height at any window size — spilling past
@@ -1766,7 +1767,11 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
-  const now = new Date();
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMS(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const now = new Date(nowMS);
   const dayStart = parseDateInput(selectedDay);
   const dayEnd = new Date(dayStart.getTime() + dayMs);
   const isToday = selectedDay === dateInputValue(now);
@@ -1848,6 +1853,7 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
                 key={block.id}
                 block={block}
                 colors={colorByUser.get(reservationColorKey(block))}
+                nowMS={nowMS}
                 onOpen={onOpen}
               />
             ))}
@@ -1859,11 +1865,13 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
   );
 }
 
-function ScheduleBlockButton({ block, colors = reservationPalette[0], onOpen }) {
+function ScheduleBlockButton({ block, colors = reservationPalette[0], nowMS, onOpen }) {
   const gpuText = scheduleGPUText(block.gpus);
-  const duration = durationLabel(block.durationMinutes * 60 * 1000);
+  const isActive = block.start.getTime() <= nowMS && block.end.getTime() > nowMS;
+  const duration = durationLabel(isActive ? block.end.getTime() - nowMS : block.durationMinutes * 60 * 1000);
+  const durationKind = isActive ? "remaining" : "duration";
   const showSpan = block.density === "detailed" || block.density === "extended";
-  const description = `${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)} · ${gpuText}`;
+  const description = `${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)} · ${duration} ${durationKind} · ${gpuText}`;
   return (
     <button
       type="button"
@@ -1888,7 +1896,7 @@ function ScheduleBlockButton({ block, colors = reservationPalette[0], onOpen }) 
       </div>
       {showSpan && (
         <div className="booking-span">
-          <span className="booking-duration">{duration}</span>
+          <span className="booking-duration">{duration}<small>{durationKind}</small></span>
           <span className="booking-gpus">{gpuText}</span>
         </div>
       )}
