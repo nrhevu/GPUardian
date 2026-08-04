@@ -19,6 +19,7 @@
 !web/ui/package.json
 !web/ui/package-lock.json
 !web/ui/index.html
+!web/ui/vite.config.js
 !web/ui/src/
 !web/ui/src/**
 !web/ui/public/

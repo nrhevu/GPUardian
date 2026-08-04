@@ -10,6 +10,7 @@ WORKDIR /src/web/ui
 COPY web/ui/package.json web/ui/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY web/ui/index.html ./
+COPY web/ui/vite.config.js ./
 COPY web/ui/public ./public
 COPY web/ui/src ./src
 RUN npm run build
