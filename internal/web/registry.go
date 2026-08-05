@@ -153,6 +153,34 @@ func (r *Registry) Delete(id string) error {
 	return r.saveLocked(filtered)
 }
 
+func (r *Registry) Rename(id, name string) (ServerRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	records, err := r.loadLocked()
+	if err != nil {
+		return ServerRecord{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ServerRecord{}, errors.New("server name is required")
+	}
+	if len(name) > maxServerNameBytes {
+		return ServerRecord{}, fmt.Errorf("server name must be at most %d bytes", maxServerNameBytes)
+	}
+	for i := range records {
+		if records[i].ID != id {
+			continue
+		}
+		records[i].Name = name
+		records[i].UpdatedAt = time.Now().UTC()
+		if err := r.saveLocked(records); err != nil {
+			return ServerRecord{}, err
+		}
+		return records[i], nil
+	}
+	return ServerRecord{}, os.ErrNotExist
+}
+
 func (r *Registry) loadLocked() ([]ServerRecord, error) {
 	if r.loaded {
 		return append([]ServerRecord(nil), r.records...), nil

@@ -641,7 +641,7 @@ func TestMigrationReopenWALAndRejectNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if _, err := store.DB().Exec("INSERT INTO schema_migrations(version,checksum,applied_at_ms) VALUES(6,'future',?)", time.Now().UnixMilli()); err != nil {
+	if _, err := store.DB().Exec("INSERT INTO schema_migrations(version,checksum,applied_at_ms) VALUES(7,'future',?)", time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

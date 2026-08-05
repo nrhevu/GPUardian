@@ -295,6 +295,13 @@ Skip TLS verify: disabled
 Use a node's actual certificate DNS name or IP. Do not enter `0.0.0.0`,
 `127.0.0.1`, or the web gateway port `8443`.
 
+Administrators can organize the shared node sidebar after registration. Use
+the folder button to create a group, drag nodes or groups to reorder them,
+drag a node onto a group to add it, and double-click a node or group name to
+rename it. Groups cannot be nested. Every signed-in user sees the same order
+and grouping, while each browser keeps its own collapsed/expanded state;
+non-administrators cannot change the shared layout.
+
 If registration fails:
 
 - `connection refused`: confirm the daemon is running, port `8192` is correct,
@@ -348,6 +355,7 @@ Back up these files as secrets:
 /var/lib/gpuardian-web/session.key
 /var/lib/gpuardian-web/user-key.key
 /var/lib/gpuardian-web/servers.json
+/var/lib/gpuardian-web/node-layout.json
 /var/lib/gpuardian-web/users.json
 ```
 

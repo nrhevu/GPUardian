@@ -139,6 +139,7 @@ type SessionFilter struct {
 
 type SearchExpression struct {
 	ServerID string        `json:"server_id,omitempty"`
+	Query    string        `json:"query,omitempty"`
 	Groups   []SearchGroup `json:"groups"`
 }
 

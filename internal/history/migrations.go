@@ -214,3 +214,25 @@ ALTER TABLE jobs ADD COLUMN runtime_kubernetes_namespace TEXT NOT NULL DEFAULT '
 ALTER TABLE jobs ADD COLUMN runtime_kubernetes_pod_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN runtime_kubernetes_container_name TEXT NOT NULL DEFAULT '';
 `
+
+const migrationV6 = `
+CREATE INDEX IF NOT EXISTS sessions_purpose_idx ON reservation_sessions(purpose COLLATE NOCASE);
+CREATE VIRTUAL TABLE IF NOT EXISTS session_purpose_fts USING fts5(
+  session_id UNINDEXED,
+  purpose,
+  tokenize='trigram'
+);
+DELETE FROM session_purpose_fts;
+INSERT INTO session_purpose_fts(session_id,purpose)
+  SELECT session_id,purpose FROM reservation_sessions;
+CREATE TRIGGER IF NOT EXISTS session_purpose_fts_insert AFTER INSERT ON reservation_sessions BEGIN
+  INSERT INTO session_purpose_fts(session_id,purpose) VALUES(new.session_id,new.purpose);
+END;
+CREATE TRIGGER IF NOT EXISTS session_purpose_fts_update AFTER UPDATE OF session_id,purpose ON reservation_sessions BEGIN
+  DELETE FROM session_purpose_fts WHERE session_id=old.session_id;
+  INSERT INTO session_purpose_fts(session_id,purpose) VALUES(new.session_id,new.purpose);
+END;
+CREATE TRIGGER IF NOT EXISTS session_purpose_fts_delete AFTER DELETE ON reservation_sessions BEGIN
+  DELETE FROM session_purpose_fts WHERE session_id=old.session_id;
+END;
+`

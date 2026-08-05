@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -97,7 +98,7 @@ func (s *Store) Search(ctx context.Context, expression SearchExpression, sort Se
 		summary.ReservedGPUHours = float64(reserved) / float64(time.Hour/time.Millisecond)
 		summary.TelemetryCoverage = float64(reservationObserved) / float64(reserved)
 	}
-	if len(expression.Groups) == 0 {
+	if len(expression.Groups) == 0 && strings.TrimSpace(expression.Query) == "" {
 		globalObserved, globalBusy, globalIntegral, hasGlobalMetrics, err := nodeWideGPUMetrics(ctx, tx, expression.ServerID)
 		if err != nil {
 			return DashboardSummary{}, nil, SearchCursor{}, err
@@ -247,6 +248,14 @@ func compileSearchExpression(expression SearchExpression) (string, []any, error)
 		groups = append(groups, "f.server_id=?")
 		args = append(args, serverID)
 	}
+	queryPredicate, queryArgs, err := compileFreeTextSearch(expression.Query)
+	if err != nil {
+		return "", nil, invalidFilter("%v", err)
+	}
+	if queryPredicate != "" {
+		groups = append(groups, queryPredicate)
+		args = append(args, queryArgs...)
+	}
 	total := 0
 	for groupIndex, group := range expression.Groups {
 		if len(group.Rules) == 0 {
@@ -274,6 +283,22 @@ func compileSearchExpression(expression SearchExpression) (string, []any, error)
 		return "1=1", nil, nil
 	}
 	return strings.Join(groups, " AND "), args, nil
+}
+
+func compileFreeTextSearch(value string) (string, []any, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil, nil
+	}
+	if len(value) > maxSearchStringBytes {
+		return "", nil, fmt.Errorf("search query must be at most %d bytes", maxSearchStringBytes)
+	}
+	if utf8.RuneCountInString(value) < 3 {
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+		return `f.purpose LIKE ? ESCAPE '\' COLLATE NOCASE`, []any{escaped + "%"}, nil
+	}
+	phrase := `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+	return "EXISTS (SELECT 1 FROM session_purpose_fts purpose_index WHERE purpose_index.session_id=f.session_id AND purpose_index.purpose MATCH ?)", []any{phrase}, nil
 }
 
 func compileSearchRule(rule SearchRule) (string, []any, error) {

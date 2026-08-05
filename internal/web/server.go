@@ -27,6 +27,7 @@ import (
 type Server struct {
 	Cfg      config.Config
 	Registry *Registry
+	Layout   *NodeLayoutStore
 	Users    *UserStore
 	Client   NodeAPI
 	History  *history.Store
@@ -59,6 +60,10 @@ type addServerRequest struct {
 	Endpoint      string `json:"endpoint"`
 	RootKey       string `json:"root_key"`
 	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"`
+}
+
+type renameServerRequest struct {
+	Name string `json:"name"`
 }
 
 type createUserRequest struct {
@@ -121,6 +126,7 @@ func New(cfg config.Config) *Server {
 	return &Server{
 		Cfg:            cfg,
 		Registry:       NewRegistry(cfg.WebRegistry, cfg.WebAllowInsecureNodes),
+		Layout:         NewNodeLayoutStore(filepath.Join(filepath.Dir(cfg.WebRegistry), "node-layout.json")),
 		Users:          NewUserStore(cfg.WebUsers),
 		Client:         NodeClient{Timeout: 4 * time.Second, AllowInsecureNodes: cfg.WebAllowInsecureNodes},
 		fleetCacheTTL:  time.Second,
@@ -233,6 +239,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/keys/", s.requireSession(s.handleKeys))
 	mux.HandleFunc("/api/servers", s.requireSession(s.handleServers))
 	mux.HandleFunc("/api/servers/", s.requireSession(s.handleServerAction))
+	mux.HandleFunc("/api/node-layout", s.requireSession(s.handleNodeLayout))
 	mux.HandleFunc("/api/fleet/snapshot", s.requireSession(s.handleFleetSnapshot))
 	mux.HandleFunc("/api/history/summary", s.requireSession(s.handleHistorySummary))
 	mux.HandleFunc("/api/history/search", s.requireSession(s.handleHistorySearch))
@@ -397,6 +404,46 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleNodeLayout(w http.ResponseWriter, r *http.Request) {
+	records, err := s.Registry.PublicList()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	serverIDs := make([]string, 0, len(records))
+	for _, record := range records {
+		serverIDs = append(serverIDs, record.ID)
+	}
+	switch r.Method {
+	case http.MethodGet:
+		layout, err := s.Layout.Get(serverIDs)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, layout)
+	case http.MethodPut:
+		session, _ := currentSession(r)
+		if session.Role != RoleAdmin {
+			writeJSONError(w, http.StatusForbidden, "admin access required")
+			return
+		}
+		var layout NodeLayout
+		if err := decodeJSONBody(r, &layout); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		stored, err := s.Layout.Update(layout, serverIDs)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, stored)
+	default:
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	session, _ := currentSession(r)
 	id, action, ok := splitServerAction(r.URL.Path)
@@ -414,6 +461,23 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case action == "" && r.Method == http.MethodPatch:
+		if session.Role != RoleAdmin {
+			writeJSONError(w, http.StatusForbidden, "admin access required")
+			return
+		}
+		var req renameServerRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		stored, err := s.Registry.Rename(id, req.Name)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.clearFleetCache()
+		writeJSON(w, http.StatusOK, publicServerRecord(stored))
 	case action == "" && r.Method == http.MethodDelete:
 		if session.Role != RoleAdmin {
 			writeJSONError(w, http.StatusForbidden, "admin access required")

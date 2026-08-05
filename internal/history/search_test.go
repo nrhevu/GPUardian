@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,6 +53,27 @@ func TestSearchExpressionFiltersSessionFactsAndJobs(t *testing.T) {
 		}
 		if summary.Sessions != 1 || len(sessions) != 1 || sessions[0].ID != "beta" {
 			t.Fatalf("unexpected server-scoped result: summary=%+v sessions=%+v", summary, sessions)
+		}
+	})
+
+	t.Run("free text searches session purpose only", func(t *testing.T) {
+		for _, query := range []string{"training alpha", "alpha", "NING AL", "tr"} {
+			_, sessions, _, err := store.Search(ctx, SearchExpression{Query: query}, SearchSort{}, 50, SearchCursor{})
+			if err != nil || len(sessions) != 1 || sessions[0].ID != "alpha" {
+				t.Fatalf("purpose query %q result=%+v err=%v", query, sessions, err)
+			}
+		}
+		var sessions []Session
+		var err error
+		for _, query := range []string{"evaluate.sh", "revoked", "2"} {
+			_, sessions, _, err = store.Search(ctx, SearchExpression{Query: query}, SearchSort{}, 50, SearchCursor{})
+			if err != nil || len(sessions) != 0 {
+				t.Fatalf("non-purpose query %q result=%+v err=%v", query, sessions, err)
+			}
+		}
+		_, sessions, _, err = store.Search(ctx, SearchExpression{Query: `alpha%' OR 1=1 --`}, SearchSort{}, 50, SearchCursor{})
+		if err != nil || len(sessions) != 0 {
+			t.Fatalf("literal free text result=%+v err=%v", sessions, err)
 		}
 	})
 
@@ -138,9 +160,63 @@ func TestSearchExpressionValidationAndCursor(t *testing.T) {
 	if _, _, _, err := store.Search(context.Background(), SearchExpression{}, SearchSort{Field: "private_sql", Direction: "asc"}, 10, SearchCursor{}); !errors.Is(err, ErrInvalidSearchFilter) {
 		t.Fatalf("sort validation error=%v", err)
 	}
+	if _, _, _, err := store.Search(context.Background(), SearchExpression{Query: strings.Repeat("x", maxSearchStringBytes+1)}, SearchSort{}, 10, SearchCursor{}); !errors.Is(err, ErrInvalidSearchFilter) {
+		t.Fatalf("query length error=%v", err)
+	}
 	revokedSummary, err := store.Summary(context.Background(), SessionFilter{Status: "revoked"})
 	if err != nil || revokedSummary.Sessions != 0 {
 		t.Fatalf("legacy status summary=%+v err=%v", revokedSummary, err)
+	}
+}
+
+func TestPurposeSearchMigrationBackfillsAndMaintainsIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	createSearchSession(t, store, "legacy", "node", "server", "alice", "Legacy Training Session", now.Add(-time.Hour), now.Add(time.Hour), []int{0})
+	if _, err := store.DB().Exec(`
+DROP TRIGGER session_purpose_fts_insert;
+DROP TRIGGER session_purpose_fts_update;
+DROP TRIGGER session_purpose_fts_delete;
+DROP TABLE session_purpose_fts;
+DROP INDEX sessions_purpose_idx;
+DELETE FROM schema_migrations WHERE version=6;
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, sessions, _, err := store.Search(context.Background(), SearchExpression{Query: "training"}, SearchSort{}, 50, SearchCursor{})
+	if err != nil || len(sessions) != 1 || sessions[0].ID != "legacy" {
+		t.Fatalf("backfilled search result=%+v err=%v", sessions, err)
+	}
+	if _, err := store.DB().Exec("UPDATE reservation_sessions SET purpose='Renamed Evaluation Session' WHERE session_id='legacy'"); err != nil {
+		t.Fatal(err)
+	}
+	_, sessions, _, err = store.Search(context.Background(), SearchExpression{Query: "evaluation"}, SearchSort{}, 50, SearchCursor{})
+	if err != nil || len(sessions) != 1 || sessions[0].ID != "legacy" {
+		t.Fatalf("updated search result=%+v err=%v", sessions, err)
+	}
+	_, sessions, _, err = store.Search(context.Background(), SearchExpression{Query: "training"}, SearchSort{}, 50, SearchCursor{})
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("stale search result=%+v err=%v", sessions, err)
+	}
+	if _, err := store.DB().Exec("DELETE FROM reservation_sessions WHERE session_id='legacy'"); err != nil {
+		t.Fatal(err)
+	}
+	_, sessions, _, err = store.Search(context.Background(), SearchExpression{Query: "evaluation"}, SearchSort{}, 50, SearchCursor{})
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("deleted search result=%+v err=%v", sessions, err)
 	}
 }
 

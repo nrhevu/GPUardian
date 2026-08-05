@@ -114,6 +114,30 @@ func TestGatewayRoleAuthorization(t *testing.T) {
 	if userAdd.Code != http.StatusForbidden {
 		t.Fatalf("user add server status = %d, body=%s", userAdd.Code, userAdd.Body.String())
 	}
+	userLayout := requestJSON(handler, http.MethodGet, "/api/node-layout", "", userCookie)
+	if userLayout.Code != http.StatusOK {
+		t.Fatalf("user get node layout status = %d, body=%s", userLayout.Code, userLayout.Body.String())
+	}
+	userUpdateLayout := requestJSON(handler, http.MethodPut, "/api/node-layout", `{"root":[],"groups":[]}`, userCookie)
+	if userUpdateLayout.Code != http.StatusForbidden {
+		t.Fatalf("user update node layout status = %d, body=%s", userUpdateLayout.Code, userUpdateLayout.Body.String())
+	}
+	adminUpdateLayout := requestJSON(handler, http.MethodPut, "/api/node-layout", `{"root":["`+serverID+`"],"groups":[]}`, adminCookie)
+	if adminUpdateLayout.Code != http.StatusOK {
+		t.Fatalf("admin update node layout status = %d, body=%s", adminUpdateLayout.Code, adminUpdateLayout.Body.String())
+	}
+	userRename := requestJSON(handler, http.MethodPatch, "/api/servers/"+serverID, `{"name":"renamed"}`, userCookie)
+	if userRename.Code != http.StatusForbidden {
+		t.Fatalf("user rename server status = %d, body=%s", userRename.Code, userRename.Body.String())
+	}
+	adminRename := requestJSON(handler, http.MethodPatch, "/api/servers/"+serverID, `{"name":"renamed"}`, adminCookie)
+	if adminRename.Code != http.StatusOK {
+		t.Fatalf("admin rename server status = %d, body=%s", adminRename.Code, adminRename.Body.String())
+	}
+	renamed, found, err := server.Registry.Get(serverID)
+	if err != nil || !found || renamed.Name != "renamed" {
+		t.Fatalf("renamed server = %+v, found=%v, err=%v", renamed, found, err)
+	}
 
 	userCreate := requestJSON(handler, http.MethodPost, "/api/users", `{"username":"bob","password":"secret"}`, userCookie)
 	if userCreate.Code != http.StatusForbidden {
