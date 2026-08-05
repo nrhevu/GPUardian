@@ -714,6 +714,38 @@ textarea:focus {
   padding-left: 2rem;
 }
 
+.history-search {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.625rem;
+  border: 1px solid var(--color-input);
+  border-radius: var(--radius-md);
+  padding: 0 0.75rem;
+  color: var(--color-foreground);
+  background: var(--color-card);
+}
+
+.history-search:focus-within {
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 2px var(--color-accent-subtle);
+}
+
+.history-search .history-search-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.history-search .history-search-input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
 .modal-backdrop {
   background: rgba(0, 0, 0, 0.7);
 }

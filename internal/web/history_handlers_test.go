@@ -142,6 +142,15 @@ func TestHistoryAPIReadForUsersAndResultOwnerOnly(t *testing.T) {
 		t.Fatalf("history search = %d %s", search.Code, search.Body.String())
 	}
 
+	querySearch := httptest.NewRecorder()
+	queryRequest := httptest.NewRequest(http.MethodPost, "/api/history/search", strings.NewReader(`{"filter":{"query":"training","groups":[]},"limit":50}`))
+	queryRequest.Header.Set("Content-Type", "application/json")
+	queryRequest.AddCookie(testSessionCookie(t, server, "bob", RoleUser))
+	handler.ServeHTTP(querySearch, queryRequest)
+	if querySearch.Code != http.StatusOK || !strings.Contains(querySearch.Body.String(), `"sessions":1`) || !strings.Contains(querySearch.Body.String(), `"purpose":"training"`) {
+		t.Fatalf("history query search = %d %s", querySearch.Code, querySearch.Body.String())
+	}
+
 	invalidSearch := httptest.NewRecorder()
 	invalidRequest := httptest.NewRequest(http.MethodPost, "/api/history/search", strings.NewReader(`{"filter":{"groups":[{"rules":[{"field":"private_sql","operator":"equals","value":"x"}]}]}}`))
 	invalidRequest.Header.Set("Content-Type", "application/json")

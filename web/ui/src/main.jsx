@@ -34,6 +34,12 @@ const dayMs = 24 * hourMs;
 const historyPageSize = 50;
 const themeStorageKey = "gpuardian-theme";
 const nodeGroupCollapseStorageKey = "gpuardian-collapsed-node-groups";
+const historyStartupCacheRootPrefix = "gpuardian-history-startup-";
+const historyStartupCachePrefix = `${historyStartupCacheRootPrefix}v1`;
+const historyStartupCacheMaxAge = 7 * dayMs;
+const historyStartupCacheMaxBytes = 1_500_000;
+const historyStartupCacheTotalBytes = 3_000_000;
+const historyStartupCacheMaxEntries = 6;
 
 let historyFilterID = 0;
 
@@ -63,6 +69,106 @@ function readCollapsedNodeGroups() {
   } catch {
     return new Set();
   }
+}
+
+function historyStartupCacheKey(user, serverID) {
+  return `${historyStartupCachePrefix}:${encodeURIComponent(user)}:${encodeURIComponent(serverID)}`;
+}
+
+function readHistoryStartupCache(user, serverID) {
+  if (!user || !serverID) return null;
+  const key = historyStartupCacheKey(user, serverID);
+  try {
+    const cached = JSON.parse(window.localStorage.getItem(key) || "null");
+    if (
+      !cached ||
+      !Number.isFinite(cached.saved_at) ||
+      Date.now() - cached.saved_at > historyStartupCacheMaxAge ||
+      !cached.response ||
+      !Array.isArray(cached.response.sessions)
+    ) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    return cached;
+  } catch {
+    window.localStorage.removeItem(key);
+    return null;
+  }
+}
+
+function writeHistoryStartupCache(user, serverID, response) {
+  if (!user || !serverID || !response || !Array.isArray(response.sessions)) return;
+  try {
+    const value = JSON.stringify({ saved_at: Date.now(), response });
+    const key = historyStartupCacheKey(user, serverID);
+    if (value.length <= historyStartupCacheMaxBytes) {
+      pruneHistoryStartupCache();
+      window.localStorage.setItem(key, value);
+      pruneHistoryStartupCache();
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // History remains usable when browser storage is unavailable or full.
+  }
+}
+
+function pruneHistoryStartupCache() {
+  try {
+    const now = Date.now();
+    const entries = [];
+    for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(historyStartupCacheRootPrefix)) continue;
+      const value = window.localStorage.getItem(key) || "";
+      if (!key.startsWith(`${historyStartupCachePrefix}:`)) {
+        window.localStorage.removeItem(key);
+        continue;
+      }
+      try {
+        const cached = JSON.parse(value);
+        if (!Number.isFinite(cached?.saved_at) || now - cached.saved_at > historyStartupCacheMaxAge) {
+          window.localStorage.removeItem(key);
+          continue;
+        }
+        entries.push({ key, savedAt: cached.saved_at, bytes: value.length });
+      } catch {
+        window.localStorage.removeItem(key);
+      }
+    }
+    entries.sort((a, b) => b.savedAt - a.savedAt);
+    let totalBytes = 0;
+    entries.forEach((entry, index) => {
+      totalBytes += entry.bytes;
+      if (index >= historyStartupCacheMaxEntries || totalBytes > historyStartupCacheTotalBytes) {
+        window.localStorage.removeItem(entry.key);
+      }
+    });
+  } catch {
+    // Cache cleanup is best-effort and must not affect the dashboard.
+  }
+}
+
+function clearHistoryStartupCache(user) {
+  const prefix = `${historyStartupCachePrefix}:${encodeURIComponent(user)}:`;
+  try {
+    for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith(prefix)) window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Logout must still complete when browser storage is blocked.
+  }
+}
+
+function isHistoryStartupQuery(filters, query, sort) {
+  return (
+    (filters?.groups || []).length === 0 &&
+    !query.trim() &&
+    sort?.field === "starts_at" &&
+    sort?.direction === "desc"
+  );
 }
 
 function normalizeClientNodeLayout(layout, servers) {
@@ -211,6 +317,10 @@ function App() {
   }, [collapsedNodeGroups]);
 
   useEffect(() => {
+    pruneHistoryStartupCache();
+  }, []);
+
+  useEffect(() => {
     if (themeIsExplicit) return undefined;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const handleChange = (event) => setTheme(event.matches ? "dark" : "light");
@@ -347,10 +457,18 @@ function App() {
     if (historyFilterErrors(historyFilters).length > 0) {
       return undefined;
     }
+    if (isHistoryStartupQuery(historyFilters, historySearch, historySort)) {
+      const cached = readHistoryStartupCache(auth.user, selectedServerId);
+      if (cached) {
+        setHistorySummary(cached.response.summary || null);
+        setHistorySessions(cached.response.sessions || []);
+        setHistoryNextCursor(cached.response.next_cursor || "");
+      }
+    }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void loadHistory({ filters: historyFilters, signal: controller.signal });
-    }, 400);
+    }, isHistoryStartupQuery(historyFilters, historySearch, historySort) ? 0 : 250);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
@@ -440,6 +558,7 @@ function App() {
     try {
       await api("/api/logout", { method: "POST" });
     } finally {
+      clearHistoryStartupCache(auth.user);
       setAuth({ checking: false, authenticated: false, user: "", role: "" });
       setServers([]);
       setFleet([]);
@@ -522,6 +641,9 @@ function App() {
       setHistorySummary(response.summary || null);
       setHistorySessions((current) => append ? [...current, ...(response.sessions || [])] : (response.sessions || []));
       setHistoryNextCursor(response.next_cursor || "");
+      if (!append && !cursor && isHistoryStartupQuery(filters, query, sort)) {
+        writeHistoryStartupCache(auth.user, serverId, response);
+      }
     } catch (err) {
       if (err.name !== "AbortError" && requestID === historyRequestRef.current) {
         setError(err.message);
@@ -1679,12 +1801,12 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
       <section className="history-list-panel">
         <div className="section-heading">
           <div><h2>GPU activity</h2><p className="muted">Reservation sessions and claimed runs are retained after they end.</p></div>
-          <label className="relative block w-full sm:w-72">
-            <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <label className="history-search w-full sm:w-72">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               type="search"
-              className="h-9 w-full rounded-md border border-input bg-background pr-3 pl-9 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
-              placeholder="Search activity, command, user…"
+              className="history-search-input"
+              placeholder="Search session name…"
               aria-label="Search GPU activity"
               maxLength={1024}
               value={search}

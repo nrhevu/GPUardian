@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -292,37 +293,12 @@ func compileFreeTextSearch(value string) (string, []any, error) {
 	if len(value) > maxSearchStringBytes {
 		return "", nil, fmt.Errorf("search query must be at most %d bytes", maxSearchStringBytes)
 	}
-	contains := func(column string) string {
-		return "INSTR(LOWER(COALESCE(" + column + ",'')),LOWER(?))>0"
+	if utf8.RuneCountInString(value) < 3 {
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+		return `f.purpose LIKE ? ESCAPE '\' COLLATE NOCASE`, []any{escaped + "%"}, nil
 	}
-	clauses := make([]string, 0, 8)
-	args := make([]any, 0, 16)
-	for _, column := range []string{"f.purpose", "f.owner_username", "f.derived_status", "f.kind", "f.source", "f.result_outcome"} {
-		clauses = append(clauses, contains(column))
-		args = append(args, value)
-	}
-
-	association := "(j.session_id=f.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=f.session_id))"
-	jobClauses := make([]string, 0, 14)
-	jobArgs := make([]any, 0, 14)
-	for _, column := range []string{
-		"j.source", "j.mode", "j.holder", "j.end_reason", "a.selector",
-		"CAST(j.runtime_uid AS TEXT)", "j.runtime_username", "j.runtime_container_id",
-		"j.runtime_docker_container_name", "j.runtime_kubernetes_namespace",
-		"j.runtime_kubernetes_pod_name", "j.runtime_kubernetes_container_name",
-	} {
-		jobClauses = append(jobClauses, contains(column))
-		jobArgs = append(jobArgs, value)
-	}
-	jobClauses = append(jobClauses, "EXISTS (SELECT 1 FROM json_each(j.command_json) command WHERE "+contains("CAST(command.value AS TEXT)")+")")
-	jobArgs = append(jobArgs, value)
-	clauses = append(clauses, "EXISTS (SELECT 1 FROM jobs j LEFT JOIN authorization_scopes a ON a.node_id=j.node_id AND a.authorization_id=j.authorization_id WHERE "+association+" AND ("+strings.Join(jobClauses, " OR ")+"))")
-	args = append(args, jobArgs...)
-
-	clauses = append(clauses, `EXISTS (SELECT 1 FROM session_gpus g WHERE g.session_id=f.session_id AND CAST(g.gpu AS TEXT)=?)`,
-		`EXISTS (SELECT 1 FROM jobs j JOIN job_gpus jg ON jg.node_id=j.node_id AND jg.job_id=j.job_id WHERE `+association+` AND CAST(jg.gpu AS TEXT)=?)`)
-	args = append(args, value, value)
-	return "(" + strings.Join(clauses, " OR ") + ")", args, nil
+	phrase := `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+	return "EXISTS (SELECT 1 FROM session_purpose_fts purpose_index WHERE purpose_index.session_id=f.session_id AND purpose_index.purpose MATCH ?)", []any{phrase}, nil
 }
 
 func compileSearchRule(rule SearchRule) (string, []any, error) {
