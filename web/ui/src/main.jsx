@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import {
   BarChart3,
   CalendarDays,
+  ChevronDown,
+  ChevronRight,
+  FolderPlus,
   KeyRound,
   LockKeyhole,
   LogOut,
@@ -30,6 +33,7 @@ const hourMs = 60 * 60 * 1000;
 const dayMs = 24 * hourMs;
 const historyPageSize = 50;
 const themeStorageKey = "gpuardian-theme";
+const nodeGroupCollapseStorageKey = "gpuardian-collapsed-node-groups";
 
 let historyFilterID = 0;
 
@@ -52,6 +56,99 @@ function applyTheme(theme) {
   document.documentElement.classList.toggle("dark", theme === "dark");
 }
 
+function readCollapsedNodeGroups() {
+  try {
+    const values = JSON.parse(window.localStorage.getItem(nodeGroupCollapseStorageKey) || "[]");
+    return new Set(Array.isArray(values) ? values.filter((value) => typeof value === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function normalizeClientNodeLayout(layout, servers) {
+  const serverIDs = servers.map((server) => server.id);
+  const validServers = new Set(serverIDs);
+  const assigned = new Set();
+  const groups = [];
+  const groupIDs = new Set();
+  for (const input of layout?.groups || []) {
+    if (!input?.id || groupIDs.has(input.id)) continue;
+    groupIDs.add(input.id);
+    const nodeIDs = [];
+    for (const id of input.node_ids || []) {
+      if (!validServers.has(id) || assigned.has(id)) continue;
+      assigned.add(id);
+      nodeIDs.push(id);
+    }
+    groups.push({ id: input.id, name: input.name || "Node group", node_ids: nodeIDs });
+  }
+  const root = [];
+  const rootSeen = new Set();
+  for (const id of layout?.root || []) {
+    if (rootSeen.has(id)) continue;
+    if (groupIDs.has(id)) {
+      root.push(id);
+      rootSeen.add(id);
+    } else if (validServers.has(id) && !assigned.has(id)) {
+      root.push(id);
+      rootSeen.add(id);
+      assigned.add(id);
+    }
+  }
+  for (const group of groups) {
+    if (!rootSeen.has(group.id)) root.push(group.id);
+  }
+  for (const id of serverIDs) {
+    if (!assigned.has(id)) root.push(id);
+  }
+  return { root, groups };
+}
+
+function cloneClientNodeLayout(layout) {
+  return {
+    root: [...(layout?.root || [])],
+    groups: (layout?.groups || []).map((group) => ({ ...group, node_ids: [...(group.node_ids || [])] })),
+  };
+}
+
+function moveNodeInLayout(layout, nodeID, groupID = "", beforeID = "") {
+  const next = cloneClientNodeLayout(layout);
+  next.root = next.root.filter((id) => id !== nodeID);
+  next.groups = next.groups.map((group) => ({ ...group, node_ids: group.node_ids.filter((id) => id !== nodeID) }));
+  const target = groupID ? next.groups.find((group) => group.id === groupID)?.node_ids : next.root;
+  if (!target) return next;
+  const index = beforeID ? target.indexOf(beforeID) : -1;
+  target.splice(index >= 0 ? index : target.length, 0, nodeID);
+  return next;
+}
+
+function moveRootItemInLayout(layout, itemID, beforeID = "") {
+  const next = cloneClientNodeLayout(layout);
+  next.root = next.root.filter((id) => id !== itemID);
+  const index = beforeID ? next.root.indexOf(beforeID) : -1;
+  next.root.splice(index >= 0 ? index : next.root.length, 0, itemID);
+  return next;
+}
+
+function orderedServersFromLayout(layout, servers) {
+  const serverByID = new Map(servers.map((server) => [server.id, server]));
+  const groupByID = new Map((layout.groups || []).map((group) => [group.id, group]));
+  const result = [];
+  for (const id of layout.root || []) {
+    const group = groupByID.get(id);
+    if (group) {
+      for (const nodeID of group.node_ids) {
+        const server = serverByID.get(nodeID);
+        if (server) result.push(server);
+      }
+      continue;
+    }
+    const server = serverByID.get(id);
+    if (server) result.push(server);
+  }
+  return result;
+}
+
 function App() {
   const [theme, setTheme] = useState(initialTheme);
   const [themeIsExplicit, setThemeIsExplicit] = useState(() => readStoredTheme() !== null);
@@ -59,6 +156,11 @@ function App() {
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [servers, setServers] = useState([]);
   const [fleet, setFleet] = useState([]);
+  const [nodeLayout, setNodeLayout] = useState({ root: [], groups: [] });
+  const [collapsedNodeGroups, setCollapsedNodeGroups] = useState(readCollapsedNodeGroups);
+  const [draggedLayoutItem, setDraggedLayoutItem] = useState(null);
+  const [editingLayoutItem, setEditingLayoutItem] = useState(null);
+  const [layoutNameDraft, setLayoutNameDraft] = useState("");
   const [users, setUsers] = useState([]);
   const [fixedKeys, setFixedKeys] = useState([]);
   const [selectedServerId, setSelectedServerId] = useState("");
@@ -98,6 +200,14 @@ function App() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(nodeGroupCollapseStorageKey, JSON.stringify(Array.from(collapsedNodeGroups)));
+    } catch {
+      // Collapsing still works for this page when storage is blocked.
+    }
+  }, [collapsedNodeGroups]);
 
   useEffect(() => {
     if (themeIsExplicit) return undefined;
@@ -332,6 +442,10 @@ function App() {
       setAuth({ checking: false, authenticated: false, user: "", role: "" });
       setServers([]);
       setFleet([]);
+      setNodeLayout({ root: [], groups: [] });
+      setDraggedLayoutItem(null);
+      setEditingLayoutItem(null);
+      setLayoutNameDraft("");
       setUsers([]);
       setFixedKeys([]);
       setSelectedServerId("");
@@ -445,9 +559,13 @@ function App() {
 
   async function refresh({ signal, isCurrent } = {}) {
     try {
-      const [snapshot, keys] = await Promise.all([
+      const [snapshot, keys, layout] = await Promise.all([
         api("/api/fleet/snapshot", { signal }),
         api("/api/keys", { signal }),
+        api("/api/node-layout", { signal }).catch((err) => {
+          if (err.status === 404) return { root: [], groups: [] };
+          throw err;
+        }),
       ]);
       if (signal?.aborted || (isCurrent && !isCurrent())) {
         return;
@@ -456,6 +574,7 @@ function App() {
       const serverList = nextFleet.map((item) => item.server).filter(Boolean);
       setServers(serverList);
       setFleet(nextFleet);
+      setNodeLayout(normalizeClientNodeLayout(layout, serverList));
       setFixedKeys(keys || []);
       setSelectedServerId((currentId) => {
         if (currentId && serverList.some((server) => server.id === currentId)) {
@@ -586,6 +705,116 @@ function App() {
     }
   }
 
+  async function persistNodeLayout(nextLayout) {
+    const normalized = normalizeClientNodeLayout(nextLayout, servers);
+    const previous = nodeLayout;
+    setNodeLayout(normalized);
+    try {
+      const stored = await api("/api/node-layout", {
+        method: "PUT",
+        body: JSON.stringify(normalized),
+      });
+      setNodeLayout(normalizeClientNodeLayout(stored, servers));
+      setError("");
+      return true;
+    } catch (err) {
+      setNodeLayout(previous);
+      setError(err.message);
+      return false;
+    }
+  }
+
+  async function createNodeGroup() {
+    const id = `grp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const next = cloneClientNodeLayout(nodeLayout);
+    next.root.push(id);
+    next.groups.push({ id, name: "New group", node_ids: [] });
+    if (await persistNodeLayout(next)) {
+      setEditingLayoutItem({ kind: "group", id });
+      setLayoutNameDraft("New group");
+    }
+  }
+
+  function beginLayoutRename(kind, id, name) {
+    if (!isAdmin) return;
+    setEditingLayoutItem({ kind, id });
+    setLayoutNameDraft(name);
+  }
+
+  async function finishLayoutRename() {
+    const editing = editingLayoutItem;
+    const name = layoutNameDraft.trim();
+    setEditingLayoutItem(null);
+    setLayoutNameDraft("");
+    if (!editing || !name) return;
+    if (editing.kind === "group") {
+      const current = nodeLayout.groups.find((group) => group.id === editing.id);
+      if (!current || current.name === name) return;
+      const next = cloneClientNodeLayout(nodeLayout);
+      next.groups = next.groups.map((group) => group.id === editing.id ? { ...group, name } : group);
+      await persistNodeLayout(next);
+      return;
+    }
+    const current = servers.find((server) => server.id === editing.id);
+    if (!current || current.name === name) return;
+    try {
+      const stored = await api(`/api/servers/${editing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      });
+      setServers((values) => values.map((server) => server.id === stored.id ? { ...server, ...stored } : server));
+      setFleet((values) => values.map((entry) => entry.server?.id === stored.id ? { ...entry, server: { ...entry.server, ...stored } } : entry));
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function toggleNodeGroup(id) {
+    setCollapsedNodeGroups((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function startLayoutDrag(event, item) {
+    if (!isAdmin || editingLayoutItem) {
+      event.preventDefault();
+      return;
+    }
+    setDraggedLayoutItem(item);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", `${item.kind}:${item.id}`);
+  }
+
+  function dropLayoutItem(event, target) {
+    if (!isAdmin || !draggedLayoutItem) return;
+    event.preventDefault();
+    event.stopPropagation();
+    let next = nodeLayout;
+    if (draggedLayoutItem.kind === "node") {
+      if (target.kind === "node" && target.id !== draggedLayoutItem.id) {
+        next = moveNodeInLayout(nodeLayout, draggedLayoutItem.id, target.groupID || "", target.id);
+      } else if (target.kind === "group") {
+        next = moveNodeInLayout(nodeLayout, draggedLayoutItem.id, target.id);
+      } else if (target.kind === "root") {
+        next = moveNodeInLayout(nodeLayout, draggedLayoutItem.id);
+      }
+    } else if (draggedLayoutItem.kind === "group") {
+      if (target.kind === "group" && target.id !== draggedLayoutItem.id) {
+        next = moveRootItemInLayout(nodeLayout, draggedLayoutItem.id, target.id);
+      } else if (target.kind === "node" && !target.groupID) {
+        next = moveRootItemInLayout(nodeLayout, draggedLayoutItem.id, target.id);
+      } else if (target.kind === "root") {
+        next = moveRootItemInLayout(nodeLayout, draggedLayoutItem.id);
+      }
+    }
+    setDraggedLayoutItem(null);
+    if (JSON.stringify(next) !== JSON.stringify(nodeLayout)) void persistNodeLayout(next);
+  }
+
   async function reserve(values) {
     if (selectedGPUList.length === 0) {
       showSelectGPUHint();
@@ -710,9 +939,18 @@ function App() {
     }
   }
 
-  const visibleServers = servers.filter((server) => {
-    const query = search.trim().toLowerCase();
-    return !query || `${server.name} ${server.endpoint}`.toLowerCase().includes(query);
+  const nodeLayoutView = useMemo(() => normalizeClientNodeLayout(nodeLayout, servers), [nodeLayout, servers]);
+  const orderedServers = useMemo(() => orderedServersFromLayout(nodeLayoutView, servers), [nodeLayoutView, servers]);
+  const nodeServerByID = new Map(servers.map((server) => [server.id, server]));
+  const nodeGroupByID = new Map(nodeLayoutView.groups.map((group) => [group.id, group]));
+  const nodeSearchQuery = search.trim().toLowerCase();
+  const nodeMatchesSearch = (server) => Boolean(server) && (!nodeSearchQuery || `${server.name} ${server.endpoint}`.toLowerCase().includes(nodeSearchQuery));
+  const visibleRootItems = nodeLayoutView.root.filter((id) => {
+    const group = nodeGroupByID.get(id);
+    if (group) {
+      return !nodeSearchQuery || group.name.toLowerCase().includes(nodeSearchQuery) || group.node_ids.some((nodeID) => nodeMatchesSearch(nodeServerByID.get(nodeID)));
+    }
+    return nodeMatchesSearch(nodeServerByID.get(id));
   });
 
   if (auth.checking) {
@@ -788,15 +1026,26 @@ function App() {
           <div className="flex items-center justify-between px-2.5 py-1.5">
             <p className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Nodes</p>
             {isAdmin && (
-              <button
-                type="button"
-                className="rounded-md p-1 text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                onClick={() => setAddOpen(true)}
-                aria-label="Add node"
-                title="Add node"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  onClick={() => void createNodeGroup()}
+                  aria-label="Create node group"
+                  title="Create node group"
+                >
+                  <FolderPlus className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  onClick={() => setAddOpen(true)}
+                  aria-label="Add node"
+                  title="Add node"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
             )}
           </div>
           <div className="relative mb-2">
@@ -808,27 +1057,152 @@ function App() {
               onChange={(event) => setSearch(event.target.value)}
             />
           </div>
-          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
-            {visibleServers.map((server) => {
-              const item = fleet.find((entry) => entry.server.id === server.id);
-              const active = server.id === currentServerId;
+          <div
+            className="min-h-0 flex-1 space-y-0.5 overflow-y-auto"
+            onDragOver={isAdmin ? (event) => event.preventDefault() : undefined}
+            onDrop={isAdmin ? (event) => dropLayoutItem(event, { kind: "root" }) : undefined}
+          >
+            {visibleRootItems.map((id) => {
+              const group = nodeGroupByID.get(id);
+              if (group) {
+                const groupNameMatches = Boolean(nodeSearchQuery) && group.name.toLowerCase().includes(nodeSearchQuery);
+                const groupServers = group.node_ids
+                  .map((nodeID) => nodeServerByID.get(nodeID))
+                  .filter((server) => server && (groupNameMatches || nodeMatchesSearch(server)));
+                const collapsed = collapsedNodeGroups.has(group.id) && !nodeSearchQuery;
+                const editing = editingLayoutItem?.kind === "group" && editingLayoutItem.id === group.id;
+                return (
+                  <div key={group.id} className="space-y-0.5">
+                    <div
+                      className={`group/group flex min-h-9 w-full select-none items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent ${draggedLayoutItem?.kind === "group" && draggedLayoutItem.id === group.id ? "opacity-45" : ""}`}
+                      draggable={isAdmin && !editing}
+                      onDragStart={(event) => startLayoutDrag(event, { kind: "group", id: group.id })}
+                      onDragEnd={() => setDraggedLayoutItem(null)}
+                      onDragOver={isAdmin ? (event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                      } : undefined}
+                      onDrop={isAdmin ? (event) => dropLayoutItem(event, { kind: "group", id: group.id }) : undefined}
+                    >
+                      <button
+                        type="button"
+                        className="rounded p-0.5 text-muted-foreground hover:bg-sidebar-primary"
+                        onClick={() => toggleNodeGroup(group.id)}
+                        aria-label={`${collapsed ? "Expand" : "Collapse"} ${group.name}`}
+                      >
+                        {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      </button>
+                      {editing ? (
+                        <input
+                          className="h-6 min-w-0 flex-1 rounded border border-input bg-background px-1.5 text-xs text-foreground outline-none focus:border-ring"
+                          value={layoutNameDraft}
+                          maxLength={128}
+                          autoFocus
+                          onChange={(event) => setLayoutNameDraft(event.target.value)}
+                          onBlur={() => void finishLayoutRename()}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                            if (event.key === "Escape") {
+                              setEditingLayoutItem(null);
+                              setLayoutNameDraft("");
+                            }
+                          }}
+                          aria-label={`Rename ${group.name}`}
+                        />
+                      ) : (
+                        <span
+                          className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-300"
+                          onDoubleClick={() => beginLayoutRename("group", group.id, group.name)}
+                          title={isAdmin ? `${group.name} — double-click to rename` : group.name}
+                        >
+                          {group.name}
+                        </span>
+                      )}
+                      <span className="rounded-full bg-sidebar-accent px-1.5 py-0.5 text-[10px] text-muted-foreground">{group.node_ids.length}</span>
+                    </div>
+                    {!collapsed && (
+                      <div
+                        className="space-y-0.5"
+                        onDragOver={isAdmin ? (event) => event.preventDefault() : undefined}
+                        onDrop={isAdmin ? (event) => dropLayoutItem(event, { kind: "group", id: group.id }) : undefined}
+                      >
+                        {groupServers.map((server) => {
+                          const fleetItem = fleet.find((entry) => entry.server.id === server.id);
+                          return (
+                            <SidebarNodeItem
+                              key={server.id}
+                              server={server}
+                              item={{ kind: "node", id: server.id, groupID: group.id }}
+                              active={server.id === currentServerId}
+                              nested
+                              online={fleetItem?.online}
+                              isAdmin={isAdmin}
+                              editing={editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id}
+                              draft={layoutNameDraft}
+                              dragging={draggedLayoutItem?.kind === "node" && draggedLayoutItem.id === server.id}
+                              itemClass={navItemClass}
+                              onSelect={selectServer}
+                              onContextMenu={isAdmin ? (event) => {
+                                event.preventDefault();
+                                setServerMenu({ server, x: event.clientX, y: event.clientY });
+                              } : undefined}
+                              onRenameStart={beginLayoutRename}
+                              onDraft={setLayoutNameDraft}
+                              onFinishRename={() => void finishLayoutRename()}
+                              onCancelRename={() => {
+                                setEditingLayoutItem(null);
+                                setLayoutNameDraft("");
+                              }}
+                              onDragStart={startLayoutDrag}
+                              onDragEnd={() => setDraggedLayoutItem(null)}
+                              onDrop={dropLayoutItem}
+                            />
+                          );
+                        })}
+                        {groupServers.length === 0 && <p className="ml-7 px-2 py-1.5 text-[11px] text-muted-foreground">Drop nodes here</p>}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              const server = nodeServerByID.get(id);
+              if (!server) return null;
+              const fleetItem = fleet.find((entry) => entry.server.id === server.id);
               return (
-                <button
+                <SidebarNodeItem
                   key={server.id}
-                  className={navItemClass(active)}
-                  onClick={() => selectServer(server.id)}
+                  server={server}
+                  item={{ kind: "node", id: server.id, groupID: "" }}
+                  active={server.id === currentServerId}
+                  online={fleetItem?.online}
+                  isAdmin={isAdmin}
+                  editing={editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id}
+                  draft={layoutNameDraft}
+                  dragging={draggedLayoutItem?.kind === "node" && draggedLayoutItem.id === server.id}
+                  itemClass={navItemClass}
+                  onSelect={selectServer}
                   onContextMenu={isAdmin ? (event) => {
                     event.preventDefault();
                     setServerMenu({ server, x: event.clientX, y: event.clientY });
                   } : undefined}
-                >
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${item?.online ? "bg-status-success-fg" : "bg-destructive"}`} />
-                  <span className="truncate">{server.name}</span>
-                </button>
+                  onRenameStart={beginLayoutRename}
+                  onDraft={setLayoutNameDraft}
+                  onFinishRename={() => void finishLayoutRename()}
+                  onCancelRename={() => {
+                    setEditingLayoutItem(null);
+                    setLayoutNameDraft("");
+                  }}
+                  onDragStart={startLayoutDrag}
+                  onDragEnd={() => setDraggedLayoutItem(null)}
+                  onDrop={dropLayoutItem}
+                />
               );
             })}
-            {visibleServers.length === 0 && (
+            {visibleRootItems.length === 0 && (
               <p className="px-2.5 py-3 text-xs text-muted-foreground">No nodes found.</p>
+            )}
+            {isAdmin && visibleRootItems.length > 0 && (
+              <div className="h-6 rounded-md border border-dashed border-transparent hover:border-sidebar-border" aria-label="Drop at root level" />
             )}
           </div>
         </div>
@@ -851,7 +1225,7 @@ function App() {
               onChange={(event) => selectServer(event.target.value)}
               aria-label="Selected node"
             >
-              {servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
+              {orderedServers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
             </select>
           </div>
           <div className="relative" ref={settingsRef}>
@@ -1109,6 +1483,59 @@ function App() {
             setDeleteServerTarget(null);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+function SidebarNodeItem({ server, item, active, nested, online, isAdmin, editing, draft, dragging, itemClass, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
+  return (
+    <div
+      className={`${itemClass(active)} group/node select-none ${nested ? "ml-3 w-[calc(100%-0.75rem)]" : ""} ${dragging ? "opacity-45" : ""}`.trim()}
+      role="button"
+      tabIndex={0}
+      draggable={isAdmin && !editing}
+      onClick={() => onSelect(server.id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onSelect(server.id);
+      }}
+      onContextMenu={onContextMenu}
+      onDragStart={(event) => onDragStart(event, item)}
+      onDragEnd={onDragEnd}
+      onDragOver={isAdmin ? (event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      } : undefined}
+      onDrop={isAdmin ? (event) => onDrop(event, { kind: "node", id: server.id, groupID: item.groupID || "" }) : undefined}
+    >
+      <span className={`h-2 w-2 shrink-0 rounded-full ${online ? "bg-status-success-fg" : "bg-destructive"}`} />
+      {editing ? (
+        <input
+          className="h-6 min-w-0 flex-1 rounded border border-input bg-background px-1.5 text-xs text-foreground outline-none focus:border-ring"
+          value={draft}
+          maxLength={128}
+          autoFocus
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => onDraft(event.target.value)}
+          onBlur={onFinishRename}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Escape") onCancelRename();
+          }}
+          aria-label={`Rename ${server.name}`}
+        />
+      ) : (
+        <span
+          className={`truncate ${active ? "text-sidebar-primary-foreground" : "text-slate-700 dark:text-slate-300"}`}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            onRenameStart("node", server.id, server.name);
+          }}
+          title={isAdmin ? `${server.name} — double-click to rename` : server.name}
+        >
+          {server.name}
+        </span>
       )}
     </div>
   );

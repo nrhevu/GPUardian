@@ -84,3 +84,26 @@ func TestRegistryAllowsNewPlaintextEndpointWithExplicitOptIn(t *testing.T) {
 		t.Fatalf("persisted records = %+v", records)
 	}
 }
+
+func TestRegistryRenamePersistsWithoutChangingConnectionDetails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.json")
+	registry := NewRegistry(path, false)
+	record, err := registry.Upsert(ServerRecord{Name: "old", Endpoint: "https://node-a:8192", RootKey: "rk_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := registry.Rename(record.ID, " new name ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "new name" || renamed.Endpoint != record.Endpoint || renamed.RootKey != record.RootKey {
+		t.Fatalf("renamed record = %+v", renamed)
+	}
+	reloaded, err := NewRegistry(path, false).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded) != 1 || reloaded[0].Name != "new name" {
+		t.Fatalf("reloaded records = %+v", reloaded)
+	}
+}
