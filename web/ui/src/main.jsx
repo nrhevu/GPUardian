@@ -280,7 +280,9 @@ function App() {
   const [userOpen, setUserOpen] = useState(false);
   const [deleteUserTarget, setDeleteUserTarget] = useState(null);
   const [deleteServerTarget, setDeleteServerTarget] = useState(null);
+  const [deleteNodeGroupTarget, setDeleteNodeGroupTarget] = useState(null);
   const [serverMenu, setServerMenu] = useState(null);
+  const [nodeGroupMenu, setNodeGroupMenu] = useState(null);
   const [allowTarget, setAllowTarget] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [scheduleTarget, setScheduleTarget] = useState(null);
@@ -856,6 +858,28 @@ function App() {
     }
   }
 
+  async function deleteNodeGroup(groupID) {
+    const group = nodeLayout.groups.find((candidate) => candidate.id === groupID);
+    if (!group) return;
+    const next = cloneClientNodeLayout(nodeLayout);
+    const rootIndex = next.root.indexOf(groupID);
+    next.root = next.root.filter((id) => id !== groupID);
+    next.root.splice(rootIndex >= 0 ? rootIndex : next.root.length, 0, ...group.node_ids);
+    next.groups = next.groups.filter((candidate) => candidate.id !== groupID);
+    if (!(await persistNodeLayout(next))) {
+      throw new Error("Could not delete the node group.");
+    }
+    setCollapsedNodeGroups((current) => {
+      const updated = new Set(current);
+      updated.delete(groupID);
+      return updated;
+    });
+    if (editingLayoutItem?.kind === "group" && editingLayoutItem.id === groupID) {
+      setEditingLayoutItem(null);
+      setLayoutNameDraft("");
+    }
+  }
+
   function beginLayoutRename(kind, id, name) {
     if (!isAdmin) return;
     setEditingLayoutItem({ kind, id });
@@ -1197,6 +1221,11 @@ function App() {
                     <div
                       className={`group/group flex min-h-9 w-full select-none items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent ${draggedLayoutItem?.kind === "group" && draggedLayoutItem.id === group.id ? "opacity-45" : ""}`}
                       draggable={isAdmin && !editing}
+                      onContextMenu={isAdmin ? (event) => {
+                        event.preventDefault();
+                        setServerMenu(null);
+                        setNodeGroupMenu({ group, x: event.clientX, y: event.clientY });
+                      } : undefined}
                       onDragStart={(event) => startLayoutDrag(event, { kind: "group", id: group.id })}
                       onDragEnd={() => setDraggedLayoutItem(null)}
                       onDragOver={isAdmin ? (event) => {
@@ -1265,6 +1294,7 @@ function App() {
                               onSelect={selectServer}
                               onContextMenu={isAdmin ? (event) => {
                                 event.preventDefault();
+                                setNodeGroupMenu(null);
                                 setServerMenu({ server, x: event.clientX, y: event.clientY });
                               } : undefined}
                               onRenameStart={beginLayoutRename}
@@ -1304,6 +1334,7 @@ function App() {
                   onSelect={selectServer}
                   onContextMenu={isAdmin ? (event) => {
                     event.preventDefault();
+                    setNodeGroupMenu(null);
                     setServerMenu({ server, x: event.clientX, y: event.clientY });
                   } : undefined}
                   onRenameStart={beginLayoutRename}
@@ -1585,12 +1616,24 @@ function App() {
         />
       )}
       {serverMenu && (
-        <ServerContextMenu
+        <DeleteContextMenu
           menu={serverMenu}
+          label="Delete node"
           onClose={() => setServerMenu(null)}
-          onDelete={(server) => {
+          onDelete={() => {
             setServerMenu(null);
-            setDeleteServerTarget(server);
+            setDeleteServerTarget(serverMenu.server);
+          }}
+        />
+      )}
+      {nodeGroupMenu && (
+        <DeleteContextMenu
+          menu={nodeGroupMenu}
+          label="Delete group"
+          onClose={() => setNodeGroupMenu(null)}
+          onDelete={() => {
+            setNodeGroupMenu(null);
+            setDeleteNodeGroupTarget(nodeGroupMenu.group);
           }}
         />
       )}
@@ -1601,6 +1644,16 @@ function App() {
           onSubmit={async () => {
             await deleteServer(deleteServerTarget.id);
             setDeleteServerTarget(null);
+          }}
+        />
+      )}
+      {deleteNodeGroupTarget && (
+        <DeleteNodeGroupModal
+          group={deleteNodeGroupTarget}
+          onClose={() => setDeleteNodeGroupTarget(null)}
+          onSubmit={async () => {
+            await deleteNodeGroup(deleteNodeGroupTarget.id);
+            setDeleteNodeGroupTarget(null);
           }}
         />
       )}
@@ -3216,7 +3269,7 @@ function DeleteUserModal({ user, onClose, onSubmit }) {
   );
 }
 
-function ServerContextMenu({ menu, onClose, onDelete }) {
+function DeleteContextMenu({ menu, label, onClose, onDelete }) {
   useEffect(() => {
     const close = () => onClose();
     // Defer attaching the click listener so the right-click that opened the
@@ -3241,11 +3294,48 @@ function ServerContextMenu({ menu, onClose, onDelete }) {
       <button
         type="button"
         className="danger-menu-item"
-        onClick={() => onDelete(menu.server)}
+        onClick={onDelete}
       >
-        Delete node
+        {label}
       </button>
     </div>
+  );
+}
+
+function DeleteNodeGroupModal({ group, onClose, onSubmit }) {
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  return (
+    <Modal title="Delete group" onClose={onClose} hideClose>
+      <form
+        className="modal-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (pending) return;
+          setPending(true);
+          setError("");
+          try {
+            await onSubmit();
+            onClose();
+          } catch (err) {
+            setError(err.message);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        <div className="revoke-summary">
+          <strong>{group.name}</strong>
+          <span>{group.node_ids.length} node{group.node_ids.length === 1 ? "" : "s"}</span>
+        </div>
+        <p className="muted">This removes only the group. Its nodes will remain available and move back to the main node list.</p>
+        {error && <div className="modal-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose} disabled={pending}>Cancel</button>
+          <button type="submit" className="danger-button" disabled={pending}>{pending ? "Deleting" : "Delete"}</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
