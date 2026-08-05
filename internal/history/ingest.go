@@ -435,41 +435,52 @@ func applyGPUSample(ctx context.Context, tx *sql.Tx, nodeID string, payload tele
 		if err := applyNodeGPUIntervals(ctx, tx, nodeID, gpu, payload.WindowStart, payload.WindowEnd); err != nil {
 			return err
 		}
-		if gpu.GroupID == "" {
-			continue
-		}
-		var session string
-		var startsMS, expiresMS int64
-		var revoked sql.NullInt64
-		if err := tx.QueryRowContext(ctx, `SELECT session_id,starts_at_ms,expires_at_ms,revoked_at_ms FROM reservation_sessions
-			WHERE node_id=? AND group_id=?`, nodeID, gpu.GroupID).Scan(&session, &startsMS, &expiresMS, &revoked); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return err
-		}
-		if payload.Status != "ok" {
-			if _, err := tx.ExecContext(ctx, "UPDATE reservation_sessions SET history_quality='partial',updated_at_ms=? WHERE session_id=?", millis(payload.WindowEnd), session); err != nil {
+		for _, groupID := range telemetryGroups(gpu.GroupID, gpu.GroupIDs) {
+			var session, kind string
+			var startsMS, expiresMS int64
+			var revoked, finalized sql.NullInt64
+			if err := tx.QueryRowContext(ctx, `SELECT session_id,kind,starts_at_ms,expires_at_ms,revoked_at_ms,finalized_at_ms FROM reservation_sessions
+				WHERE node_id=? AND group_id=?`, nodeID, groupID).Scan(&session, &kind, &startsMS, &expiresMS, &revoked, &finalized); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
 				return err
 			}
-		}
-		start := payload.WindowStart
-		if sessionStart := timeFromMillis(startsMS); start.Before(sessionStart) {
-			start = sessionStart
-		}
-		end := payload.WindowEnd
-		effectiveEnd := timeFromMillis(expiresMS)
-		if revoked.Valid && timeFromMillis(revoked.Int64).Before(effectiveEnd) {
-			effectiveEnd = timeFromMillis(revoked.Int64)
-		}
-		if end.After(effectiveEnd) {
-			end = effectiveEnd
-		}
-		if !end.After(start) {
-			continue
-		}
-		if err := applyGPUIntervals(ctx, tx, session, gpu, start, end); err != nil {
-			return err
+			if payload.Status != "ok" {
+				if _, err := tx.ExecContext(ctx, "UPDATE reservation_sessions SET history_quality='partial',updated_at_ms=? WHERE session_id=?", millis(payload.WindowEnd), session); err != nil {
+					return err
+				}
+			}
+			start := payload.WindowStart
+			if sessionStart := timeFromMillis(startsMS); start.Before(sessionStart) {
+				start = sessionStart
+			}
+			end := payload.WindowEnd
+			if kind == "claimed_run" {
+				if finalized.Valid && end.After(timeFromMillis(finalized.Int64)) {
+					end = timeFromMillis(finalized.Int64)
+				}
+				if !finalized.Valid {
+					if _, err := tx.ExecContext(ctx, `UPDATE reservation_sessions SET expires_at_ms=MAX(expires_at_ms,?),
+						updated_at_ms=MAX(updated_at_ms,?) WHERE session_id=?`, millis(payload.WindowEnd), millis(payload.WindowEnd), session); err != nil {
+						return err
+					}
+				}
+			} else {
+				effectiveEnd := timeFromMillis(expiresMS)
+				if revoked.Valid && timeFromMillis(revoked.Int64).Before(effectiveEnd) {
+					effectiveEnd = timeFromMillis(revoked.Int64)
+				}
+				if end.After(effectiveEnd) {
+					end = effectiveEnd
+				}
+			}
+			if !end.After(start) {
+				continue
+			}
+			if err := applyGPUIntervals(ctx, tx, session, gpu, start, end); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

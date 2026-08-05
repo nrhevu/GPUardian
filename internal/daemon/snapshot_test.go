@@ -98,3 +98,43 @@ func TestTelemetrySamplesGPUWithoutReservation(t *testing.T) {
 		t.Fatalf("unreserved GPU sample = %+v", sample.GPUs)
 	}
 }
+
+func TestTelemetrySamplesClaimedRunGroup(t *testing.T) {
+	server := testServer(t)
+	utilization := 42.0
+	server.GPU = &countingSnapshotAMD{
+		metrics: []model.GPUMetric{{GPU: 3, UtilizationPct: &utilization}},
+	}
+	server.observedJobs = map[string]*observedTelemetryJob{
+		"claimed-job": {
+			event: telemetry.JobEvent{
+				ExecutionID: "job-claimed",
+				TokenMode:   model.TokenModeClaimed,
+				GPUs:        []int{3},
+			},
+		},
+	}
+	dir := t.TempDir()
+	box, err := telemetry.Open(filepath.Join(dir, "node.id"), filepath.Join(dir, "outbox"), "boot-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+	server.Telemetry = box
+
+	start := time.Now().UTC().Add(-5 * time.Second)
+	server.sampleTelemetryMetrics(context.Background(), start, start.Add(5*time.Second))
+
+	page, err := box.Page("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sample telemetry.GPUSample
+	if len(page.Events) != 1 || json.Unmarshal(page.Events[0].Payload, &sample) != nil {
+		t.Fatalf("events = %+v, want one decodable GPU sample", page.Events)
+	}
+	if len(sample.GPUs) != 1 || sample.GPUs[0].GroupID != "claimed:job-claimed" ||
+		len(sample.GPUs[0].GroupIDs) != 1 || sample.GPUs[0].GroupIDs[0] != "claimed:job-claimed" {
+		t.Fatalf("claimed GPU sample = %+v", sample.GPUs)
+	}
+}

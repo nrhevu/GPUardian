@@ -219,20 +219,46 @@ func (s *Server) sampleTelemetryMetrics(ctx context.Context, start, end time.Tim
 		return
 	}
 	groupByGPU := make(map[int]string)
+	groupsByGPU := make(map[int][]string)
+	addGroup := func(gpu int, group string) {
+		if group == "" {
+			return
+		}
+		groups := groupsByGPU[gpu]
+		if addString(&groups, group) {
+			groupsByGPU[gpu] = groups
+		}
+	}
 	for _, reservation := range state.Reservations {
 		startsAt := model.ReservationStartsAt(reservation)
 		if reservation.Revoked || !startsAt.Before(end) || !reservation.ExpiresAt.After(start) {
 			continue
 		}
-		groupByGPU[reservation.GPU] = reservationTelemetryGroup(reservation, "")
+		group := reservationTelemetryGroup(reservation, "")
+		groupByGPU[reservation.GPU] = group
+		addGroup(reservation.GPU, group)
 	}
+	s.telemetryJobsMu.Lock()
+	for _, job := range s.observedJobs {
+		group := claimedTelemetryGroup(job.event)
+		for _, gpu := range job.event.GPUs {
+			addGroup(gpu, group)
+		}
+	}
+	for _, job := range s.runJobs {
+		group := claimedTelemetryGroup(job)
+		for _, gpu := range job.GPUs {
+			addGroup(gpu, group)
+		}
+	}
+	s.telemetryJobsMu.Unlock()
 	metricByGPU := make(map[int]model.GPUMetric, len(metrics))
-	gpuSet := make(map[int]bool, len(metrics)+len(groupByGPU))
+	gpuSet := make(map[int]bool, len(metrics)+len(groupsByGPU))
 	for _, metric := range metrics {
 		metricByGPU[metric.GPU] = metric
 		gpuSet[metric.GPU] = true
 	}
-	for gpu := range groupByGPU {
+	for gpu := range groupsByGPU {
 		gpuSet[gpu] = true
 	}
 	if len(gpuSet) == 0 {
@@ -248,7 +274,13 @@ func (s *Server) sampleTelemetryMetrics(ctx context.Context, start, end time.Tim
 		payload.Status = "error"
 	}
 	for _, gpu := range gpus {
-		entry := telemetry.GPUSampleEntry{GPU: gpu, GroupID: groupByGPU[gpu]}
+		groups := append([]string(nil), groupsByGPU[gpu]...)
+		sort.Strings(groups)
+		primaryGroup := groupByGPU[gpu]
+		if primaryGroup == "" && len(groups) > 0 {
+			primaryGroup = groups[0]
+		}
+		entry := telemetry.GPUSampleEntry{GPU: gpu, GroupID: primaryGroup, GroupIDs: groups}
 		if err == nil {
 			metric := metricByGPU[gpu]
 			entry.UtilizationPct = metric.UtilizationPct
@@ -283,10 +315,17 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 			continue
 		}
 		authorization, ok := authorizations[decision.AuthID]
-		if !ok || authorization.Mode == model.ModeBare ||
+		if !ok ||
 			(authorization.TokenMode != model.TokenModeReserved &&
 				authorization.TokenMode != model.TokenModeManaged &&
 				authorization.TokenMode != model.TokenModeClaimed) {
+			continue
+		}
+		if authorization.Mode == model.ModeBare {
+			if job, ok := s.runJobs[authorization.ID]; ok && addGPU(&job.GPUs, decision.Process.GPU) {
+				s.runJobs[authorization.ID] = job
+				s.emitTelemetry(telemetry.EventJobUpdated, job, now)
+			}
 			continue
 		}
 		token, ok := tokens[authorization.TokenHash]
@@ -440,6 +479,16 @@ func reservationTelemetryGroup(reservation model.Reservation, fallback string) s
 		return reservation.GroupID
 	}
 	return fallback
+}
+
+func claimedTelemetryGroup(event telemetry.JobEvent) string {
+	if event.ExecutionID == "" || event.GroupID != "" || len(event.GroupIDs) > 0 {
+		return ""
+	}
+	if event.TokenMode != model.TokenModeClaimed && event.TokenMode != model.TokenModeManaged {
+		return ""
+	}
+	return "claimed:" + event.ExecutionID
 }
 
 func reservationGroupsForToken(reservations []model.Reservation, tokenHash string, gpu int, at time.Time) []string {

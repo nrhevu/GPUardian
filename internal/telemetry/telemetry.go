@@ -172,6 +172,7 @@ type GPUSample struct {
 type GPUSampleEntry struct {
 	GPU              int      `json:"gpu"`
 	GroupID          string   `json:"group_id,omitempty"`
+	GroupIDs         []string `json:"group_ids,omitempty"`
 	UtilizationPct   *float64 `json:"utilization_percent,omitempty"`
 	MemoryUsedBytes  *uint64  `json:"memory_used_bytes,omitempty"`
 	MemoryTotalBytes *uint64  `json:"memory_total_bytes,omitempty"`

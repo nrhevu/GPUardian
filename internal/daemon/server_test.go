@@ -621,6 +621,46 @@ func TestRunTelemetryCarriesClaimedRunName(t *testing.T) {
 	}
 }
 
+func TestObservedGPUUpdatesClaimedRunTelemetry(t *testing.T) {
+	server := testServer(t)
+	dir := t.TempDir()
+	box, err := telemetry.Open(filepath.Join(dir, "node.id"), filepath.Join(dir, "outbox"), "boot-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+	server.Telemetry = box
+	server.runJobs = make(map[string]telemetry.JobEvent)
+	server.runJobs["auth-claimed"] = telemetry.JobEvent{
+		ExecutionID:     "exec_auth-claimed",
+		AuthorizationID: "auth-claimed",
+		TokenMode:       model.TokenModeClaimed,
+		Mode:            model.ModeBare,
+	}
+	state := model.State{Authorizations: []model.Authorization{{
+		ID: "auth-claimed", TokenMode: model.TokenModeClaimed, Mode: model.ModeBare,
+	}}}
+	server.trackObservedTelemetryJobs(state, []enforce.Decision{{
+		Action: "allow", AuthID: "auth-claimed", Process: model.GPUProcess{PID: 42, GPU: 4}, Info: model.ProcInfo{StartTime: 1},
+	}}, time.Now().UTC())
+
+	page, err := box.Page("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated telemetry.JobEvent
+	for _, event := range page.Events {
+		if event.Type == telemetry.EventJobUpdated {
+			if err := json.Unmarshal(event.Payload, &updated); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(updated.GPUs) != 1 || updated.GPUs[0] != 4 {
+		t.Fatalf("updated claimed run = %+v", updated)
+	}
+}
+
 func TestNodeHTTPReservationPreservesOwner(t *testing.T) {
 	server := testServer(t)
 	key, err := server.Store.ReadOrCreateRootKey()

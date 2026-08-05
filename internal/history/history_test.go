@@ -420,10 +420,15 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 	ctx := context.Background()
 	started := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
 	finished := started.Add(10 * time.Second)
-	startPage := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-1", Events: []telemetry.Event{
+	utilization := 42.0
+	startPage := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-2", Events: []telemetry.Event{
 		event(t, 1, telemetry.EventJobStarted, started, telemetry.JobEvent{
 			ExecutionID: "job-claimed", AuthorizationID: "auth-claimed", Source: "authorized_process",
-			RunName: "GLM TP4 benchmark", Mode: "user", Holder: "alice", Command: []string{"python", "train.py"}, GPUs: []int{3}, StartedAt: &started, StartPrecision: "observed",
+			RunName: "GLM TP4 benchmark", TokenMode: "claimed", Mode: "user", Holder: "alice", Command: []string{"python", "train.py"}, GPUs: []int{3}, StartedAt: &started, StartPrecision: "observed",
+		}),
+		event(t, 2, telemetry.EventGPUSample, started.Add(5*time.Second), telemetry.GPUSample{
+			WindowStart: started, WindowEnd: started.Add(5 * time.Second), Status: "ok",
+			GPUs: []telemetry.GPUSampleEntry{{GPU: 3, GroupIDs: []string{"claimed:job-claimed"}, UtilizationPct: &utilization}},
 		}),
 	}}
 	if err := store.ApplyPage(ctx, "server-a", "GPU node", startPage); err != nil {
@@ -437,10 +442,10 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 		t.Fatalf("active claimed activity = %+v, error = %v", active, err)
 	}
 
-	finishPage := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-2", Events: []telemetry.Event{
-		event(t, 2, telemetry.EventJobFinished, finished, telemetry.JobEvent{
+	finishPage := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-3", Events: []telemetry.Event{
+		event(t, 3, telemetry.EventJobFinished, finished, telemetry.JobEvent{
 			ExecutionID: "job-claimed", AuthorizationID: "auth-claimed", Source: "authorized_process",
-			Mode: "user", Holder: "alice", Command: []string{"python", "train.py"}, GPUs: []int{3}, StartedAt: &started,
+			TokenMode: "claimed", Mode: "user", Holder: "alice", Command: []string{"python", "train.py"}, GPUs: []int{3}, StartedAt: &started,
 			FinishedAt: &finished, StartPrecision: "observed", FinishPrecision: "observed", Reason: "process_gone",
 		}),
 	}}
@@ -455,12 +460,18 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 		sessions[0].Purpose != "GLM TP4 benchmark" || sessions[0].JobCount != 1 || len(sessions[0].GPUs) != 1 || sessions[0].GPUs[0] != 3 {
 		t.Fatalf("claimed activity = %+v", sessions)
 	}
+	if len(sessions[0].GPUSummaries) != 1 || sessions[0].GPUSummaries[0].ObservedMS != 5_000 ||
+		sessions[0].GPUSummaries[0].BusyMS != 5_000 || sessions[0].GPUSummaries[0].AverageUtilization == nil ||
+		*sessions[0].GPUSummaries[0].AverageUtilization != utilization {
+		t.Fatalf("claimed utilization = %+v", sessions[0].GPUSummaries)
+	}
 	summary, _, _, err := store.Search(ctx, SearchExpression{}, SearchSort{}, 10, SearchCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if summary.Sessions != 1 || summary.Reservations != 0 || summary.ClaimedRuns != 1 ||
-		summary.ReservedGPUHours != 0 || summary.Jobs != 1 {
+		summary.ReservedGPUHours != 0 || summary.Jobs != 1 || summary.AverageUtilization == nil ||
+		*summary.AverageUtilization != utilization {
 		t.Fatalf("claimed summary = %+v", summary)
 	}
 }

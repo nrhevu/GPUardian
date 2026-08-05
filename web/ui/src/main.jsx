@@ -736,11 +736,8 @@ function App() {
     : null;
   const selectedGPUList = Array.from(selectedGPUs).sort((a, b) => a - b);
   const allGPUIds = gpus.map((gpu) => gpu.id);
-  const availableGPUIds = gpus
-    .filter((gpu) => (gpu.state || "available") === "available")
-    .map((gpu) => gpu.id);
-  const allAvailableSelected =
-    availableGPUIds.length > 0 && availableGPUIds.every((gpuId) => selectedGPUs.has(gpuId));
+  const allGPUsSelected =
+    allGPUIds.length > 0 && allGPUIds.every((gpuId) => selectedGPUs.has(gpuId));
   const displayGPU = activeGPU ?? selectedGPUList[0] ?? gpus[0]?.id ?? 0;
 
   function selectServer(id) {
@@ -771,14 +768,14 @@ function App() {
   }
 
   function selectAllGPUs() {
-    if (allAvailableSelected) {
+    if (allGPUsSelected) {
       setSelectedGPUs(new Set());
       setActiveGPU(null);
       return;
     }
-    setSelectedGPUs(new Set(availableGPUIds));
-    if (availableGPUIds.length > 0) {
-      setActiveGPU(availableGPUIds[0]);
+    setSelectedGPUs(new Set(allGPUIds));
+    if (allGPUIds.length > 0) {
+      setActiveGPU(allGPUIds[0]);
     }
   }
 
@@ -1325,9 +1322,6 @@ function App() {
             {visibleRootItems.length === 0 && (
               <p className="px-2.5 py-3 text-xs text-muted-foreground">No nodes found.</p>
             )}
-            {isAdmin && visibleRootItems.length > 0 && (
-              <div className="h-6 rounded-md border border-dashed border-transparent hover:border-sidebar-border" aria-label="Drop at root level" />
-            )}
           </div>
         </div>
       </aside>
@@ -1433,11 +1427,11 @@ function App() {
                   <Legend />
                   <button
                     type="button"
-                    className={`select-all-button ${allAvailableSelected ? "active" : ""}`}
-                    aria-pressed={allAvailableSelected}
+                    className={`select-all-button ${allGPUsSelected ? "active" : ""}`}
+                    aria-pressed={allGPUsSelected}
                     onClick={selectAllGPUs}
                   >
-                    <span className="select-all-box">{allAvailableSelected ? "✓" : ""}</span>
+                    <span className="select-all-box">{allGPUsSelected ? "✓" : ""}</span>
                     Select All
                   </button>
                 </div>
@@ -2118,7 +2112,7 @@ function historyFilterFields(servers = []) {
     { value: "purpose", label: "Session name / purpose", type: "text", placeholder: "training" },
     { value: "owner", label: "Owner", type: "text", placeholder: "username" },
     { value: "node", label: "Node", type: "enum", options: servers.map((server) => ({ value: server.id, label: server.name })) },
-    { value: "kind", label: "Activity type", type: "enum", options: options([["reservation", "Reservation"], ["claimed_run", "Claimed run"]]) },
+    { value: "kind", label: "Activity type", type: "enum", options: options([["reservation", "Reservation"], ["claimed_run", "Claimed"]]) },
     { value: "source", label: "Session source", type: "enum", options: options([["web", "Web"], ["cli", "CLI"]]) },
     { value: "status", label: "Status", type: "enum", options: options([["scheduled", "Scheduled"], ["active", "Active"], ["completed", "Completed"], ["revoked", "Revoked"]]) },
     { value: "history_quality", label: "Telemetry quality", type: "enum", options: options([["complete", "Complete"], ["partial", "Partial"]]) },
