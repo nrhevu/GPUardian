@@ -1235,7 +1235,7 @@ function App() {
                         />
                       ) : (
                         <span
-                          className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-300"
+                          className="min-w-0 flex-1 truncate text-foreground"
                           onDoubleClick={() => beginLayoutRename("group", group.id, group.name)}
                           title={isAdmin ? `${group.name} — double-click to rename` : group.name}
                         >
@@ -1617,7 +1617,8 @@ function App() {
 function SidebarNodeItem({ server, item, active, nested, online, isAdmin, editing, draft, dragging, itemClass, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
   return (
     <div
-      className={`${itemClass(active)} group/node select-none ${nested ? "ml-3 w-[calc(100%-0.75rem)]" : ""} ${dragging ? "opacity-45" : ""}`.trim()}
+      className={`${itemClass(active)} group/node select-none ${nested ? "ml-3" : ""} ${dragging ? "opacity-45" : ""}`.trim()}
+      style={nested ? { width: "calc(100% - 0.75rem)" } : undefined}
       role="button"
       tabIndex={0}
       draggable={isAdmin && !editing}
@@ -1653,7 +1654,7 @@ function SidebarNodeItem({ server, item, active, nested, online, isAdmin, editin
         />
       ) : (
         <span
-          className={`truncate ${active ? "text-sidebar-primary-foreground" : "text-slate-700 dark:text-slate-300"}`}
+          className={`truncate ${active ? "text-sidebar-primary-foreground" : "text-foreground"}`}
           onDoubleClick={(event) => {
             event.stopPropagation();
             onRenameStart("node", server.id, server.name);

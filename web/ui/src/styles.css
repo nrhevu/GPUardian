@@ -1,58 +1,59 @@
 :root {
   /* color-scheme is set in index.css alongside the dark overrides. */
-  --bg: #faf9f5;
+  --bg: #f6f8fa;
   --surface: #ffffff;
-  --sidebar: #f3f2ec;
+  --sidebar: #f6f8fa;
   --sidebar-soft: #ffffff;
-  --text: #1c1c1a;
-  --muted: #8a897f;
-  --line: rgba(0, 0, 0, 0.12);
-  --line-strong: rgba(0, 0, 0, 0.22);
-  --green: #3b7d18;
-  --green-soft: #eaf3de;
-  --amber: #ef9f27;
-  --amber-soft: #faeeda;
-  --orange: #f97316;
-  --orange-soft: #ffedd5;
-  --red: #e24b4a;
-  --red-soft: #fcebeb;
-  --accent: #378add;
-  --shadow: 0 16px 38px rgba(28, 28, 26, 0.11);
+  --text: #1f2328;
+  --muted: #59636e;
+  --line: #d1d9e0;
+  --line-strong: #818b98;
+  --green: #1a7f37;
+  --green-soft: #dafbe1;
+  --amber: #bf8700;
+  --amber-soft: #fff8c5;
+  --orange: #bc4c00;
+  --orange-soft: #fff1e5;
+  --red: #cf222e;
+  --red-soft: #ffebe9;
+  --accent: #0969da;
+  --shadow: 0 0 0 1px #d1d9e040, 0 6px 12px -3px #25292e0a,
+    0 6px 18px #25292e1f;
 
   /* Semantic aliases so hard-coded legacy colors can track the theme. These
      mirror the Tailwind token names in index.css. */
-  --well: #f8fafc;
-  --well-strong: #f1f5f9;
-  --well-deep: #eef2f7;
-  --ink: #111827;
-  --ink-soft: #374151;
-  --subtle: #475569;
-  --faint: #64748b;
-  --dim: #94a3b8;
-  --edge: #cbd5e1;
-  --fill: #e2e8f0;
-  --fill-strong: #e5e7eb;
-  --teal: #0f766e;
-  --teal-soft: #f0fdfa;
-  --teal-deep: #115e59;
-  --danger: #dc2626;
-  --danger-strong: #b91c1c;
-  --danger-deep: #991b1b;
-  --danger-edge: #fecaca;
-  --danger-tint: #fff7f7;
-  --danger-bg: #fef2f2;
-  --ok: #15803d;
-  --ok-deep: #166534;
-  --ok-bg: #f0fdf4;
-  --ok-soft: #dcfce7;
-  --ok-edge: #bbf7d0;
-  --ok-check: #86efac;
-  --warn-deep: #92400e;
-  --warn-edge: #fde68a;
-  --warn-bg: #fffbeb;
+  --well: #f6f8fa;
+  --well-strong: #eff2f5;
+  --well-deep: #e6eaef;
+  --ink: #1f2328;
+  --ink-soft: #25292e;
+  --subtle: #59636e;
+  --faint: #59636e;
+  --dim: #818b98;
+  --edge: #d1d9e0;
+  --fill: #d1d9e0;
+  --fill-strong: #d8dee4;
+  --teal: #0969da;
+  --teal-soft: #ddf4ff;
+  --teal-deep: #0550ae;
+  --danger: #cf222e;
+  --danger-strong: #a40e26;
+  --danger-deep: #82071e;
+  --danger-edge: #ff8182;
+  --danger-tint: #ffebe9;
+  --danger-bg: #ffebe9;
+  --ok: #1a7f37;
+  --ok-deep: #116329;
+  --ok-bg: #dafbe1;
+  --ok-soft: #dafbe1;
+  --ok-edge: #4ac26b;
+  --ok-check: #2da44e;
+  --warn-deep: #9a6700;
+  --warn-edge: #d4a72c;
+  --warn-bg: #fff8c5;
   --font-sans:
-    ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial,
+    sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
   --font-mono:
     ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-family: var(--font-sans);
