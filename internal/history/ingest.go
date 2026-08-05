@@ -272,24 +272,7 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 	var expiresMS int64
 	var revoked sql.NullInt64
 	groups := telemetryGroups(payload.GroupID, payload.GroupIDs)
-	var sessions []string
-	for _, groupID := range groups {
-		var candidate string
-		var candidateExpires int64
-		var candidateRevoked sql.NullInt64
-		var candidateKind string
-		if err := tx.QueryRowContext(ctx, "SELECT session_id,kind,expires_at_ms,revoked_at_ms FROM reservation_sessions WHERE node_id=? AND group_id=?", nodeID, groupID).Scan(&candidate, &candidateKind, &candidateExpires, &candidateRevoked); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return err
-		}
-		sessions = append(sessions, candidate)
-		if session == "" {
-			session, kind, expiresMS, revoked = candidate, candidateKind, candidateExpires, candidateRevoked
-		}
-	}
-	if session == "" && len(groups) == 0 && isClaimedRun(payload.TokenMode) {
+	if len(groups) == 0 && isClaimedRun(payload.TokenMode) {
 		if strings.TrimSpace(payload.ExecutionID) == "" {
 			return nil
 		}
@@ -307,34 +290,49 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 		if !endAt.After(startedAt) {
 			endAt = startedAt.Add(time.Millisecond)
 		}
-		groupID := "claimed:" + payload.ExecutionID
-		session = sessionID(nodeID, groupID)
-		kind = "claimed_run"
-		expiresMS = millis(endAt)
+		groupID := claimedSessionGroup(payload)
 		purpose := strings.TrimSpace(payload.RunName)
 		if purpose == "" {
 			purpose = "Claimed run"
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO reservation_sessions(session_id,node_id,server_id,server_name,group_id,kind,owner_username,owner_editable,purpose,source,
-			created_at_ms,starts_at_ms,expires_at_ms,finalized_at_ms,history_quality,provisioning,updated_at_ms)
-			VALUES(?,?,?,?,?,'claimed_run',?,0,?,'cli',?,?,?,?,'complete',0,?)
+			created_at_ms,starts_at_ms,expires_at_ms,history_quality,provisioning,updated_at_ms)
+			VALUES(?,?,?,?,?,'claimed_run',?,0,?,'cli',?,?,?,'complete',0,?)
 			ON CONFLICT(node_id,group_id) DO UPDATE SET server_id=excluded.server_id,server_name=excluded.server_name,
 			owner_username=excluded.owner_username,purpose=CASE WHEN excluded.purpose='Claimed run' THEN reservation_sessions.purpose ELSE excluded.purpose END,
 			starts_at_ms=MIN(reservation_sessions.starts_at_ms,excluded.starts_at_ms),
-			expires_at_ms=MAX(reservation_sessions.expires_at_ms,excluded.expires_at_ms),
-			finalized_at_ms=COALESCE(excluded.finalized_at_ms,reservation_sessions.finalized_at_ms),updated_at_ms=excluded.updated_at_ms`,
-			session, nodeID, serverID, serverName, groupID, payload.Holder, purpose, millis(startedAt), millis(startedAt), expiresMS,
-			nullableMillis(payload.FinishedAt), millis(occurredAt))
+			expires_at_ms=MAX(reservation_sessions.expires_at_ms,excluded.expires_at_ms),updated_at_ms=excluded.updated_at_ms`,
+			sessionID(nodeID, groupID), nodeID, serverID, serverName, groupID, payload.Holder, purpose,
+			millis(startedAt), millis(startedAt), millis(endAt), millis(occurredAt))
 		if err != nil {
 			return err
 		}
-		sessions = []string{session}
-		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO session_results(session_id) VALUES(?)", session); err != nil {
+		groups = []string{groupID}
+	}
+	var sessions []string
+	for _, groupID := range groups {
+		var candidate string
+		var candidateExpires int64
+		var candidateRevoked sql.NullInt64
+		var candidateKind string
+		if err := tx.QueryRowContext(ctx, "SELECT session_id,kind,expires_at_ms,revoked_at_ms FROM reservation_sessions WHERE node_id=? AND group_id=?", nodeID, groupID).Scan(&candidate, &candidateKind, &candidateExpires, &candidateRevoked); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
 			return err
+		}
+		sessions = append(sessions, candidate)
+		if session == "" {
+			session, kind, expiresMS, revoked = candidate, candidateKind, candidateExpires, candidateRevoked
 		}
 	}
 	if session == "" {
 		return nil
+	}
+	if kind == "claimed_run" {
+		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO session_results(session_id) VALUES(?)", session); err != nil {
+			return err
+		}
 	}
 	if kind != "claimed_run" {
 		effectiveEnd := timeFromMillis(expiresMS)
@@ -353,7 +351,8 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 		root_exited_at_ms,finished_at_ms,start_precision,finish_precision,exit_code,end_reason,updated_at_ms,runtime_uid,runtime_username,
 		runtime_container_id,runtime_docker_container_name,runtime_kubernetes_namespace,runtime_kubernetes_pod_name,runtime_kubernetes_container_name)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(node_id,job_id) DO UPDATE SET command_json=CASE WHEN excluded.command_json IN ('[]','null') THEN jobs.command_json ELSE excluded.command_json END,
+		ON CONFLICT(node_id,job_id) DO UPDATE SET session_id=excluded.session_id,authorization_id=excluded.authorization_id,
+		command_json=CASE WHEN excluded.command_json IN ('[]','null') THEN jobs.command_json ELSE excluded.command_json END,
 		started_at_ms=COALESCE(jobs.started_at_ms,excluded.started_at_ms),root_exited_at_ms=COALESCE(excluded.root_exited_at_ms,jobs.root_exited_at_ms),
 		finished_at_ms=COALESCE(excluded.finished_at_ms,jobs.finished_at_ms),start_precision=CASE WHEN excluded.start_precision='' THEN jobs.start_precision ELSE excluded.start_precision END,
 		finish_precision=CASE WHEN excluded.finish_precision='' THEN jobs.finish_precision ELSE excluded.finish_precision END,
@@ -381,6 +380,9 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 			if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO authorization_sessions(node_id,authorization_id,session_id) VALUES(?,?,?)", nodeID, payload.AuthorizationID, linkedSession); err != nil {
 				return err
 			}
+			if _, err := tx.ExecContext(ctx, "UPDATE authorization_scopes SET session_id=? WHERE node_id=? AND authorization_id=?", linkedSession, nodeID, payload.AuthorizationID); err != nil {
+				return err
+			}
 		}
 	}
 	for _, gpu := range payload.GPUs {
@@ -397,6 +399,17 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 			}
 		}
 	}
+	if kind == "claimed_run" {
+		_, err := tx.ExecContext(ctx, `UPDATE reservation_sessions SET
+			starts_at_ms=COALESCE((SELECT MIN(started_at_ms) FROM jobs WHERE session_id=?),starts_at_ms),
+			expires_at_ms=MAX(starts_at_ms+1,COALESCE((SELECT MAX(COALESCE(finished_at_ms,root_exited_at_ms,updated_at_ms,started_at_ms)) FROM jobs WHERE session_id=?),expires_at_ms)),
+			finalized_at_ms=CASE WHEN EXISTS(SELECT 1 FROM jobs WHERE session_id=? AND finished_at_ms IS NULL) THEN NULL
+				ELSE (SELECT MAX(finished_at_ms) FROM jobs WHERE session_id=?) END,
+			updated_at_ms=MAX(updated_at_ms,?) WHERE session_id=?`, session, session, session, session, millis(occurredAt), session)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -405,6 +418,13 @@ func isClaimedRun(tokenMode string) bool {
 	// come from claimed or managed fixed-key execution because reserved
 	// jobs always carry their reservation group.
 	return tokenMode == "" || tokenMode == "claimed" || tokenMode == "managed"
+}
+
+func claimedSessionGroup(payload telemetry.JobEvent) string {
+	if strings.TrimSpace(payload.AuthorizationID) != "" {
+		return "claimed-auth:" + payload.AuthorizationID
+	}
+	return "claimed:" + payload.ExecutionID
 }
 
 func telemetryGroups(primary string, additional []string) []string {
@@ -439,8 +459,7 @@ func applyGPUSample(ctx context.Context, tx *sql.Tx, nodeID string, payload tele
 			var session, kind string
 			var startsMS, expiresMS int64
 			var revoked, finalized sql.NullInt64
-			if err := tx.QueryRowContext(ctx, `SELECT session_id,kind,starts_at_ms,expires_at_ms,revoked_at_ms,finalized_at_ms FROM reservation_sessions
-				WHERE node_id=? AND group_id=?`, nodeID, groupID).Scan(&session, &kind, &startsMS, &expiresMS, &revoked, &finalized); err != nil {
+			if err := resolveGPUSampleSession(ctx, tx, nodeID, groupID).Scan(&session, &kind, &startsMS, &expiresMS, &revoked, &finalized); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					continue
 				}
@@ -484,6 +503,19 @@ func applyGPUSample(ctx context.Context, tx *sql.Tx, nodeID string, payload tele
 		}
 	}
 	return nil
+}
+
+func resolveGPUSampleSession(ctx context.Context, tx *sql.Tx, nodeID, groupID string) *sql.Row {
+	if strings.HasPrefix(groupID, "claimed:") && !strings.HasPrefix(groupID, "claimed-auth:") {
+		executionID := strings.TrimPrefix(groupID, "claimed:")
+		var found int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs WHERE node_id=? AND job_id=?", nodeID, executionID).Scan(&found); err == nil && found > 0 {
+			return tx.QueryRowContext(ctx, `SELECT r.session_id,r.kind,r.starts_at_ms,r.expires_at_ms,r.revoked_at_ms,r.finalized_at_ms
+				FROM jobs j JOIN reservation_sessions r ON r.session_id=j.session_id WHERE j.node_id=? AND j.job_id=?`, nodeID, executionID)
+		}
+	}
+	return tx.QueryRowContext(ctx, `SELECT session_id,kind,starts_at_ms,expires_at_ms,revoked_at_ms,finalized_at_ms FROM reservation_sessions
+		WHERE node_id=? AND group_id=?`, nodeID, groupID)
 }
 
 func applyNodeGPUIntervals(ctx context.Context, tx *sql.Tx, nodeID string, gpu telemetry.GPUSampleEntry, start, end time.Time) error {

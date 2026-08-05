@@ -488,6 +488,9 @@ func claimedTelemetryGroup(event telemetry.JobEvent) string {
 	if event.TokenMode != model.TokenModeClaimed && event.TokenMode != model.TokenModeManaged {
 		return ""
 	}
+	if event.AuthorizationID != "" {
+		return "claimed-auth:" + event.AuthorizationID
+	}
 	return "claimed:" + event.ExecutionID
 }
 

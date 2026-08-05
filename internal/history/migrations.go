@@ -236,3 +236,96 @@ CREATE TRIGGER IF NOT EXISTS session_purpose_fts_delete AFTER DELETE ON reservat
   DELETE FROM session_purpose_fts WHERE session_id=old.session_id;
 END;
 `
+
+const migrationV7 = `
+CREATE TEMP TABLE claimed_session_merge (
+  old_session_id TEXT PRIMARY KEY,
+  canonical_session_id TEXT NOT NULL,
+  canonical_group_id TEXT NOT NULL
+);
+INSERT INTO claimed_session_merge(old_session_id,canonical_session_id,canonical_group_id)
+SELECT r.session_id,
+  (SELECT MIN(r2.session_id)
+   FROM reservation_sessions r2
+   JOIN jobs j2 ON j2.session_id=r2.session_id
+   WHERE r2.kind='claimed_run' AND r2.node_id=r.node_id AND j2.authorization_id=j.authorization_id),
+  'claimed-auth:' || j.authorization_id
+FROM reservation_sessions r
+JOIN jobs j ON j.session_id=r.session_id
+WHERE r.kind='claimed_run' AND j.authorization_id<>''
+GROUP BY r.session_id
+HAVING COUNT(DISTINCT j.authorization_id)=1;
+
+CREATE TEMP TABLE claimed_gpu_merge AS
+SELECT m.canonical_session_id,g.gpu
+FROM claimed_session_merge m
+JOIN session_gpus g ON g.session_id=m.old_session_id
+GROUP BY m.canonical_session_id,g.gpu;
+CREATE TEMP TABLE claimed_summary_merge AS
+SELECT m.canonical_session_id,s.gpu,SUM(s.observed_ms) AS observed_ms,SUM(s.busy_ms) AS busy_ms,
+  SUM(s.utilization_integral) AS utilization_integral,SUM(s.memory_integral) AS memory_integral,
+  SUM(s.memory_observed_ms) AS memory_observed_ms,MAX(s.peak_memory_bytes) AS peak_memory_bytes,
+  SUM(s.valid_samples) AS valid_samples,SUM(s.missing_samples) AS missing_samples
+FROM claimed_session_merge m
+JOIN session_gpu_summaries s ON s.session_id=m.old_session_id
+GROUP BY m.canonical_session_id,s.gpu;
+CREATE TEMP TABLE claimed_rollup_merge AS
+SELECT m.canonical_session_id,g.gpu,g.minute_ms,SUM(g.observed_ms) AS observed_ms,SUM(g.busy_ms) AS busy_ms,
+  SUM(g.utilization_integral) AS utilization_integral,SUM(g.memory_integral) AS memory_integral,
+  SUM(g.memory_observed_ms) AS memory_observed_ms,MAX(g.peak_memory_bytes) AS peak_memory_bytes,
+  SUM(g.valid_samples) AS valid_samples,SUM(g.missing_samples) AS missing_samples
+FROM claimed_session_merge m
+JOIN gpu_minute_rollups g ON g.session_id=m.old_session_id
+GROUP BY m.canonical_session_id,g.gpu,g.minute_ms;
+
+INSERT OR IGNORE INTO job_sessions(node_id,job_id,session_id)
+SELECT j.node_id,j.job_id,m.canonical_session_id
+FROM jobs j JOIN claimed_session_merge m ON m.old_session_id=j.session_id;
+INSERT OR IGNORE INTO authorization_sessions(node_id,authorization_id,session_id)
+SELECT a.node_id,a.authorization_id,m.canonical_session_id
+FROM authorization_sessions a JOIN claimed_session_merge m ON m.old_session_id=a.session_id;
+UPDATE authorization_scopes
+SET session_id=(SELECT m.canonical_session_id FROM claimed_session_merge m WHERE m.old_session_id=authorization_scopes.session_id)
+WHERE session_id IN (SELECT old_session_id FROM claimed_session_merge);
+UPDATE jobs
+SET session_id=(SELECT m.canonical_session_id FROM claimed_session_merge m WHERE m.old_session_id=jobs.session_id)
+WHERE session_id IN (SELECT old_session_id FROM claimed_session_merge);
+
+UPDATE reservation_sessions AS canonical
+SET created_at_ms=(SELECT MIN(r.created_at_ms) FROM reservation_sessions r JOIN claimed_session_merge m ON m.old_session_id=r.session_id WHERE m.canonical_session_id=canonical.session_id),
+  starts_at_ms=(SELECT MIN(r.starts_at_ms) FROM reservation_sessions r JOIN claimed_session_merge m ON m.old_session_id=r.session_id WHERE m.canonical_session_id=canonical.session_id),
+  expires_at_ms=(SELECT MAX(r.expires_at_ms) FROM reservation_sessions r JOIN claimed_session_merge m ON m.old_session_id=r.session_id WHERE m.canonical_session_id=canonical.session_id),
+  finalized_at_ms=CASE
+    WHEN EXISTS(SELECT 1 FROM reservation_sessions r JOIN claimed_session_merge m ON m.old_session_id=r.session_id WHERE m.canonical_session_id=canonical.session_id AND r.finalized_at_ms IS NULL) THEN NULL
+    ELSE (SELECT MAX(r.finalized_at_ms) FROM reservation_sessions r JOIN claimed_session_merge m ON m.old_session_id=r.session_id WHERE m.canonical_session_id=canonical.session_id)
+  END,
+  history_quality=CASE
+    WHEN EXISTS(SELECT 1 FROM reservation_sessions r JOIN claimed_session_merge m ON m.old_session_id=r.session_id WHERE m.canonical_session_id=canonical.session_id AND r.history_quality='partial') THEN 'partial'
+    ELSE 'complete'
+  END,
+  updated_at_ms=(SELECT MAX(r.updated_at_ms) FROM reservation_sessions r JOIN claimed_session_merge m ON m.old_session_id=r.session_id WHERE m.canonical_session_id=canonical.session_id),
+  group_id=(SELECT m.canonical_group_id FROM claimed_session_merge m WHERE m.canonical_session_id=canonical.session_id LIMIT 1)
+WHERE canonical.session_id IN (SELECT canonical_session_id FROM claimed_session_merge);
+
+UPDATE reservation_sessions
+SET provisioning=1
+WHERE session_id IN (SELECT old_session_id FROM claimed_session_merge WHERE old_session_id<>canonical_session_id);
+
+DELETE FROM session_gpus WHERE session_id IN (SELECT canonical_session_id FROM claimed_session_merge);
+INSERT INTO session_gpus(session_id,gpu,reservation_id)
+SELECT canonical_session_id,gpu,'claimed-merged:' || gpu FROM claimed_gpu_merge;
+INSERT INTO session_gpu_summaries(session_id,gpu,observed_ms,busy_ms,utilization_integral,memory_integral,
+  memory_observed_ms,peak_memory_bytes,valid_samples,missing_samples)
+SELECT canonical_session_id,gpu,observed_ms,busy_ms,utilization_integral,memory_integral,
+  memory_observed_ms,peak_memory_bytes,valid_samples,missing_samples FROM claimed_summary_merge;
+DELETE FROM gpu_minute_rollups WHERE session_id IN (SELECT canonical_session_id FROM claimed_session_merge);
+INSERT INTO gpu_minute_rollups(session_id,gpu,minute_ms,observed_ms,busy_ms,utilization_integral,memory_integral,
+  memory_observed_ms,peak_memory_bytes,valid_samples,missing_samples)
+SELECT canonical_session_id,gpu,minute_ms,observed_ms,busy_ms,utilization_integral,memory_integral,
+  memory_observed_ms,peak_memory_bytes,valid_samples,missing_samples FROM claimed_rollup_merge;
+
+DROP TABLE claimed_rollup_merge;
+DROP TABLE claimed_summary_merge;
+DROP TABLE claimed_gpu_merge;
+DROP TABLE claimed_session_merge;
+`

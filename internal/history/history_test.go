@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -428,7 +430,7 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 		}),
 		event(t, 2, telemetry.EventGPUSample, started.Add(5*time.Second), telemetry.GPUSample{
 			WindowStart: started, WindowEnd: started.Add(5 * time.Second), Status: "ok",
-			GPUs: []telemetry.GPUSampleEntry{{GPU: 3, GroupIDs: []string{"claimed:job-claimed"}, UtilizationPct: &utilization}},
+			GPUs: []telemetry.GPUSampleEntry{{GPU: 3, GroupIDs: []string{"claimed-auth:auth-claimed"}, UtilizationPct: &utilization}},
 		}),
 	}}
 	if err := store.ApplyPage(ctx, "server-a", "GPU node", startPage); err != nil {
@@ -473,6 +475,141 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 		summary.ReservedGPUHours != 0 || summary.Jobs != 1 || summary.AverageUtilization == nil ||
 		*summary.AverageUtilization != utilization {
 		t.Fatalf("claimed summary = %+v", summary)
+	}
+}
+
+func TestClaimedJobsWithSameAuthorizationShareOneSession(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	started := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	firstFinished := started.Add(10 * time.Second)
+	secondFinished := started.Add(20 * time.Second)
+	startPage := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-2", Events: []telemetry.Event{
+		event(t, 1, telemetry.EventJobStarted, started, telemetry.JobEvent{
+			ExecutionID: "job-gpu-0", AuthorizationID: "auth-shared", Source: "authorized_process", RunName: "Shared training",
+			TokenMode: "claimed", Mode: "docker", Holder: "alice", Command: []string{"python", "worker.py", "0"}, GPUs: []int{0}, StartedAt: &started,
+		}),
+		event(t, 2, telemetry.EventJobStarted, started, telemetry.JobEvent{
+			ExecutionID: "job-gpu-1", AuthorizationID: "auth-shared", Source: "authorized_process", RunName: "Shared training",
+			TokenMode: "claimed", Mode: "docker", Holder: "alice", Command: []string{"python", "worker.py", "1"}, GPUs: []int{1}, StartedAt: &started,
+		}),
+	}}
+	if err := store.ApplyPage(ctx, "server-a", "GPU node", startPage); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.ListSessions(ctx, SessionFilter{Limit: 10})
+	if err != nil || len(sessions) != 1 || sessions[0].JobCount != 2 || !reflect.DeepEqual(sessions[0].GPUs, []int{0, 1}) || sessions[0].Status != "active" {
+		t.Fatalf("grouped claimed session = %+v, error = %v", sessions, err)
+	}
+
+	finishFirst := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-3", Events: []telemetry.Event{
+		event(t, 3, telemetry.EventJobFinished, firstFinished, telemetry.JobEvent{
+			ExecutionID: "job-gpu-0", AuthorizationID: "auth-shared", Source: "authorized_process", RunName: "Shared training",
+			TokenMode: "claimed", Mode: "docker", Holder: "alice", GPUs: []int{0}, StartedAt: &started, FinishedAt: &firstFinished,
+		}),
+	}}
+	if err := store.ApplyPage(ctx, "server-a", "GPU node", finishFirst); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.ListSessions(ctx, SessionFilter{Status: "active", Limit: 10})
+	if err != nil || len(active) != 1 {
+		t.Fatalf("session finalized while a sibling job was active: %+v, error = %v", active, err)
+	}
+
+	finishSecond := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-4", Events: []telemetry.Event{
+		event(t, 4, telemetry.EventJobFinished, secondFinished, telemetry.JobEvent{
+			ExecutionID: "job-gpu-1", AuthorizationID: "auth-shared", Source: "authorized_process", RunName: "Shared training",
+			TokenMode: "claimed", Mode: "docker", Holder: "alice", GPUs: []int{1}, StartedAt: &started, FinishedAt: &secondFinished,
+		}),
+	}}
+	if err := store.ApplyPage(ctx, "server-a", "GPU node", finishSecond); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := store.ListSessions(ctx, SessionFilter{Status: "completed", Limit: 10})
+	if err != nil || len(completed) != 1 || completed[0].JobCount != 2 || completed[0].FinalizedAt == nil || !completed[0].FinalizedAt.Equal(secondFinished) {
+		t.Fatalf("completed grouped claimed session = %+v, error = %v", completed, err)
+	}
+	jobs, err := store.ListJobs(ctx, completed[0].ID, 10, 0, "")
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("grouped claimed jobs = %+v, error = %v", jobs, err)
+	}
+}
+
+func TestClaimedSessionMigrationGroupsLegacyGPUJobs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	finished := started.Add(20 * time.Second)
+	if _, err := store.DB().Exec(`INSERT INTO nodes(node_id,last_server_id,first_seen_at_ms,last_seen_at_ms) VALUES('node-a','server-a',?,?)`, millis(started), millis(finished)); err != nil {
+		t.Fatal(err)
+	}
+	for index, id := range []string{"legacy-a", "legacy-b"} {
+		if _, err := store.DB().Exec(`INSERT INTO reservation_sessions(session_id,node_id,server_id,server_name,group_id,kind,owner_username,purpose,source,
+			created_at_ms,starts_at_ms,expires_at_ms,finalized_at_ms,updated_at_ms)
+			VALUES(?,'node-a','server-a','GPU node',?,'claimed_run','alice','Shared training','cli',?,?,?,?,?)`,
+			id, fmt.Sprintf("claimed:job-%d", index), millis(started), millis(started), millis(finished), millis(finished), millis(finished)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.DB().Exec(`INSERT INTO session_gpus(session_id,gpu,reservation_id) VALUES(?,?,?)`, id, index, fmt.Sprintf("claim-%d", index)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.DB().Exec(`INSERT INTO session_gpu_summaries(session_id,gpu,observed_ms,busy_ms,utilization_integral,valid_samples)
+			VALUES(?,?,1000,1000,50000,1)`, id, index); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.DB().Exec(`INSERT INTO jobs(node_id,job_id,session_id,authorization_id,source,mode,holder,started_at_ms,finished_at_ms,updated_at_ms)
+			VALUES('node-a',?,?, 'auth-shared','authorized_process','docker','alice',?,?,?)`,
+			fmt.Sprintf("job-%d", index), id, millis(started), millis(finished), millis(finished)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.DB().Exec(`INSERT INTO job_gpus(node_id,job_id,gpu) VALUES('node-a',?,?)`, fmt.Sprintf("job-%d", index), index); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.DB().Exec("DELETE FROM schema_migrations WHERE version=7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sessions, err := store.ListSessions(context.Background(), SessionFilter{Limit: 10})
+	if err != nil || len(sessions) != 1 || sessions[0].JobCount != 2 || !reflect.DeepEqual(sessions[0].GPUs, []int{0, 1}) {
+		t.Fatalf("migrated claimed sessions = %+v, error = %v", sessions, err)
+	}
+	var groupID string
+	if err := store.DB().QueryRow("SELECT group_id FROM reservation_sessions WHERE session_id=?", sessions[0].ID).Scan(&groupID); err != nil || groupID != "claimed-auth:auth-shared" {
+		t.Fatalf("canonical claimed group = %q, error = %v", groupID, err)
+	}
+	jobs, err := store.ListJobs(context.Background(), sessions[0].ID, 10, 0, "")
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("migrated claimed jobs = %+v, error = %v", jobs, err)
+	}
+	utilization := 25.0
+	legacySample := telemetry.Page{NodeID: "node-a", StreamID: "legacy-stream", NextCursor: "cursor-1", Events: []telemetry.Event{
+		event(t, 1, telemetry.EventGPUSample, started.Add(2*time.Second), telemetry.GPUSample{
+			WindowStart: started.Add(time.Second), WindowEnd: started.Add(2 * time.Second), Status: "ok",
+			GPUs: []telemetry.GPUSampleEntry{{GPU: 1, GroupID: "claimed:job-1", UtilizationPct: &utilization}},
+		}),
+	}}
+	if err := store.ApplyPage(context.Background(), "server-a", "GPU node", legacySample); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := store.GetSession(context.Background(), sessions[0].ID)
+	if err != nil || len(migrated.GPUSummaries) != 2 || migrated.GPUSummaries[1].ObservedMS != 2_000 {
+		t.Fatalf("legacy claimed sample was not routed to the grouped session: %+v, error = %v", migrated.GPUSummaries, err)
 	}
 }
 
@@ -652,7 +789,7 @@ func TestMigrationReopenWALAndRejectNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if _, err := store.DB().Exec("INSERT INTO schema_migrations(version,checksum,applied_at_ms) VALUES(7,'future',?)", time.Now().UnixMilli()); err != nil {
+	if _, err := store.DB().Exec("INSERT INTO schema_migrations(version,checksum,applied_at_ms) VALUES(8,'future',?)", time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

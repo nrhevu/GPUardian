@@ -108,9 +108,10 @@ func TestTelemetrySamplesClaimedRunGroup(t *testing.T) {
 	server.observedJobs = map[string]*observedTelemetryJob{
 		"claimed-job": {
 			event: telemetry.JobEvent{
-				ExecutionID: "job-claimed",
-				TokenMode:   model.TokenModeClaimed,
-				GPUs:        []int{3},
+				ExecutionID:     "job-claimed",
+				AuthorizationID: "auth-claimed",
+				TokenMode:       model.TokenModeClaimed,
+				GPUs:            []int{3},
 			},
 		},
 	}
@@ -133,8 +134,8 @@ func TestTelemetrySamplesClaimedRunGroup(t *testing.T) {
 	if len(page.Events) != 1 || json.Unmarshal(page.Events[0].Payload, &sample) != nil {
 		t.Fatalf("events = %+v, want one decodable GPU sample", page.Events)
 	}
-	if len(sample.GPUs) != 1 || sample.GPUs[0].GroupID != "claimed:job-claimed" ||
-		len(sample.GPUs[0].GroupIDs) != 1 || sample.GPUs[0].GroupIDs[0] != "claimed:job-claimed" {
+	if len(sample.GPUs) != 1 || sample.GPUs[0].GroupID != "claimed-auth:auth-claimed" ||
+		len(sample.GPUs[0].GroupIDs) != 1 || sample.GPUs[0].GroupIDs[0] != "claimed-auth:auth-claimed" {
 		t.Fatalf("claimed GPU sample = %+v", sample.GPUs)
 	}
 }
