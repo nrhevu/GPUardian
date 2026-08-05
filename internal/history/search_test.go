@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +31,9 @@ func TestSearchExpressionFiltersSessionFactsAndJobs(t *testing.T) {
 	}
 	insertSearchJob(t, store, "node-a", "job-alpha", "alpha", "gpuardian_run", "run", []string{"python", "train.py"}, 0, []int{0, 1}, now.Add(-20*time.Minute))
 	insertSearchJob(t, store, "node-b", "job-beta", "beta", "authorized_process", "user", []string{"bash", "evaluate.sh"}, 2, []int{2}, now.Add(-150*time.Minute))
+	if _, err := store.DB().Exec("UPDATE jobs SET runtime_kubernetes_namespace='ml-team',runtime_kubernetes_pod_name='evaluator-pod' WHERE job_id='job-beta'"); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("and groups with or rules", func(t *testing.T) {
 		expression := SearchExpression{Groups: []SearchGroup{
@@ -52,6 +56,25 @@ func TestSearchExpressionFiltersSessionFactsAndJobs(t *testing.T) {
 		}
 		if summary.Sessions != 1 || len(sessions) != 1 || sessions[0].ID != "beta" {
 			t.Fatalf("unexpected server-scoped result: summary=%+v sessions=%+v", summary, sessions)
+		}
+	})
+
+	t.Run("free text searches session and job details", func(t *testing.T) {
+		for query, want := range map[string]string{
+			"training alpha": "alpha",
+			"evaluate.sh":    "beta",
+			"evaluator-pod":  "beta",
+			"revoked":        "revoked",
+			"2":              "beta",
+		} {
+			_, sessions, _, err := store.Search(ctx, SearchExpression{Query: query}, SearchSort{}, 50, SearchCursor{})
+			if err != nil || len(sessions) != 1 || sessions[0].ID != want {
+				t.Fatalf("query %q result=%+v err=%v", query, sessions, err)
+			}
+		}
+		_, sessions, _, err := store.Search(ctx, SearchExpression{Query: `alpha%' OR 1=1 --`}, SearchSort{}, 50, SearchCursor{})
+		if err != nil || len(sessions) != 0 {
+			t.Fatalf("literal free text result=%+v err=%v", sessions, err)
 		}
 	})
 
@@ -137,6 +160,9 @@ func TestSearchExpressionValidationAndCursor(t *testing.T) {
 	}
 	if _, _, _, err := store.Search(context.Background(), SearchExpression{}, SearchSort{Field: "private_sql", Direction: "asc"}, 10, SearchCursor{}); !errors.Is(err, ErrInvalidSearchFilter) {
 		t.Fatalf("sort validation error=%v", err)
+	}
+	if _, _, _, err := store.Search(context.Background(), SearchExpression{Query: strings.Repeat("x", maxSearchStringBytes+1)}, SearchSort{}, 10, SearchCursor{}); !errors.Is(err, ErrInvalidSearchFilter) {
+		t.Fatalf("query length error=%v", err)
 	}
 	revokedSummary, err := store.Summary(context.Background(), SessionFilter{Status: "revoked"})
 	if err != nil || revokedSummary.Sessions != 0 {

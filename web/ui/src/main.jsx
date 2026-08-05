@@ -192,6 +192,7 @@ function App() {
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [historyNextCursor, setHistoryNextCursor] = useState("");
   const [historyFilters, setHistoryFilters] = useState({ groups: [] });
+  const [historySearch, setHistorySearch] = useState("");
   const [historySort, setHistorySort] = useState({ field: "starts_at", direction: "desc" });
   const settingsRef = useRef(null);
   const historyRequestRef = useRef(0);
@@ -354,7 +355,7 @@ function App() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [auth.authenticated, view, historyFilters, historySort, selectedServerId]);
+  }, [auth.authenticated, view, historyFilters, historySearch, historySort, selectedServerId]);
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -463,6 +464,7 @@ function App() {
       setHistoryJobs([]);
       setHistoryNextCursor("");
       setHistoryFilters({ groups: [] });
+      setHistorySearch("");
       setHistorySort({ field: "starts_at", direction: "desc" });
       historyRequestRef.current += 1;
     }
@@ -484,7 +486,7 @@ function App() {
     }
   }
 
-  async function loadHistory({ filters = historyFilters, sort = historySort, serverId = selectedServerId, cursor = "", append = false, signal } = {}) {
+  async function loadHistory({ filters = historyFilters, query = historySearch, sort = historySort, serverId = selectedServerId, cursor = "", append = false, signal } = {}) {
     if (historyFilterErrors(filters).length > 0) {
       return;
     }
@@ -508,7 +510,7 @@ function App() {
         method: "POST",
         signal,
         body: JSON.stringify({
-          filter: historySearchExpression(filters, serverId),
+          filter: historySearchExpression(filters, serverId, query),
           sort,
           limit: historyPageSize,
           cursor,
@@ -1373,11 +1375,13 @@ function App() {
             sessions={historySessions}
             servers={servers}
             filters={historyFilters}
+            search={historySearch}
             sort={historySort}
             loading={historyLoading}
             loadingMore={historyLoadingMore}
             nextCursor={historyNextCursor}
             onFilters={setHistoryFilters}
+            onSearch={setHistorySearch}
             onSort={setHistorySort}
             onLoadMore={() => loadHistory({ cursor: historyNextCursor, append: true })}
             onOpen={openHistorySession}
@@ -1541,7 +1545,7 @@ function SidebarNodeItem({ server, item, active, nested, online, isAdmin, editin
   );
 }
 
-function HistoryDashboard({ summary, sessions, servers, filters, sort, loading, loadingMore, nextCursor, onFilters, onSort, onLoadMore, onOpen }) {
+function HistoryDashboard({ summary, sessions, servers, filters, search, sort, loading, loadingMore, nextCursor, onFilters, onSearch, onSort, onLoadMore, onOpen }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const filterRef = useRef(null);
   const errors = historyFilterErrors(filters);
@@ -1624,8 +1628,8 @@ function HistoryDashboard({ summary, sessions, servers, filters, sort, loading, 
       <div className="history-filter-controls">
         <p className="muted history-metric-note">
           Reserved GPU hours = elapsed reserved time × GPU count; future time and time after revoke are excluded.{" "}
-          {ruleCount > 0
-            ? "Busy GPU hours, busy ratio, and average utilization cover the sessions matching the current filters."
+          {ruleCount > 0 || search.trim()
+            ? "Busy GPU hours, busy ratio, and average utilization cover the sessions matching the current search and filters."
             : "Busy GPU hours, busy ratio, and average utilization cover all observed GPU activity on the selected node, including workloads outside reservations and claims."}{" "}
           Telemetry coverage remains reservation telemetry coverage.
         </p>
@@ -1675,6 +1679,18 @@ function HistoryDashboard({ summary, sessions, servers, filters, sort, loading, 
       <section className="history-list-panel">
         <div className="section-heading">
           <div><h2>GPU activity</h2><p className="muted">Reservation sessions and claimed runs are retained after they end.</p></div>
+          <label className="relative block w-full sm:w-72">
+            <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <input
+              type="search"
+              className="h-9 w-full rounded-md border border-input bg-background pr-3 pl-9 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-accent-subtle"
+              placeholder="Search activity, command, user…"
+              aria-label="Search GPU activity"
+              maxLength={1024}
+              value={search}
+              onChange={(event) => onSearch(event.target.value)}
+            />
+          </label>
         </div>
         <div className="history-table-scroll">
           <div className="history-table">
@@ -1707,7 +1723,7 @@ function HistoryDashboard({ summary, sessions, servers, filters, sort, loading, 
                 </button>
               );
             })}
-            {!loading && sessions.length === 0 && <div className="empty">No GPU activity matches these filters.</div>}
+            {!loading && sessions.length === 0 && <div className="empty">No GPU activity matches this search and filters.</div>}
             {nextCursor && <button type="button" className="history-load-more" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? "Loading…" : "Load more"}</button>}
           </div>
         </div>
@@ -2078,9 +2094,10 @@ function historyFilterErrors(filters) {
   return errors;
 }
 
-function historySearchExpression(filters, serverId = "") {
+function historySearchExpression(filters, serverId = "", query = "") {
   return {
     server_id: serverId,
+    query: query.trim(),
     groups: (filters.groups || []).map((group) => ({
       rules: group.rules.map((rule) => {
         const field = historyFilterField(rule.field);
