@@ -401,8 +401,11 @@ credential must be replaced, because the previous version stops working after
 the managed-key snapshot reaches each node.
 
 When an authorized claimed workload starts on an unreserved GPU, it claims the
-GPU and the daemon evicts other non-bypassed processes that do not belong to
-that claim. An active reservation still takes precedence over a claim.
+GPU even if an unregistered process is already using it. The daemon evicts
+non-bypassed processes that do not belong to that claim, whether they started
+before the claim or appear later. Until a registered claimed workload actually
+uses the GPU, unrelated processes do not trigger a claim and are not evicted.
+An active reservation still takes precedence over a claim.
 
 Each production node must be managed by exactly one web gateway. Current
 daemons bind managed-key sync to an authority derived from the gateway's

@@ -310,6 +310,7 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 	if s.observedJobs == nil {
 		s.observedJobs = make(map[string]*observedTelemetryJob)
 	}
+	currentGroups := make(map[string][]string)
 	for _, decision := range decisions {
 		if decision.Action != "allow" || decision.Reason == "bypass" || decision.AuthID == "" || decision.Process.PID <= 0 || decision.Info.StartTime == 0 {
 			continue
@@ -340,30 +341,17 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 			continue
 		}
 		key := fmt.Sprintf("%s/%d/%d", authorization.ID, decision.Process.PID, decision.Info.StartTime)
+		for _, groupID := range groupIDs {
+			groups := currentGroups[key]
+			if addString(&groups, groupID) {
+				currentGroups[key] = groups
+			}
+		}
 		seen[key] = true
 		job := s.observedJobs[key]
 		if job == nil {
-			started := now.UTC()
-			event := telemetry.JobEvent{
-				ExecutionID:     observedExecutionID(s.bootID, authorization.ID, decision.Process.PID, decision.Info.StartTime),
-				AuthorizationID: authorization.ID,
-				GroupIDs:        append([]string(nil), groupIDs...),
-				TokenMode:       authorization.TokenMode,
-				Source:          "authorized_process",
-				Mode:            authorization.Mode,
-				Holder:          authorization.Holder,
-				RunName:         authorization.RunName,
-				PID:             decision.Process.PID,
-				ProcStartTicks:  decision.Info.StartTime,
-				Command:         boundedTelemetryCommand(decision.Info.Cmdline),
-				GPUs:            []int{decision.Process.GPU},
-				StartedAt:       &started,
-				StartPrecision:  "observed",
-				RuntimeContext:  s.jobRuntimeContext(decision.Info, authorization.Mode),
-			}
-			if len(groupIDs) > 0 {
-				event.GroupID = groupIDs[0]
-			}
+			event := s.newObservedTelemetryJobEvent(authorization, decision, groupIDs, now,
+				observedExecutionID(s.bootID, authorization.ID, decision.Process.PID, decision.Info.StartTime))
 			job = &observedTelemetryJob{event: event, lastSeen: now}
 			s.observedJobs[key] = job
 			s.emitTelemetry(telemetry.EventJobStarted, event, now)
@@ -380,6 +368,32 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		}
 	}
 	for key, job := range s.observedJobs {
+		if !seen[key] || len(currentGroups[key]) > 0 || (job.event.GroupID == "" && len(job.event.GroupIDs) == 0) ||
+			(job.event.TokenMode != model.TokenModeClaimed && job.event.TokenMode != model.TokenModeManaged) {
+			continue
+		}
+		finished := now.UTC()
+		previous := job.event
+		previous.FinishedAt = &finished
+		previous.FinishPrecision = "observed"
+		previous.Reason = "reservation_ended"
+		s.emitTelemetry(telemetry.EventJobFinished, previous, finished)
+
+		continued := job.event
+		continued.ExecutionID = observedContinuationExecutionID(s.bootID, continued.AuthorizationID, continued.PID, continued.ProcStartTicks, now)
+		continued.GroupID = ""
+		continued.GroupIDs = nil
+		continued.StartedAt = &finished
+		continued.RootExitedAt = nil
+		continued.FinishedAt = nil
+		continued.StartPrecision = "observed"
+		continued.FinishPrecision = ""
+		continued.ExitCode = nil
+		continued.Reason = ""
+		s.observedJobs[key] = &observedTelemetryJob{event: continued, lastSeen: now}
+		s.emitTelemetry(telemetry.EventJobStarted, continued, now)
+	}
+	for key, job := range s.observedJobs {
 		if seen[key] {
 			continue
 		}
@@ -394,6 +408,31 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		s.emitTelemetry(telemetry.EventJobFinished, job.event, finished)
 		delete(s.observedJobs, key)
 	}
+}
+
+func (s *Server) newObservedTelemetryJobEvent(authorization model.Authorization, decision enforce.Decision, groupIDs []string, at time.Time, executionID string) telemetry.JobEvent {
+	started := at.UTC()
+	event := telemetry.JobEvent{
+		ExecutionID:     executionID,
+		AuthorizationID: authorization.ID,
+		GroupIDs:        append([]string(nil), groupIDs...),
+		TokenMode:       authorization.TokenMode,
+		Source:          "authorized_process",
+		Mode:            authorization.Mode,
+		Holder:          authorization.Holder,
+		RunName:         authorization.RunName,
+		PID:             decision.Process.PID,
+		ProcStartTicks:  decision.Info.StartTime,
+		Command:         boundedTelemetryCommand(decision.Info.Cmdline),
+		GPUs:            []int{decision.Process.GPU},
+		StartedAt:       &started,
+		StartPrecision:  "observed",
+		RuntimeContext:  s.jobRuntimeContext(decision.Info, authorization.Mode),
+	}
+	if len(groupIDs) > 0 {
+		event.GroupID = groupIDs[0]
+	}
+	return event
 }
 
 func (s *Server) rememberRunJob(token model.Token, authorization model.Authorization, pid int, command []string, at time.Time) telemetry.JobEvent {
@@ -577,6 +616,11 @@ func boundedTelemetryCommand(command []string) []string {
 
 func observedExecutionID(bootID, authID string, pid int, start uint64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d", bootID, authID, pid, start)))
+	return "exec_" + hex.EncodeToString(sum[:12])
+}
+
+func observedContinuationExecutionID(bootID, authID string, pid int, start uint64, at time.Time) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%d", bootID, authID, pid, start, at.UTC().UnixNano())))
 	return "exec_" + hex.EncodeToString(sum[:12])
 }
 

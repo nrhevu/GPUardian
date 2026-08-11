@@ -375,13 +375,13 @@
 
 .history-table {
   display: grid;
-  min-width: 980px;
+  min-width: 1060px;
 }
 
 .history-table-head,
 .history-table-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.5fr) minmax(90px, .7fr) minmax(170px, 1.2fr) 70px 90px 60px 140px;
+  grid-template-columns: minmax(180px, 1.5fr) 90px minmax(90px, .7fr) minmax(170px, 1.2fr) 70px 90px 60px 140px;
   gap: 12px;
   align-items: center;
 }
@@ -477,6 +477,22 @@
 .history-table-row small {
   color: var(--muted);
   font-size: 11px;
+}
+
+.history-type {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--accent);
+  background: var(--teal-soft);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.history-type.claimed {
+  color: var(--amber);
+  background: var(--amber-soft);
 }
 
 .history-status {

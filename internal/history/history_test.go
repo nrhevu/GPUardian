@@ -478,6 +478,56 @@ func TestClaimedJobCreatesDashboardActivityWithoutReservationHours(t *testing.T)
 	}
 }
 
+func TestReservationJobContinuationCreatesClaimedDashboardActivity(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	started := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	transitionedAt := started.Add(30 * time.Second)
+	page := telemetry.Page{NodeID: "node-a", StreamID: "stream-a", NextCursor: "cursor-4", Events: []telemetry.Event{
+		event(t, 1, telemetry.EventReservationUpsert, started, telemetry.ReservationUpsert{
+			GroupID: "group-reserved", Holder: "alice", Purpose: "Reserved training", CreatedAt: started,
+			StartsAt: started, ExpiresAt: transitionedAt, Members: []telemetry.ReservationMember{{ReservationID: "res-0", GPU: 0}},
+		}),
+		event(t, 2, telemetry.EventJobStarted, started, telemetry.JobEvent{
+			ExecutionID: "job-reserved", AuthorizationID: "auth-shared", GroupID: "group-reserved", GroupIDs: []string{"group-reserved"},
+			TokenMode: "managed", Source: "authorized_process", Mode: "docker", Holder: "alice", GPUs: []int{0}, StartedAt: &started,
+		}),
+		event(t, 3, telemetry.EventJobFinished, transitionedAt, telemetry.JobEvent{
+			ExecutionID: "job-reserved", AuthorizationID: "auth-shared", GroupID: "group-reserved", GroupIDs: []string{"group-reserved"},
+			TokenMode: "managed", Source: "authorized_process", Mode: "docker", Holder: "alice", GPUs: []int{0}, StartedAt: &started,
+			FinishedAt: &transitionedAt, FinishPrecision: "observed", Reason: "reservation_ended",
+		}),
+		event(t, 4, telemetry.EventJobStarted, transitionedAt, telemetry.JobEvent{
+			ExecutionID: "job-claimed", AuthorizationID: "auth-shared", TokenMode: "managed", Source: "authorized_process",
+			Mode: "docker", Holder: "alice", RunName: "Continue after reservation", GPUs: []int{0}, StartedAt: &transitionedAt,
+		}),
+	}}
+	if err := store.ApplyPage(ctx, "server-a", "GPU node", page); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.ListSessions(ctx, SessionFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %+v", sessions)
+	}
+	byKind := make(map[string]Session, len(sessions))
+	for _, session := range sessions {
+		byKind[session.Kind] = session
+	}
+	if reservation := byKind["reservation"]; reservation.ID == "" || reservation.JobCount != 1 {
+		t.Fatalf("reservation session = %+v", reservation)
+	}
+	if claimed := byKind["claimed_run"]; claimed.ID == "" || claimed.Status != "active" || claimed.Purpose != "Continue after reservation" || claimed.JobCount != 1 {
+		t.Fatalf("claimed session = %+v", claimed)
+	}
+}
+
 func TestClaimedJobsWithSameAuthorizationShareOneSession(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {

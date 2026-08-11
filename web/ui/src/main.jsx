@@ -1866,6 +1866,7 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
           <div className="history-table">
             <div className="history-table-head">
               <HistorySortHeader label="Session" field="purpose" sort={sort} onSort={changeSort} />
+              <HistorySortHeader label="Type" field="kind" sort={sort} onSort={changeSort} />
               <HistorySortHeader label="Owner" field="owner" sort={sort} onSort={changeSort} />
               <HistorySortHeader label="Window" field="starts_at" sort={sort} onSort={changeSort} />
               <HistorySortHeader label="GPU" field="gpu" sort={sort} onSort={changeSort} />
@@ -1880,6 +1881,7 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
               return (
                 <button className="history-table-row" key={session.id} onClick={() => onOpen(session.id)}>
                   <span><strong>{session.purpose || "Reservation"}</strong><small>{session.server_name}</small></span>
+                  <span><em className={`history-type ${session.kind === "claimed_run" ? "claimed" : "reservation"}`}>{session.kind === "claimed_run" ? "Claimed" : "Reservation"}</em></span>
                   <span>{session.owner}</span>
                   <span>{compactDateTime(session.starts_at)}<small>to {compactDateTime(session.expires_at)}</small></span>
                   <span>{session.gpus?.join(", ") || "—"}</span>

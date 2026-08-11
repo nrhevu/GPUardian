@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -585,6 +586,86 @@ func TestObservedTelemetryRecordsClaimedJobWithoutReservation(t *testing.T) {
 	}
 }
 
+func TestObservedTelemetryStartsClaimedJobWhenReservationEnds(t *testing.T) {
+	server := testServer(t)
+	dir := t.TempDir()
+	box, err := telemetry.Open(filepath.Join(dir, "node.id"), filepath.Join(dir, "outbox"), "boot-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+	server.Telemetry = box
+	server.bootID = "boot-test"
+
+	now := time.Now().UTC()
+	state := model.State{
+		Tokens: []model.Token{{ID: "uk_alice", Hash: "hash", Mode: model.TokenModeManaged}},
+		Reservations: []model.Reservation{
+			{
+				ID: "res_gpu0", GroupID: "grp_reservation", GPU: 0, TokenHash: "hash", Holder: "alice",
+				CreatedAt: now.Add(-time.Hour), StartsAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Second), Active: true,
+			},
+			{
+				ID: "res_gpu1", GroupID: "grp_reservation", GPU: 1, TokenHash: "hash", Holder: "alice",
+				CreatedAt: now.Add(-time.Hour), StartsAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Second), Active: true,
+			},
+		},
+		Authorizations: []model.Authorization{{
+			ID: "auth_claimed", TokenHash: "hash", TokenMode: model.TokenModeManaged, Mode: model.ModeDocker,
+			Holder: "alice", RunName: "Continue after reservation",
+		}},
+	}
+	info := model.ProcInfo{PID: 42, StartTime: 99, UID: 1001, Username: "alice", Cmdline: []string{"python", "train.py"}}
+	decisions := []enforce.Decision{
+		{Action: "allow", AuthID: "auth_claimed", Process: model.GPUProcess{PID: 42, GPU: 0}, Info: info},
+		{Action: "allow", AuthID: "auth_claimed", Process: model.GPUProcess{PID: 42, GPU: 1}, Info: info},
+	}
+
+	server.trackObservedTelemetryJobs(state, decisions, now)
+	transitionedAt := now.Add(2 * time.Second)
+	server.trackObservedTelemetryJobs(state, decisions, transitionedAt)
+
+	page, err := box.Page("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started []telemetry.JobEvent
+	var finished []telemetry.JobEvent
+	for _, event := range page.Events {
+		var job telemetry.JobEvent
+		switch event.Type {
+		case telemetry.EventJobStarted:
+			if err := json.Unmarshal(event.Payload, &job); err != nil {
+				t.Fatal(err)
+			}
+			started = append(started, job)
+		case telemetry.EventJobFinished:
+			if err := json.Unmarshal(event.Payload, &job); err != nil {
+				t.Fatal(err)
+			}
+			finished = append(finished, job)
+		}
+	}
+	if len(started) != 2 || len(finished) != 1 {
+		t.Fatalf("transition events: started=%+v finished=%+v", started, finished)
+	}
+	if started[0].GroupID != "grp_reservation" || len(started[0].GroupIDs) != 1 {
+		t.Fatalf("reservation job = %+v", started[0])
+	}
+	if finished[0].ExecutionID != started[0].ExecutionID || finished[0].FinishedAt == nil || finished[0].Reason != "reservation_ended" {
+		t.Fatalf("finished reservation job = %+v", finished[0])
+	}
+	claimed := started[1]
+	if claimed.ExecutionID == started[0].ExecutionID || claimed.GroupID != "" || len(claimed.GroupIDs) != 0 ||
+		claimed.RunName != "Continue after reservation" || claimed.StartedAt == nil || !claimed.StartedAt.Equal(transitionedAt) ||
+		!reflect.DeepEqual(claimed.GPUs, []int{0, 1}) {
+		t.Fatalf("claimed continuation = %+v", claimed)
+	}
+	if group := claimedTelemetryGroup(claimed); group != "claimed-auth:auth_claimed" {
+		t.Fatalf("claimed telemetry group = %q", group)
+	}
+}
+
 func TestJobRuntimeContextIncludesKubernetesLocation(t *testing.T) {
 	server := testServer(t)
 	context := server.jobRuntimeContext(model.ProcInfo{
@@ -772,7 +853,7 @@ func TestNodeHTTPAllowCreatesAuthorization(t *testing.T) {
 	}
 }
 
-func TestClaimedMonitorClaimsGPUAndEvictsUnauthorizedProcess(t *testing.T) {
+func TestClaimedMonitorEvictsPreexistingUnauthorizedProcessWhenClaimStarts(t *testing.T) {
 	server := testServer(t)
 	key, err := server.Store.ReadOrCreateRootKey()
 	if err != nil {
@@ -805,19 +886,32 @@ func TestClaimedMonitorClaimsGPUAndEvictsUnauthorizedProcess(t *testing.T) {
 	}
 	killer := &daemonFakeKiller{}
 	server.Killer = killer
-	server.GPU = fakeAMD{processes: []model.GPUProcess{
-		{GPU: 0, PID: 100, MemBytes: 1},
-		{GPU: 0, PID: 200, MemBytes: 1},
-	}}
+	server.GPU = fakeAMD{processes: []model.GPUProcess{{GPU: 0, PID: 200, MemBytes: 1}}}
 	server.Proc = daemonFakeProc{infos: map[int]model.ProcInfo{
 		99:  {PID: 99, UID: 1000, Cgroup: "0::/gpuardian/auth_run"},
 		100: {PID: 100, UID: 1000, Cgroup: "0::/gpuardian/auth_run"},
 		200: {PID: 200, UID: 2000, Cgroup: "0::/user.slice"},
 	}}
 
+	// An unrelated process is allowed while no claimed workload is using the
+	// GPU. As soon as the registered claimed workload appears, it takes the
+	// GPU and the process that was already running must be evicted.
+	server.monitorOnce(context.Background())
+	status, err := server.Store.Status(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.SoftClaims) != 0 || len(killer.killed) != 0 {
+		t.Fatalf("GPU was claimed before the authorized workload started: claims=%+v killed=%v", status.SoftClaims, killer.killed)
+	}
+
+	server.GPU = fakeAMD{processes: []model.GPUProcess{
+		{GPU: 0, PID: 100, MemBytes: 1},
+		{GPU: 0, PID: 200, MemBytes: 1},
+	}}
 	server.monitorOnce(context.Background())
 
-	status, err := server.Store.Status(time.Now())
+	status, err = server.Store.Status(time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
