@@ -313,12 +313,32 @@ type queryRower interface {
 }
 
 func nodeWideGPUMetrics(ctx context.Context, queryer queryRower, serverID string) (int64, int64, sql.NullFloat64, bool, error) {
+	return nodeWideGPUMetricsQuery(ctx, queryer, serverID, nil, nil)
+}
+
+func nodeWideGPUMetricsBetween(ctx context.Context, queryer queryRower, serverID string, from, to time.Time) (int64, int64, sql.NullFloat64, bool, error) {
+	return nodeWideGPUMetricsQuery(ctx, queryer, serverID, &from, &to)
+}
+
+func nodeWideGPUMetricsQuery(ctx context.Context, queryer queryRower, serverID string, from, to *time.Time) (int64, int64, sql.NullFloat64, bool, error) {
 	query := `SELECT COALESCE(SUM(r.observed_ms),0),COALESCE(SUM(r.busy_ms),0),SUM(r.utilization_integral),COUNT(*)
 		FROM node_gpu_minute_rollups r JOIN nodes n ON n.node_id=r.node_id`
 	var args []any
+	var predicates []string
 	if strings.TrimSpace(serverID) != "" {
-		query += " WHERE n.last_server_id=?"
+		predicates = append(predicates, "n.last_server_id=?")
 		args = append(args, serverID)
+	}
+	if from != nil {
+		predicates = append(predicates, "r.minute_ms>=?")
+		args = append(args, millis(*from))
+	}
+	if to != nil {
+		predicates = append(predicates, "r.minute_ms<?")
+		args = append(args, millis(*to))
+	}
+	if len(predicates) > 0 {
+		query += " WHERE " + strings.Join(predicates, " AND ")
 	}
 	var observed, busy, rows int64
 	var integral sql.NullFloat64
@@ -533,6 +553,136 @@ func (s *Store) enrichSessions(ctx context.Context, sessions []Session) error {
 		}
 	}
 	return nil
+}
+
+// enrichSearchSessions loads the compact fields used by the history table in
+// batches. Search results intentionally omit result notes and artifacts; the
+// detail endpoint loads them when a user opens a session.
+func (s *Store) enrichSearchSessions(ctx context.Context, sessions []Session, loadJobStats bool) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	indexes := make(map[string]int, len(sessions))
+	args := make([]any, len(sessions))
+	for index := range sessions {
+		indexes[sessions[index].ID] = index
+		args[index] = sessions[index].ID
+		sessions[index].GPUs = nil
+		sessions[index].GPUSummaries = nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := s.db.QueryContext(ctx, `SELECT g.session_id,g.gpu,s.observed_ms,s.busy_ms,s.utilization_integral,
+		s.memory_integral,s.memory_observed_ms,s.peak_memory_bytes,s.valid_samples,s.missing_samples
+		FROM session_gpus g LEFT JOIN session_gpu_summaries s ON s.session_id=g.session_id AND s.gpu=g.gpu
+		WHERE g.session_id IN (`+placeholders+`) ORDER BY g.session_id,g.gpu`, args...)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var sessionID string
+		var gpu int
+		var observed, busy, memoryObserved, validSamples, missingSamples sql.NullInt64
+		var utilizationIntegral, memoryIntegral sql.NullFloat64
+		var peak sql.NullInt64
+		if err := rows.Scan(&sessionID, &gpu, &observed, &busy, &utilizationIntegral, &memoryIntegral,
+			&memoryObserved, &peak, &validSamples, &missingSamples); err != nil {
+			rows.Close()
+			return err
+		}
+		index, ok := indexes[sessionID]
+		if !ok {
+			continue
+		}
+		sessions[index].GPUs = append(sessions[index].GPUs, gpu)
+		if !observed.Valid {
+			continue
+		}
+		item := GPUSummary{
+			GPU:            gpu,
+			ObservedMS:     observed.Int64,
+			BusyMS:         busy.Int64,
+			ValidSamples:   validSamples.Int64,
+			MissingSamples: missingSamples.Int64,
+		}
+		if item.ObservedMS > 0 && utilizationIntegral.Valid {
+			value := utilizationIntegral.Float64 / float64(item.ObservedMS)
+			item.AverageUtilization = &value
+		}
+		if reserved := sessionReservedMS(sessions[index]); reserved > 0 {
+			item.Coverage = float64(item.ObservedMS) / float64(reserved)
+		}
+		if memoryObserved.Int64 > 0 && memoryIntegral.Valid {
+			value := memoryIntegral.Float64 / float64(memoryObserved.Int64)
+			item.AverageMemoryBytes = &value
+		}
+		if peak.Valid {
+			value := uint64(peak.Int64)
+			item.PeakMemoryBytes = &value
+		}
+		sessions[index].GPUSummaries = append(sessions[index].GPUSummaries, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !loadJobStats {
+		return nil
+	}
+
+	values := strings.TrimSuffix(strings.Repeat("(?),", len(args)), ",")
+	jobRows, err := s.db.QueryContext(ctx, `WITH selected(session_id) AS (VALUES `+values+`), session_jobs AS (
+		SELECT selected.session_id,j.node_id,j.job_id,j.started_at_ms,j.finished_at_ms
+		FROM selected JOIN jobs j ON j.session_id=selected.session_id
+		UNION
+		SELECT selected.session_id,j.node_id,j.job_id,j.started_at_ms,j.finished_at_ms
+		FROM selected JOIN job_sessions js ON js.session_id=selected.session_id
+		JOIN jobs j ON j.node_id=js.node_id AND j.job_id=js.job_id
+	) SELECT session_id,COUNT(*),MIN(started_at_ms),MAX(COALESCE(finished_at_ms,started_at_ms))
+		FROM session_jobs GROUP BY session_id`, args...)
+	if err != nil {
+		return err
+	}
+	for jobRows.Next() {
+		var sessionID string
+		var count int64
+		var first, last sql.NullInt64
+		if err := jobRows.Scan(&sessionID, &count, &first, &last); err != nil {
+			jobRows.Close()
+			return err
+		}
+		index, ok := indexes[sessionID]
+		if !ok {
+			continue
+		}
+		sessions[index].JobCount = count
+		sessions[index].FirstJobAt = timePtrFromNull(first)
+		sessions[index].LastJobAt = timePtrFromNull(last)
+	}
+	if err := jobRows.Err(); err != nil {
+		jobRows.Close()
+		return err
+	}
+	return jobRows.Close()
+}
+
+func sessionReservedMS(session Session) int64 {
+	effectiveEnd := session.ExpiresAt
+	if session.Kind == "claimed_run" && session.FinalizedAt != nil {
+		effectiveEnd = *session.FinalizedAt
+	}
+	if session.RevokedAt != nil && session.RevokedAt.Before(effectiveEnd) {
+		effectiveEnd = *session.RevokedAt
+	}
+	if session.Kind == "reservation" {
+		now := time.Now().UTC()
+		if now.Before(effectiveEnd) {
+			effectiveEnd = now
+		}
+	}
+	return max(int64(0), effectiveEnd.Sub(session.StartsAt).Milliseconds())
 }
 
 func sessionStatus(item Session, now time.Time) string {

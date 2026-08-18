@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -20,10 +21,15 @@ type historyResultRequest struct {
 }
 
 type historySearchRequest struct {
+	Filter         history.SearchExpression `json:"filter"`
+	Sort           history.SearchSort       `json:"sort"`
+	Limit          int                      `json:"limit"`
+	Cursor         string                   `json:"cursor"`
+	IncludeSummary *bool                    `json:"include_summary,omitempty"`
+}
+
+type historySummaryRequest struct {
 	Filter history.SearchExpression `json:"filter"`
-	Sort   history.SearchSort       `json:"sort"`
-	Limit  int                      `json:"limit"`
-	Cursor string                   `json:"cursor"`
 }
 
 func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +58,7 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid cursor")
 		return
 	}
-	summary, sessions, nextCursor, err := s.History.Search(r.Context(), request.Filter, request.Sort, request.Limit, cursor)
+	sessions, nextCursor, err := s.History.SearchPage(r.Context(), request.Filter, request.Sort, request.Limit, cursor)
 	if errors.Is(err, history.ErrInvalidSearchFilter) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -65,11 +71,25 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	if len(sessions) == request.Limit && len(sessions) > 0 {
 		next = encodeHistorySearchCursor(nextCursor)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"summary": summary, "sessions": sessions, "next_cursor": next})
+	response := map[string]any{"sessions": sessions, "next_cursor": next}
+	includeSummary := request.IncludeSummary == nil || *request.IncludeSummary
+	if includeSummary {
+		summary, err := s.historySummary(r.Context(), request.Filter)
+		if errors.Is(err, history.ErrInvalidSearchFilter) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		response["summary"] = summary
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleHistorySummary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -77,17 +97,47 @@ func (s *Server) handleHistorySummary(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "history is unavailable")
 		return
 	}
+	if r.Method == http.MethodPost {
+		var request historySummaryRequest
+		if err := decodeJSONBody(r, &request); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		summary, err := s.historySummary(r.Context(), request.Filter)
+		if errors.Is(err, history.ErrInvalidSearchFilter) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+		return
+	}
 	filter, err := parseHistoryFilter(r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	summary, err := s.History.Summary(r.Context(), filter)
+	var summary history.DashboardSummary
+	if filter.Owner == "" && filter.Status == "" && filter.From == nil && filter.To == nil {
+		summary, err = s.History.DailySummary(r.Context(), filter.ServerID, s.now().UTC())
+	} else {
+		summary, err = s.History.Summary(r.Context(), filter)
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) historySummary(ctx context.Context, expression history.SearchExpression) (history.DashboardSummary, error) {
+	if len(expression.Groups) == 0 && strings.TrimSpace(expression.Query) == "" {
+		return s.History.DailySummary(ctx, expression.ServerID, s.now().UTC())
+	}
+	return s.History.SearchSummary(ctx, expression)
 }
 
 func (s *Server) handleHistorySessions(w http.ResponseWriter, r *http.Request) {

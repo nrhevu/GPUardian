@@ -18,8 +18,9 @@ import (
 )
 
 type Store struct {
-	db      *sql.DB
-	writeMu sync.Mutex
+	db        *sql.DB
+	writeMu   sync.Mutex
+	summaryMu sync.Mutex
 }
 
 func Open(path string) (*Store, error) {
@@ -106,7 +107,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	migrations := []string{migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7}
+	migrations := []string{migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7, migrationV8}
 	for index, migration := range migrations {
 		version := index + 1
 		if version == 1 {

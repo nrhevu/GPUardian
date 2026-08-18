@@ -19,16 +19,41 @@ type historySyncState struct {
 }
 
 func (s *Server) runHistoryCollector(ctx context.Context) {
-	s.collectHistory(ctx)
 	ticker := time.NewTicker(historyPollInterval)
 	defer ticker.Stop()
+	refreshed := make(map[string]string)
+	retryAfter := make(map[string]time.Time)
 	for {
+		s.collectHistory(ctx)
+		s.refreshHistorySummaries(ctx, refreshed, retryAfter)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.collectHistory(ctx)
 		}
+	}
+}
+
+func (s *Server) refreshHistorySummaries(ctx context.Context, refreshed map[string]string, retryAfter map[string]time.Time) {
+	if s.History == nil {
+		return
+	}
+	now := s.now().UTC()
+	day := now.Format("2006-01-02")
+	records, err := s.Registry.List()
+	if err != nil {
+		return
+	}
+	for _, record := range records {
+		if refreshed[record.ID] == day || now.Before(retryAfter[record.ID]) {
+			continue
+		}
+		if _, err := s.History.RefreshDailySummary(ctx, record.ID, now); err != nil {
+			retryAfter[record.ID] = now.Add(time.Minute)
+			continue
+		}
+		refreshed[record.ID] = day
+		delete(retryAfter, record.ID)
 	}
 }
 

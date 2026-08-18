@@ -35,10 +35,10 @@ const historyPageSize = 50;
 const themeStorageKey = "gpuardian-theme";
 const nodeGroupCollapseStorageKey = "gpuardian-collapsed-node-groups";
 const historyStartupCacheRootPrefix = "gpuardian-history-startup-";
-const historyStartupCachePrefix = `${historyStartupCacheRootPrefix}v1`;
-const historyStartupCacheMaxAge = 7 * dayMs;
-const historyStartupCacheMaxBytes = 1_500_000;
-const historyStartupCacheTotalBytes = 3_000_000;
+const historyStartupCachePrefix = `${historyStartupCacheRootPrefix}v2`;
+const historyStartupCacheMaxAge = 25 * hourMs;
+const historyStartupCacheMaxBytes = 500_000;
+const historyStartupCacheTotalBytes = 1_500_000;
 const historyStartupCacheMaxEntries = 6;
 
 let historyFilterID = 0;
@@ -103,7 +103,6 @@ function writeHistoryStartupCache(user, serverID, response) {
     const value = JSON.stringify({ saved_at: Date.now(), response });
     const key = historyStartupCacheKey(user, serverID);
     if (value.length <= historyStartupCacheMaxBytes) {
-      pruneHistoryStartupCache();
       window.localStorage.setItem(key, value);
       pruneHistoryStartupCache();
     } else {
@@ -626,26 +625,50 @@ function App() {
     } else {
       setHistoryLoading(true);
     }
+    const expression = historySearchExpression(filters, serverId, query);
+    const startupQuery = !append && !cursor && isHistoryStartupQuery(filters, query, sort);
+    let listResponse = null;
+    let summaryResponse = null;
+    function cacheStartupResponse() {
+      if (startupQuery && listResponse && summaryResponse) {
+        writeHistoryStartupCache(auth.user, serverId, { ...listResponse, summary: summaryResponse });
+      }
+    }
+    if (!append && !cursor) {
+      void api("/api/history/summary", {
+        method: "POST",
+        signal,
+        body: JSON.stringify({ filter: expression }),
+      }).then((summary) => {
+        if (signal?.aborted || requestID !== historyRequestRef.current) return;
+        summaryResponse = summary;
+        setHistorySummary(summary);
+        cacheStartupResponse();
+      }).catch((err) => {
+        if (err.name !== "AbortError" && requestID === historyRequestRef.current) {
+          setError(err.message);
+        }
+      });
+    }
     try {
       const response = await api("/api/history/search", {
         method: "POST",
         signal,
         body: JSON.stringify({
-          filter: historySearchExpression(filters, serverId, query),
+          filter: expression,
           sort,
           limit: historyPageSize,
           cursor,
+          include_summary: false,
         }),
       });
       if (signal?.aborted || requestID !== historyRequestRef.current) {
         return;
       }
-      setHistorySummary(response.summary || null);
+      listResponse = response;
       setHistorySessions((current) => append ? [...current, ...(response.sessions || [])] : (response.sessions || []));
       setHistoryNextCursor(response.next_cursor || "");
-      if (!append && !cursor && isHistoryStartupQuery(filters, query, sort)) {
-        writeHistoryStartupCache(auth.user, serverId, response);
-      }
+      cacheStartupResponse();
     } catch (err) {
       if (err.name !== "AbortError" && requestID === historyRequestRef.current) {
         setError(err.message);
@@ -1797,10 +1820,13 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
       </div>
       <div className="history-filter-controls">
         <p className="muted history-metric-note">
+          {ruleCount > 0 || search.trim()
+            ? "Summary cards are recalculated for the current search and filters. "
+            : `Summary cards cover the latest 30 days and refresh once per day${summary?.updated_at ? ` (updated ${compactDateTime(summary.updated_at)})` : ""}. `}
           Reserved GPU hours = elapsed reserved time × GPU count; future time and time after revoke are excluded.{" "}
           {ruleCount > 0 || search.trim()
             ? "Busy GPU hours, busy ratio, and average utilization cover the sessions matching the current search and filters."
-            : "Busy GPU hours, busy ratio, and average utilization cover all observed GPU activity on the selected node, including workloads outside reservations and claims."}{" "}
+            : "Busy GPU hours, busy ratio, and average utilization cover all observed GPU activity on the selected node during that window, including workloads outside reservations and claims."}{" "}
           Telemetry coverage remains reservation telemetry coverage.
         </p>
         {loading && <span className="muted history-filter-refreshing">Refreshing…</span>}

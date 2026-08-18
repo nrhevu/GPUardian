@@ -115,15 +115,18 @@ type RuntimeContext struct {
 }
 
 type DashboardSummary struct {
-	Sessions           int64    `json:"sessions"`
-	Reservations       int64    `json:"reservations"`
-	ClaimedRuns        int64    `json:"claimed_runs"`
-	ReservedGPUHours   float64  `json:"reserved_gpu_hours"`
-	BusyGPUHours       float64  `json:"busy_gpu_hours"`
-	BusyRatio          float64  `json:"busy_ratio"`
-	AverageUtilization *float64 `json:"average_utilization_percent,omitempty"`
-	TelemetryCoverage  float64  `json:"telemetry_coverage"`
-	Jobs               int64    `json:"jobs"`
+	Sessions           int64      `json:"sessions"`
+	Reservations       int64      `json:"reservations"`
+	ClaimedRuns        int64      `json:"claimed_runs"`
+	ReservedGPUHours   float64    `json:"reserved_gpu_hours"`
+	BusyGPUHours       float64    `json:"busy_gpu_hours"`
+	BusyRatio          float64    `json:"busy_ratio"`
+	AverageUtilization *float64   `json:"average_utilization_percent,omitempty"`
+	TelemetryCoverage  float64    `json:"telemetry_coverage"`
+	Jobs               int64      `json:"jobs"`
+	WindowStart        *time.Time `json:"window_start,omitempty"`
+	WindowEnd          *time.Time `json:"window_end,omitempty"`
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
 }
 
 type SessionFilter struct {

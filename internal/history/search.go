@@ -46,29 +46,36 @@ const sessionFactsCTE = `WITH session_facts AS (
 	FROM reservation_sessions r WHERE r.provisioning=0
 )`
 
-// Search returns a summary and one keyset-paginated page from the same SQLite
-// read transaction. Session detail enrichment happens after the selected IDs
-// are fixed so the transaction does not hold a read lock across N+1 queries.
+// Search is the compatibility entry point for callers that need both parts.
+// The web UI requests SearchPage and SearchSummary independently so the list
+// can render before an uncached filtered summary finishes.
 func (s *Store) Search(ctx context.Context, expression SearchExpression, sort SearchSort, limit int, cursor SearchCursor) (DashboardSummary, []Session, SearchCursor, error) {
+	summary, err := s.SearchSummary(ctx, expression)
+	if err != nil {
+		return DashboardSummary{}, nil, SearchCursor{}, err
+	}
+	sessions, next, err := s.SearchPage(ctx, expression, sort, limit, cursor)
+	if err != nil {
+		return DashboardSummary{}, nil, SearchCursor{}, err
+	}
+	return summary, sessions, next, nil
+}
+
+// SearchSummary calculates a live summary for the supplied search expression.
+func (s *Store) SearchSummary(ctx context.Context, expression SearchExpression) (DashboardSummary, error) {
+	return s.searchSummary(ctx, expression, time.Now().UTC())
+}
+
+func (s *Store) searchSummary(ctx context.Context, expression SearchExpression, at time.Time) (DashboardSummary, error) {
 	predicate, predicateArgs, err := compileSearchExpression(expression)
 	if err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return DashboardSummary{}, err
 	}
-	sortSpec, err := compileSearchSort(sort)
-	if err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
-	}
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	now := time.Now().UTC().UnixMilli()
+	now := at.UTC().UnixMilli()
 	cteArgs := []any{now, now, now}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return DashboardSummary{}, err
 	}
 	defer tx.Rollback()
 
@@ -83,25 +90,28 @@ func (s *Store) Search(ctx context.Context, expression SearchExpression, sort Se
 		SUM(utilization_integral) FROM session_facts f WHERE ` + predicate
 	summaryArgs := append(append([]any{}, cteArgs...), predicateArgs...)
 	if err := tx.QueryRowContext(ctx, summaryQuery, summaryArgs...).Scan(&summary.Sessions, &summary.Reservations, &summary.ClaimedRuns, &reserved, &reservationObserved, &observed, &busy, &integral); err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return DashboardSummary{}, err
 	}
-	jobSummaryQuery := sessionFactsCTE + `, matched_sessions AS (SELECT f.session_id FROM session_facts f WHERE ` + predicate + `)
-		SELECT COUNT(DISTINCT j.node_id||':'||j.job_id) FROM jobs j WHERE EXISTS (
-			SELECT 1 FROM matched_sessions m WHERE j.session_id=m.session_id OR EXISTS (
-				SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=m.session_id
-			)
-		)`
+	jobSummaryQuery := sessionFactsCTE + `, matched_sessions AS (SELECT f.session_id FROM session_facts f WHERE ` + predicate + `), matched_jobs AS (
+		SELECT j.node_id,j.job_id FROM matched_sessions m JOIN jobs j ON j.session_id=m.session_id
+		UNION
+		SELECT j.node_id,j.job_id FROM matched_sessions m JOIN job_sessions js ON js.session_id=m.session_id
+		JOIN jobs j ON j.node_id=js.node_id AND j.job_id=js.job_id
+	) SELECT COUNT(*) FROM matched_jobs`
 	if err := tx.QueryRowContext(ctx, jobSummaryQuery, summaryArgs...).Scan(&summary.Jobs); err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return DashboardSummary{}, err
 	}
 	if reserved > 0 {
 		summary.ReservedGPUHours = float64(reserved) / float64(time.Hour/time.Millisecond)
 		summary.TelemetryCoverage = float64(reservationObserved) / float64(reserved)
 	}
-	if len(expression.Groups) == 0 && strings.TrimSpace(expression.Query) == "" {
-		globalObserved, globalBusy, globalIntegral, hasGlobalMetrics, err := nodeWideGPUMetrics(ctx, tx, expression.ServerID)
+	if !searchExpressionFiltered(expression) {
+		var globalObserved, globalBusy int64
+		var globalIntegral sql.NullFloat64
+		var hasGlobalMetrics bool
+		globalObserved, globalBusy, globalIntegral, hasGlobalMetrics, err = nodeWideGPUMetrics(ctx, tx, expression.ServerID)
 		if err != nil {
-			return DashboardSummary{}, nil, SearchCursor{}, err
+			return DashboardSummary{}, err
 		}
 		if hasGlobalMetrics {
 			observed, busy, integral = globalObserved, globalBusy, globalIntegral
@@ -113,16 +123,101 @@ func (s *Store) Search(ctx context.Context, expression SearchExpression, sort Se
 		value := integral.Float64 / float64(observed)
 		summary.AverageUtilization = &value
 	}
+	if err := tx.Commit(); err != nil {
+		return DashboardSummary{}, err
+	}
+	return summary, nil
+}
+
+// SearchPage returns one keyset-paginated list page. The common unfiltered,
+// newest-first view bypasses sessionFactsCTE and uses the covering page index.
+func (s *Store) SearchPage(ctx context.Context, expression SearchExpression, sort SearchSort, limit int, cursor SearchCursor) ([]Session, SearchCursor, error) {
+	if _, _, err := compileSearchExpression(expression); err != nil {
+		return nil, SearchCursor{}, err
+	}
+	sortSpec, err := compileSearchSort(sort)
+	if err != nil {
+		return nil, SearchCursor{}, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if !searchExpressionFiltered(expression) && sortSpec.field == "starts_at" && sortSpec.direction == "desc" {
+		return s.searchDefaultPage(ctx, expression.ServerID, limit, cursor)
+	}
+	return s.searchAdvancedPage(ctx, expression, sortSpec, limit, cursor)
+}
+
+func (s *Store) searchDefaultPage(ctx context.Context, serverID string, limit int, cursor SearchCursor) ([]Session, SearchCursor, error) {
+	if cursor.ID != "" && (cursor.Field != "starts_at" || cursor.Direction != "desc" || cursor.Number == nil) {
+		return nil, SearchCursor{}, invalidFilter("cursor does not match sort")
+	}
+	query := `SELECT r.session_id,r.kind,r.server_id,r.server_name,r.node_id,r.owner_username,r.owner_editable,r.purpose,r.source,
+		r.created_at_ms,r.starts_at_ms,r.expires_at_ms,r.revoked_at_ms,r.finalized_at_ms,r.history_quality,0,NULL,NULL
+		FROM reservation_sessions r WHERE r.provisioning=0`
+	var args []any
+	if strings.TrimSpace(serverID) != "" {
+		query += " AND r.server_id=?"
+		args = append(args, strings.TrimSpace(serverID))
+	}
+	if cursor.ID != "" {
+		query += " AND (r.starts_at_ms<? OR (r.starts_at_ms=? AND r.session_id<?))"
+		args = append(args, *cursor.Number, *cursor.Number, cursor.ID)
+	}
+	query += " ORDER BY r.starts_at_ms DESC,r.session_id DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, SearchCursor{}, err
+	}
+	var sessions []Session
+	for rows.Next() {
+		item, scanErr := scanSession(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, SearchCursor{}, scanErr
+		}
+		sessions = append(sessions, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, SearchCursor{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, SearchCursor{}, err
+	}
+	if err := s.enrichSearchSessions(ctx, sessions, true); err != nil {
+		return nil, SearchCursor{}, err
+	}
+	next := SearchCursor{Field: "starts_at", Direction: "desc"}
+	if len(sessions) > 0 {
+		next.ID = sessions[len(sessions)-1].ID
+		value := float64(sessions[len(sessions)-1].StartsAt.UnixMilli())
+		next.Number = &value
+	}
+	return sessions, next, nil
+}
+
+func (s *Store) searchAdvancedPage(ctx context.Context, expression SearchExpression, sortSpec searchSortSpec, limit int, cursor SearchCursor) ([]Session, SearchCursor, error) {
+	predicate, predicateArgs, err := compileSearchExpression(expression)
+	if err != nil {
+		return nil, SearchCursor{}, err
+	}
+	now := time.Now().UTC().UnixMilli()
+	cteArgs := []any{now, now, now}
 
 	pagePredicate := predicate
 	pageArgs := append([]any{}, predicateArgs...)
 	if cursor.ID != "" {
 		if cursor.Field != sortSpec.field || cursor.Direction != sortSpec.direction {
-			return DashboardSummary{}, nil, SearchCursor{}, invalidFilter("cursor does not match sort")
+			return nil, SearchCursor{}, invalidFilter("cursor does not match sort")
 		}
 		value, valueErr := sortSpec.cursorValue(cursor)
 		if valueErr != nil {
-			return DashboardSummary{}, nil, SearchCursor{}, valueErr
+			return nil, SearchCursor{}, valueErr
 		}
 		comparison := ">"
 		if sortSpec.direction == "desc" {
@@ -137,25 +232,30 @@ func (s *Store) Search(ctx context.Context, expression SearchExpression, sort Se
 		" ORDER BY " + sortSpec.expression + " " + strings.ToUpper(sortSpec.direction) + ",f.session_id " + strings.ToUpper(sortSpec.direction) + " LIMIT ?"
 	listArgs := append(append([]any{}, cteArgs...), pageArgs...)
 	listArgs = append(listArgs, limit)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, SearchCursor{}, err
+	}
+	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return nil, SearchCursor{}, err
 	}
 	var sessions []Session
 	for rows.Next() {
 		item, scanErr := scanSession(rows)
 		if scanErr != nil {
 			rows.Close()
-			return DashboardSummary{}, nil, SearchCursor{}, scanErr
+			return nil, SearchCursor{}, scanErr
 		}
 		sessions = append(sessions, item)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return nil, SearchCursor{}, err
 	}
 	if err := rows.Close(); err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return nil, SearchCursor{}, err
 	}
 	next := SearchCursor{Field: sortSpec.field, Direction: sortSpec.direction}
 	if len(sessions) > 0 {
@@ -165,24 +265,28 @@ func (s *Store) Search(ctx context.Context, expression SearchExpression, sort Se
 		if sortSpec.kind == "text" {
 			var value string
 			if err := tx.QueryRowContext(ctx, cursorQuery, cursorArgs...).Scan(&value); err != nil {
-				return DashboardSummary{}, nil, SearchCursor{}, err
+				return nil, SearchCursor{}, err
 			}
 			next.Text = &value
 		} else {
 			var value float64
 			if err := tx.QueryRowContext(ctx, cursorQuery, cursorArgs...).Scan(&value); err != nil {
-				return DashboardSummary{}, nil, SearchCursor{}, err
+				return nil, SearchCursor{}, err
 			}
 			next.Number = &value
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+		return nil, SearchCursor{}, err
 	}
-	if err := s.enrichSessions(ctx, sessions); err != nil {
-		return DashboardSummary{}, nil, SearchCursor{}, err
+	if err := s.enrichSearchSessions(ctx, sessions, false); err != nil {
+		return nil, SearchCursor{}, err
 	}
-	return summary, sessions, next, nil
+	return sessions, next, nil
+}
+
+func searchExpressionFiltered(expression SearchExpression) bool {
+	return len(expression.Groups) > 0 || strings.TrimSpace(expression.Query) != ""
 }
 
 type searchSortSpec struct {

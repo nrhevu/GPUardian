@@ -169,6 +169,50 @@ func TestSearchExpressionValidationAndCursor(t *testing.T) {
 	}
 }
 
+func TestDailySummaryCachesThirtyDayWindow(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	at := utcDayStart(time.Now()).Add(12 * time.Hour)
+	createSearchSession(t, store, "recent", "node", "server", "alice", "recent", at.Add(-48*time.Hour), at.Add(-47*time.Hour), []int{0})
+	createSearchSession(t, store, "old", "node", "server", "alice", "old", at.Add(-40*24*time.Hour), at.Add(-40*24*time.Hour+time.Hour), []int{0})
+	createSearchSession(t, store, "crossing", "node", "server", "alice", "crossing", at.Add(-40*24*time.Hour), at.Add(time.Hour), []int{1})
+
+	first, err := store.RefreshDailySummary(ctx, "server", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Sessions != 2 || first.ReservedGPUHours != 30*24+1 || first.WindowStart == nil || first.WindowEnd == nil || first.UpdatedAt == nil ||
+		!first.WindowStart.Equal(at.Add(-dailySummaryWindow)) || !first.WindowEnd.Equal(at) {
+		t.Fatalf("first daily summary = %+v", first)
+	}
+
+	createSearchSession(t, store, "same-day", "node", "server", "alice", "same day", at.Add(-time.Hour), at.Add(time.Hour), []int{1})
+	cached, err := store.DailySummary(ctx, "server", at.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.Sessions != 2 || cached.UpdatedAt == nil || !cached.UpdatedAt.Equal(at) {
+		t.Fatalf("same-day cache was recomputed: %+v", cached)
+	}
+
+	nextDay := at.Add(24 * time.Hour)
+	refreshed, err := store.DailySummary(ctx, "server", nextDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Sessions != 3 || refreshed.UpdatedAt == nil || !refreshed.UpdatedAt.Equal(nextDay) {
+		t.Fatalf("next-day summary = %+v", refreshed)
+	}
+	var rows int
+	if err := store.DB().QueryRow("SELECT COUNT(*) FROM history_daily_summaries WHERE server_id='server'").Scan(&rows); err != nil || rows != 2 {
+		t.Fatalf("daily summary cache rows = %d, error = %v", rows, err)
+	}
+}
+
 func TestPurposeSearchMigrationBackfillsAndMaintainsIndex(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
 	store, err := Open(path)

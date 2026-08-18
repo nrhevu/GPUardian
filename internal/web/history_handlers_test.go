@@ -151,6 +151,25 @@ func TestHistoryAPIReadForUsersAndResultOwnerOnly(t *testing.T) {
 		t.Fatalf("history query search = %d %s", querySearch.Code, querySearch.Body.String())
 	}
 
+	pageOnly := httptest.NewRecorder()
+	pageOnlyRequest := httptest.NewRequest(http.MethodPost, "/api/history/search", strings.NewReader(`{"filter":{"server_id":"server-a","groups":[]},"limit":50,"include_summary":false}`))
+	pageOnlyRequest.Header.Set("Content-Type", "application/json")
+	pageOnlyRequest.AddCookie(testSessionCookie(t, server, "bob", RoleUser))
+	handler.ServeHTTP(pageOnly, pageOnlyRequest)
+	if pageOnly.Code != http.StatusOK || strings.Contains(pageOnly.Body.String(), `"summary"`) || !strings.Contains(pageOnly.Body.String(), `"purpose":"training"`) {
+		t.Fatalf("history page-only search = %d %s", pageOnly.Code, pageOnly.Body.String())
+	}
+
+	dailySummary := httptest.NewRecorder()
+	dailySummaryRequest := httptest.NewRequest(http.MethodPost, "/api/history/summary", strings.NewReader(`{"filter":{"server_id":"server-a","groups":[]}}`))
+	dailySummaryRequest.Header.Set("Content-Type", "application/json")
+	dailySummaryRequest.AddCookie(testSessionCookie(t, server, "bob", RoleUser))
+	handler.ServeHTTP(dailySummary, dailySummaryRequest)
+	if dailySummary.Code != http.StatusOK || !strings.Contains(dailySummary.Body.String(), `"sessions":1`) ||
+		!strings.Contains(dailySummary.Body.String(), `"window_start"`) || !strings.Contains(dailySummary.Body.String(), `"updated_at"`) {
+		t.Fatalf("daily history summary = %d %s", dailySummary.Code, dailySummary.Body.String())
+	}
+
 	invalidSearch := httptest.NewRecorder()
 	invalidRequest := httptest.NewRequest(http.MethodPost, "/api/history/search", strings.NewReader(`{"filter":{"groups":[{"rules":[{"field":"private_sql","operator":"equals","value":"x"}]}]}}`))
 	invalidRequest.Header.Set("Content-Type", "application/json")

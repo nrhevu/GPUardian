@@ -329,3 +329,17 @@ DROP TABLE claimed_summary_merge;
 DROP TABLE claimed_gpu_merge;
 DROP TABLE claimed_session_merge;
 `
+
+const migrationV8 = `
+CREATE INDEX IF NOT EXISTS sessions_server_page_idx
+  ON reservation_sessions(server_id,provisioning,starts_at_ms DESC,session_id DESC);
+CREATE TABLE IF NOT EXISTS history_daily_summaries (
+  server_id TEXT NOT NULL,
+  day_ms INTEGER NOT NULL,
+  window_start_ms INTEGER NOT NULL,
+  window_end_ms INTEGER NOT NULL,
+  summary_json TEXT NOT NULL,
+  computed_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(server_id,day_ms)
+);
+`
