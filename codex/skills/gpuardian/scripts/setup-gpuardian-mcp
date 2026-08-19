@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fixed_url="https://gpuardian.ric1.onenexus-do.cloud/"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+mcp_dir="$codex_home/mcp"
+secret_dir="$codex_home/secrets"
+repo_dir="$mcp_dir/gpuardian-src"
+env_file="$secret_dir/gpuardian-mcp.env"
+config_file="$codex_home/config.toml"
+tmp_file="$(mktemp)"
+username=""
+password=""
+password_from_stdin=0
+
+cleanup() {
+  rm -f "$tmp_file"
+}
+trap cleanup EXIT
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  setup-gpuardian-mcp
+  setup-gpuardian-mcp --username USER --password-stdin
+
+The password is always read interactively or from stdin. Do not pass it as an
+argument.
+USAGE
+}
+
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --username)
+      [[ $# -ge 2 ]] || die "--username requires a value"
+      username="$2"
+      shift 2
+      ;;
+    --password-stdin)
+      password_from_stdin=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1"
+      ;;
+  esac
+done
+
+if [[ -z "$username" ]]; then
+  read -r -p "GPUardian username: " username
+fi
+if [[ -z "$username" ]]; then
+  die "GPUardian username is required"
+fi
+
+if (( password_from_stdin )); then
+  IFS= read -r password || true
+else
+  read -r -s -p "GPUardian password: " password
+  printf '\n'
+fi
+if [[ -z "$password" ]]; then
+  die "GPUardian password is required"
+fi
+
+mkdir -p "$mcp_dir" "$secret_dir"
+chmod 700 "$mcp_dir" "$secret_dir"
+
+if [[ -d "$repo_dir/.git" ]]; then
+  git -C "$repo_dir" fetch --prune origin
+  git -C "$repo_dir" checkout main
+  git -C "$repo_dir" pull --ff-only
+else
+  git clone https://github.com/nrhevu/GPUardian.git "$repo_dir"
+fi
+
+python3 -m venv "$repo_dir/mcp/.venv"
+"$repo_dir/mcp/.venv/bin/pip" install -e "$repo_dir/mcp"
+
+cat > "$mcp_dir/run-gpuardian-mcp" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+env_file="\${GPUARDIAN_MCP_ENV_FILE:-$env_file}"
+
+if [[ ! -r "\$env_file" ]]; then
+  echo "gpuardian-mcp: missing env file: \$env_file" >&2
+  echo "Run: $codex_home/skills/gpuardian/scripts/setup-gpuardian-mcp" >&2
+  exit 1
+fi
+
+set -a
+. "\$env_file"
+set +a
+
+: "\${GPUARDIAN_MCP_URL:?missing GPUARDIAN_MCP_URL}"
+: "\${GPUARDIAN_MCP_USER:?missing GPUARDIAN_MCP_USER}"
+: "\${GPUARDIAN_MCP_PASSWORD:?missing GPUARDIAN_MCP_PASSWORD}"
+
+cd "$repo_dir/mcp"
+exec "$repo_dir/mcp/.venv/bin/python" -m gpuardian_mcp
+EOF
+chmod 700 "$mcp_dir/run-gpuardian-mcp"
+
+umask 077
+{
+  printf 'GPUARDIAN_MCP_URL=%q\n' "$fixed_url"
+  printf 'GPUARDIAN_MCP_USER=%q\n' "$username"
+  printf 'GPUARDIAN_MCP_PASSWORD=%q\n' "$password"
+  printf '%s\n' "GPUARDIAN_MCP_VERIFY_TLS='1'"
+} > "$tmp_file"
+install -m 600 "$tmp_file" "$env_file"
+
+touch "$config_file"
+if ! grep -q '^\[mcp_servers\.gpuardian\]' "$config_file"; then
+  cp "$config_file" "$config_file.bak-gpuardian-mcp"
+  {
+    printf '\n'
+    printf '%s\n' '[mcp_servers.gpuardian]'
+    printf 'command = %q\n' "$mcp_dir/run-gpuardian-mcp"
+    printf '%s\n' 'args = []'
+    printf '%s\n' 'startup_timeout_ms = 20_000'
+  } >> "$config_file"
+fi
+
+printf 'GPUardian MCP configured for %s\n' "$username"
+printf 'Restart Codex, then use $gpuardian protect.\n'
