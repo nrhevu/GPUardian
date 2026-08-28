@@ -921,6 +921,16 @@ func TestClaimedMonitorEvictsPreexistingUnauthorizedProcessWhenClaimStarts(t *te
 	if len(killer.killed) != 1 || killer.killed[0] != 200 {
 		t.Fatalf("expected unauthorized pid to be killed, got %v", killer.killed)
 	}
+
+	server.GPU = fakeAMD{}
+	server.monitorOnce(context.Background())
+	status, err = server.Store.Status(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.SoftClaims) != 0 {
+		t.Fatalf("claim remained after its workload left the GPU: %+v", status.SoftClaims)
+	}
 }
 
 func TestMonitorEvictsRevokedReservationBeforePruningEvidence(t *testing.T) {

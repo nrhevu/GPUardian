@@ -779,6 +779,24 @@ func (a Authorizer) enforceSoft(ctx context.Context, state model.State, gpu int,
 		}
 		return errors.Join(enforcementErrors...)
 	}
+	if len(claims) > 0 {
+		// Do not let another process that happens to match the same authorization
+		// inherit a claim whose concrete runtime has disappeared. The stale claim
+		// is released at the end of this enforcement pass; a surviving workload
+		// may establish a fresh claim on the next pass.
+		for _, view := range views {
+			if view.Bypassed {
+				continue
+			}
+			*decisions = append(*decisions, Decision{
+				Process: view.Process,
+				Info:    view.Info,
+				Action:  "skip",
+				Reason:  "claimed runtime disappeared; releasing claim",
+			})
+		}
+		return nil
+	}
 
 	type authorizedView struct {
 		view processView
@@ -818,6 +836,7 @@ func (a Authorizer) enforceSoft(ctx context.Context, state model.State, gpu int,
 		CreatedAt:       now.UTC(),
 		UpdatedAt:       now.UTC(),
 	}
+	setSoftClaimRuntimeIdentity(&claim, claimAuth, authorized[0].view.Info)
 	*decisions = append(*decisions, Decision{Action: "claim", Reason: "claimed", AuthID: claimAuth.ID, Holder: claimAuth.Holder, TokenHash: claimAuth.TokenHash, Claim: claim})
 	a.audit(model.AuditEvent{Time: now.UTC(), Kind: "claim", Message: "GPU claimed", GPU: gpu, User: claimAuth.Holder})
 	for _, item := range authorized {
@@ -987,6 +1006,9 @@ func (a Authorizer) claimHasMatchingProcess(ctx context.Context, state model.Sta
 		if view.Bypassed {
 			continue
 		}
+		if !softClaimRuntimeMatches(claim, view.Info) {
+			continue
+		}
 		_, ok, err := a.matchAnyAuthorization(ctx, state, claim.GPU, view.Info, map[string]bool{claim.TokenHash: true}, model.TokenModeClaimed, now)
 		if err != nil {
 			return false, err
@@ -996,6 +1018,46 @@ func (a Authorizer) claimHasMatchingProcess(ctx context.Context, state model.Sta
 		}
 	}
 	return false, nil
+}
+
+func setSoftClaimRuntimeIdentity(claim *model.SoftClaim, authorization model.Authorization, info model.ProcInfo) {
+	switch authorization.Mode {
+	case model.ModeDocker, model.ModeK8s:
+		if info.ContainerID != "" {
+			claim.RuntimeContainerID = info.ContainerID
+			return
+		}
+	case model.ModeBare:
+		target := normalizeCgroupPath(authorization.CgroupRel)
+		if target == "" {
+			target = normalizeCgroupMountPath(authorization.CgroupPath)
+		}
+		if target != "" && bareCgroupMatches(info.Cgroup, target, "") {
+			claim.RuntimeCgroup = target
+			return
+		}
+	}
+	claim.RuntimePID = info.PID
+	claim.RuntimeStartTime = info.StartTime
+}
+
+func softClaimRuntimeMatches(claim model.SoftClaim, info model.ProcInfo) bool {
+	if claim.RuntimeContainerID != "" {
+		return sameContainer(claim.RuntimeContainerID, info.ContainerID)
+	}
+	if claim.RuntimeCgroup != "" {
+		return bareCgroupMatches(info.Cgroup, claim.RuntimeCgroup, "")
+	}
+	if claim.RuntimePID > 0 {
+		if claim.RuntimePID != info.PID {
+			return false
+		}
+		return claim.RuntimeStartTime == 0 || claim.RuntimeStartTime == info.StartTime
+	}
+	// Claims written by older daemons have no runtime identity. Release them
+	// once so a currently running workload can establish an identity-bound
+	// claim on the next monitor pass.
+	return false
 }
 
 func (a Authorizer) matchAnyAuthorization(ctx context.Context, state model.State, gpu int, info model.ProcInfo, tokenFilter map[string]bool, tokenMode string, now time.Time) (model.Authorization, bool, error) {

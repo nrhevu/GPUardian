@@ -120,13 +120,17 @@ type Authorization struct {
 }
 
 type SoftClaim struct {
-	ID              string    `json:"id"`
-	GPU             int       `json:"gpu"`
-	TokenHash       string    `json:"token_hash"`
-	AuthorizationID string    `json:"authorization_id"`
-	Holder          string    `json:"holder"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	GPU                int       `json:"gpu"`
+	TokenHash          string    `json:"token_hash"`
+	AuthorizationID    string    `json:"authorization_id"`
+	Holder             string    `json:"holder"`
+	RuntimeContainerID string    `json:"runtime_container_id,omitempty"`
+	RuntimeCgroup      string    `json:"runtime_cgroup,omitempty"`
+	RuntimePID         int       `json:"runtime_pid,omitempty"`
+	RuntimeStartTime   uint64    `json:"runtime_start_time,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type Lease struct {

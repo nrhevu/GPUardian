@@ -1303,7 +1303,7 @@ func TestSoftClaimKillsLaterUnauthorizedProcess(t *testing.T) {
 	state := model.State{
 		Tokens:         []model.Token{token("hash_claimed", model.TokenModeClaimed)},
 		Authorizations: []model.Authorization{authorization("auth_user", "hash_claimed", model.TokenModeClaimed, model.ModeUser, func(a *model.Authorization) { a.UID = 1000 })},
-		SoftClaims:     []model.SoftClaim{{ID: "claim_test", GPU: 0, TokenHash: "hash_claimed", AuthorizationID: "auth_user", Holder: "alice"}},
+		SoftClaims:     []model.SoftClaim{{ID: "claim_test", GPU: 0, TokenHash: "hash_claimed", AuthorizationID: "auth_user", Holder: "alice", RuntimePID: 10}},
 	}
 	decisions, err := authz.Enforce(context.Background(), state, []model.GPUProcess{gpuProcess(0, 10), gpuProcess(0, 11)})
 	if err != nil {
@@ -1312,6 +1312,87 @@ func TestSoftClaimKillsLaterUnauthorizedProcess(t *testing.T) {
 	if len(killer.killed) != 1 || killer.killed[0] != 11 {
 		t.Fatalf("expected later unauthorized pid to be killed: decisions=%+v killed=%v", decisions, killer.killed)
 	}
+}
+
+func TestSoftClaimReleasesWhenOriginalDockerRuntimeDisappears(t *testing.T) {
+	const (
+		oldContainer = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		newContainer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	authz := Authorizer{
+		Proc: fakeProc{infos: map[int]model.ProcInfo{
+			20: {PID: 20, StartTime: 20, UID: 1000, ContainerID: newContainer},
+		}},
+		Killer: &fakeKiller{},
+		Runtime: fakeRuntime{names: map[string]string{
+			newContainer: "deepseek-new",
+		}},
+		Now: fixedNow,
+	}
+	state := model.State{
+		Tokens: []model.Token{token("hash_claimed", model.TokenModeClaimed)},
+		Authorizations: []model.Authorization{authorization("auth_docker", "hash_claimed", model.TokenModeClaimed, model.ModeDocker, func(a *model.Authorization) {
+			a.ContainerPattern = "deepseek*"
+		})},
+		SoftClaims: []model.SoftClaim{{
+			ID:                 "claim_old",
+			GPU:                0,
+			TokenHash:          "hash_claimed",
+			AuthorizationID:    "auth_docker",
+			Holder:             "alice",
+			RuntimeContainerID: oldContainer,
+		}},
+	}
+
+	decisions, err := authz.Enforce(context.Background(), state, []model.GPUProcess{gpuProcess(0, 20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var released bool
+	for _, decision := range decisions {
+		if decision.Action == "claim" {
+			t.Fatalf("new runtime inherited stale claim in the same pass: %+v", decisions)
+		}
+		if decision.Action == "release_claim" && decision.ClaimID == "claim_old" {
+			released = true
+		}
+	}
+	if !released {
+		t.Fatalf("stale runtime claim was not released: %+v", decisions)
+	}
+
+	state.SoftClaims = nil
+	decisions, err = authz.Enforce(context.Background(), state, []model.GPUProcess{gpuProcess(0, 20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) == 0 || decisions[0].Action != "claim" || decisions[0].Claim.RuntimeContainerID != newContainer {
+		t.Fatalf("new runtime did not establish an identity-bound claim: %+v", decisions)
+	}
+}
+
+func TestLegacySoftClaimIsReleasedForIdentityUpgrade(t *testing.T) {
+	authz := Authorizer{
+		Proc:   fakeProc{infos: map[int]model.ProcInfo{10: {PID: 10, StartTime: 10, UID: 1000}}},
+		Killer: &fakeKiller{},
+		Now:    fixedNow,
+	}
+	state := model.State{
+		Tokens:         []model.Token{token("hash_claimed", model.TokenModeClaimed)},
+		Authorizations: []model.Authorization{authorization("auth_user", "hash_claimed", model.TokenModeClaimed, model.ModeUser, func(a *model.Authorization) { a.UID = 1000 })},
+		SoftClaims:     []model.SoftClaim{{ID: "claim_legacy", GPU: 0, TokenHash: "hash_claimed", AuthorizationID: "auth_user", Holder: "alice"}},
+	}
+
+	decisions, err := authz.Enforce(context.Background(), state, []model.GPUProcess{gpuProcess(0, 10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, decision := range decisions {
+		if decision.Action == "release_claim" && decision.ClaimID == "claim_legacy" {
+			return
+		}
+	}
+	t.Fatalf("legacy claim was not released for identity upgrade: %+v", decisions)
 }
 
 func TestStalePIDIsIgnored(t *testing.T) {

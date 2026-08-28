@@ -1888,7 +1888,15 @@ func validateStateBounds(state model.State) error {
 		if err := validateGPUIndex(claim.GPU); err != nil {
 			return fmt.Errorf("soft claim %q: %w", claim.ID, err)
 		}
-		if err := validatePersistedValues("soft claim", claim.ID, claim.TokenHash, claim.AuthorizationID, claim.Holder); err != nil {
+		if err := validatePersistedValues(
+			"soft claim",
+			claim.ID,
+			claim.TokenHash,
+			claim.AuthorizationID,
+			claim.Holder,
+			claim.RuntimeContainerID,
+			claim.RuntimeCgroup,
+		); err != nil {
 			return err
 		}
 	}
