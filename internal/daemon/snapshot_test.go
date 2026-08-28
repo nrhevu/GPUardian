@@ -59,6 +59,97 @@ func TestSnapshotSamplesProcessesOnce(t *testing.T) {
 	t.Fatalf("snapshot does not contain sampled process: %+v", snapshot.GPUs)
 }
 
+func TestSnapshotOnlyRendersClaimWithMatchingLiveRuntime(t *testing.T) {
+	const containerID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, test := range []struct {
+		name          string
+		processes     []model.GPUProcess
+		infos         map[int]model.ProcInfo
+		wantState     string
+		wantClaimRows int
+	}{
+		{
+			name:          "stale soft claim without process",
+			wantState:     "available",
+			wantClaimRows: 0,
+		},
+		{
+			name:          "unrelated process cannot validate claim",
+			processes:     []model.GPUProcess{{GPU: 0, PID: 41}},
+			infos:         map[int]model.ProcInfo{41: {PID: 41, StartTime: 41, ContainerID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+			wantState:     "available",
+			wantClaimRows: 0,
+		},
+		{
+			name:          "matching container process validates claim",
+			processes:     []model.GPUProcess{{GPU: 0, PID: 42}},
+			infos:         map[int]model.ProcInfo{42: {PID: 42, StartTime: 42, ContainerID: containerID}},
+			wantState:     "claimed",
+			wantClaimRows: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := testServer(t)
+			server.Cfg.GPUCount = 1
+			now := time.Now().UTC()
+			rootKey, err := server.Store.ReadOrCreateRootKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			secret, token, err := server.Store.RegisterSoftToken(rootKey, "alice", now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, tokenHash, err := server.Store.ValidateToken(secret, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorization := model.Authorization{
+				ID:               "auth_wildcard",
+				Mode:             model.ModeDocker,
+				TokenHash:        tokenHash,
+				TokenMode:        token.Mode,
+				Holder:           token.Name,
+				ContainerPattern: "deepseek*",
+				CreatedAt:        now,
+				ExpiresAt:        token.ExpiresAt,
+				Active:           true,
+			}
+			if err := server.Store.AddAuthorization(authorization); err != nil {
+				t.Fatal(err)
+			}
+			if err := server.Store.UpsertSoftClaim(model.SoftClaim{
+				GPU:                0,
+				TokenHash:          tokenHash,
+				AuthorizationID:    authorization.ID,
+				Holder:             token.Name,
+				RuntimeContainerID: containerID,
+			}, now); err != nil {
+				t.Fatal(err)
+			}
+			server.GPU = &countingSnapshotAMD{processes: test.processes}
+			server.Proc = daemonFakeProc{infos: test.infos}
+
+			snapshot, err := server.Snapshot(context.Background(), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.SoftClaims) != test.wantClaimRows {
+				t.Fatalf("soft claims = %+v, want %d live rows", snapshot.SoftClaims, test.wantClaimRows)
+			}
+			for _, gpu := range snapshot.GPUs {
+				if gpu.ID == 0 {
+					if gpu.State != test.wantState {
+						t.Fatalf("GPU state = %q, want %q (claim=%+v processes=%+v)", gpu.State, test.wantState, gpu.Claim, gpu.Processes)
+					}
+					return
+				}
+			}
+			t.Fatal("GPU 0 missing from snapshot")
+		})
+	}
+}
+
 func TestTelemetrySamplesGPUWithoutReservation(t *testing.T) {
 	server := testServer(t)
 	usedBytes := uint64(1024)

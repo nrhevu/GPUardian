@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"gpuardian/internal/enforce"
 	"gpuardian/internal/gpusmi"
 	"gpuardian/internal/model"
 )
@@ -47,9 +48,14 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 		}
 	}
 	claimByGPU := map[int]model.SoftClaimView{}
+	liveSoftClaims := make([]model.SoftClaimView, 0, len(status.SoftClaims))
 	for _, claim := range status.SoftClaims {
+		if !s.softClaimHasLiveGPUProcess(claim, processesByGPU[claim.GPU]) {
+			continue
+		}
 		ids[claim.GPU] = true
 		claimByGPU[claim.GPU] = claim
+		liveSoftClaims = append(liveSoftClaims, claim)
 	}
 	for _, lease := range status.Leases {
 		ids[lease.GPU] = true
@@ -95,11 +101,33 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 		Tokens:         status.Tokens,
 		Reservations:   status.Reservations,
 		Authorizations: status.Authorizations,
-		SoftClaims:     status.SoftClaims,
+		SoftClaims:     liveSoftClaims,
 		Leases:         status.Leases,
 		Bypasses:       status.Bypasses,
 		PS:             rows,
 	}, nil
+}
+
+func (s *Server) softClaimHasLiveGPUProcess(claim model.SoftClaimView, processes []model.GPUProcess) bool {
+	if s.Proc == nil {
+		return false
+	}
+	runtimeClaim := model.SoftClaim{
+		RuntimeContainerID: claim.RuntimeContainerID,
+		RuntimeCgroup:      claim.RuntimeCgroup,
+		RuntimePID:         claim.RuntimePID,
+		RuntimeStartTime:   claim.RuntimeStartTime,
+	}
+	for _, process := range processes {
+		info, err := s.Proc.Info(process.PID)
+		if err != nil {
+			continue
+		}
+		if enforce.SoftClaimRuntimeMatches(runtimeClaim, info) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) metricsForRead(ctx context.Context) ([]model.GPUMetric, error) {

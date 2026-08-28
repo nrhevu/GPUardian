@@ -1057,12 +1057,16 @@ func (s *Store) status(now time.Time, allowedTokenHash string, all bool) (model.
 			continue
 		}
 		status.SoftClaims = append(status.SoftClaims, model.SoftClaimView{
-			ID:              claim.ID,
-			GPU:             claim.GPU,
-			AuthorizationID: claim.AuthorizationID,
-			Holder:          claim.Holder,
-			CreatedAt:       claim.CreatedAt,
-			UpdatedAt:       claim.UpdatedAt,
+			ID:                 claim.ID,
+			GPU:                claim.GPU,
+			AuthorizationID:    claim.AuthorizationID,
+			Holder:             claim.Holder,
+			CreatedAt:          claim.CreatedAt,
+			UpdatedAt:          claim.UpdatedAt,
+			RuntimeContainerID: claim.RuntimeContainerID,
+			RuntimeCgroup:      claim.RuntimeCgroup,
+			RuntimePID:         claim.RuntimePID,
+			RuntimeStartTime:   claim.RuntimeStartTime,
 		})
 	}
 	if all {

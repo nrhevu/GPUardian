@@ -1006,7 +1006,7 @@ func (a Authorizer) claimHasMatchingProcess(ctx context.Context, state model.Sta
 		if view.Bypassed {
 			continue
 		}
-		if !softClaimRuntimeMatches(claim, view.Info) {
+		if !SoftClaimRuntimeMatches(claim, view.Info) {
 			continue
 		}
 		_, ok, err := a.matchAnyAuthorization(ctx, state, claim.GPU, view.Info, map[string]bool{claim.TokenHash: true}, model.TokenModeClaimed, now)
@@ -1041,7 +1041,10 @@ func setSoftClaimRuntimeIdentity(claim *model.SoftClaim, authorization model.Aut
 	claim.RuntimeStartTime = info.StartTime
 }
 
-func softClaimRuntimeMatches(claim model.SoftClaim, info model.ProcInfo) bool {
+// SoftClaimRuntimeMatches reports whether info belongs to the concrete runtime
+// that established claim. It intentionally does not evaluate authorization
+// selectors: wildcard rules are permission definitions, not runtime identity.
+func SoftClaimRuntimeMatches(claim model.SoftClaim, info model.ProcInfo) bool {
 	if claim.RuntimeContainerID != "" {
 		return sameContainer(claim.RuntimeContainerID, info.ContainerID)
 	}

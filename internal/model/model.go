@@ -275,12 +275,16 @@ type AuthorizationView struct {
 }
 
 type SoftClaimView struct {
-	ID              string    `json:"id"`
-	GPU             int       `json:"gpu"`
-	AuthorizationID string    `json:"authorization_id"`
-	Holder          string    `json:"holder"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	GPU                int       `json:"gpu"`
+	AuthorizationID    string    `json:"authorization_id"`
+	Holder             string    `json:"holder"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	RuntimeContainerID string    `json:"-"`
+	RuntimeCgroup      string    `json:"-"`
+	RuntimePID         int       `json:"-"`
+	RuntimeStartTime   uint64    `json:"-"`
 }
 
 type KeyStatus struct {
