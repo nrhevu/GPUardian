@@ -28,6 +28,20 @@ func TestParseProcessJSON(t *testing.T) {
 	}
 }
 
+func TestParseProcessJSONSkipsNoRunningProcessesMessage(t *testing.T) {
+	data := []byte(`[
+		{"gpu":0,"process_list":[{"process_info":"No running processes detected"}]},
+		{"gpu":1,"process_list":[{"process_info":"No running processes detected"}]}
+	]`)
+	processes, err := ParseProcessJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(processes) != 0 {
+		t.Fatalf("got %d processes, want 0: %+v", len(processes), processes)
+	}
+}
+
 func TestParseProcessJSONPreservesUnknownMemory(t *testing.T) {
 	data := []byte(`[{"gpu":0,"process_list":[{"process_info":{"name":"python","pid":123,"mem_usage":{"value":"N/A","unit":"B"}}}]}]`)
 	processes, err := ParseProcessJSON(data)

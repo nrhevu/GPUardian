@@ -248,14 +248,7 @@ func ParseProcessJSON(data []byte) ([]model.GPUProcess, error) {
 	var raw []struct {
 		GPU         any `json:"gpu"`
 		ProcessList []struct {
-			ProcessInfo struct {
-				Name     string `json:"name"`
-				PID      any    `json:"pid"`
-				MemUsage struct {
-					Value any    `json:"value"`
-					Unit  string `json:"unit"`
-				} `json:"mem_usage"`
-			} `json:"process_info"`
+			ProcessInfo json.RawMessage `json:"process_info"`
 		} `json:"process_list"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -278,15 +271,37 @@ func ParseProcessJSON(data []byte) ([]model.GPUProcess, error) {
 			if len(processes) >= maxProcessRows {
 				return nil, fmt.Errorf("process response exceeds %d rows", maxProcessRows)
 			}
-			pid, err := number(process.ProcessInfo.PID)
+			processInfoJSON := bytes.TrimSpace(process.ProcessInfo)
+			if len(processInfoJSON) == 0 || bytes.Equal(processInfoJSON, []byte("null")) {
+				continue
+			}
+			if processInfoJSON[0] == '"' {
+				var message string
+				if err := json.Unmarshal(processInfoJSON, &message); err != nil {
+					return nil, fmt.Errorf("parse process info message: %w", err)
+				}
+				continue
+			}
+			var processInfo struct {
+				Name     string `json:"name"`
+				PID      any    `json:"pid"`
+				MemUsage struct {
+					Value any    `json:"value"`
+					Unit  string `json:"unit"`
+				} `json:"mem_usage"`
+			}
+			if err := json.Unmarshal(processInfoJSON, &processInfo); err != nil {
+				return nil, fmt.Errorf("parse process info: %w", err)
+			}
+			pid, err := number(processInfo.PID)
 			if err != nil || pid <= 0 {
 				continue
 			}
-			mem, memErr := number(process.ProcessInfo.MemUsage.Value)
+			mem, memErr := number(processInfo.MemUsage.Value)
 			processes = append(processes, model.GPUProcess{
 				GPU:             gpu,
 				PID:             pid,
-				Name:            process.ProcessInfo.Name,
+				Name:            processInfo.Name,
 				MemBytes:        uint64(max(0, mem)),
 				MemBytesUnknown: memErr != nil || mem < 0,
 			})
