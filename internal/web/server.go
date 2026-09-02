@@ -232,9 +232,11 @@ func (s *Server) routes() http.Handler {
 		mux.HandleFunc("/api/register", s.handleRegister)
 	}
 	mux.HandleFunc("/api/session", s.handleSession)
-	mux.HandleFunc("/api/logout", s.requireSession(s.handleLogout))
-	mux.HandleFunc("/api/password", s.requireSession(s.handleChangePassword))
-	mux.HandleFunc("/api/users", s.requireAdmin(s.handleUsers))
+	mux.HandleFunc("/api/logout", s.requireBrowserSession(s.handleLogout))
+	mux.HandleFunc("/api/password", s.requireBrowserSession(s.handleChangePassword))
+	mux.HandleFunc("/api/users", s.requireBrowserAdmin(s.handleUsers))
+	mux.HandleFunc("/api/mcp-tokens", s.requireBrowserSession(s.handleMCPAccessTokens))
+	mux.HandleFunc("/api/mcp-tokens/", s.requireBrowserSession(s.handleMCPAccessTokens))
 	mux.HandleFunc("/api/keys", s.requireSession(s.handleKeys))
 	mux.HandleFunc("/api/keys/", s.requireSession(s.handleKeys))
 	mux.HandleFunc("/api/servers", s.requireSession(s.handleServers))
@@ -255,6 +257,9 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		if r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !requireMCPScope(w, r, mcpScopeKeysRead) {
 			return
 		}
 		keys, err := s.Users.FixedKeys()
@@ -283,13 +288,20 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	requiredScope := mcpScopeKeysReveal
+	if parts[1] == "regenerate" {
+		requiredScope = mcpScopeKeysRotate
+	}
+	if !requireMCPScope(w, r, requiredScope) {
+		return
+	}
 	username := parts[0]
 	if session.Role != RoleAdmin && !sameOwner(username, session.User) {
 		writeJSONError(w, http.StatusForbidden, "key access denied")
-		return
-	}
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var key FixedUserKey
@@ -361,6 +373,9 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if !requireMCPScope(w, r, mcpScopeNodesRead) {
+			return
+		}
 		records, err := s.Registry.PublicList()
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -368,6 +383,9 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, records)
 	case http.MethodPost:
+		if rejectMCPToken(w, r) {
+			return
+		}
 		session, _ := currentSession(r)
 		if session.Role != RoleAdmin {
 			writeJSONError(w, http.StatusForbidden, "admin access required")
@@ -416,6 +434,9 @@ func (s *Server) handleNodeLayout(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		if !requireMCPScope(w, r, mcpScopeNodesRead) {
+			return
+		}
 		layout, err := s.Layout.Get(serverIDs)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -423,6 +444,9 @@ func (s *Server) handleNodeLayout(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, layout)
 	case http.MethodPut:
+		if rejectMCPToken(w, r) {
+			return
+		}
 		session, _ := currentSession(r)
 		if session.Role != RoleAdmin {
 			writeJSONError(w, http.StatusForbidden, "admin access required")
@@ -450,6 +474,32 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
+	}
+	switch {
+	case action == "reservations" && r.Method == http.MethodPost:
+		if !requireMCPScope(w, r, mcpScopeReservationsWrite) {
+			return
+		}
+	case action == "allow" && r.Method == http.MethodPost:
+		if !requireMCPScope(w, r, mcpScopeAuthorizationsWrite) {
+			return
+		}
+	case action == "revoke" && r.Method == http.MethodPost:
+		if !requireMCPScope(w, r, mcpScopeResourcesRevoke) {
+			return
+		}
+	case action == "show-key" && r.Method == http.MethodPost:
+		if !requireMCPScope(w, r, mcpScopeKeysRead) {
+			return
+		}
+	case action == "" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):
+		if rejectMCPToken(w, r) {
+			return
+		}
+	default:
+		if rejectMCPToken(w, r) {
+			return
+		}
 	}
 	record, found, err := s.Registry.Get(id)
 	if err != nil {
@@ -663,6 +713,9 @@ func unsupportedExternalSessionError(err error) bool {
 func (s *Server) handleFleetSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !requireMCPScope(w, r, mcpScopeNodesRead) {
 		return
 	}
 	out, err := s.cachedFleetSnapshot(r.Context())
@@ -1152,7 +1205,7 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
-			w.Header().Set("Vary", "Cookie")
+			w.Header().Set("Vary", "Cookie, Authorization")
 			if r.Body != nil {
 				r.Body = http.MaxBytesReader(w, r.Body, maxAPIRequestBytes)
 			}

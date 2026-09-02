@@ -37,6 +37,9 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+		return
+	}
 	if s.History == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "history is unavailable")
 		return
@@ -93,6 +96,9 @@ func (s *Server) handleHistorySummary(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+		return
+	}
 	if s.History == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "history is unavailable")
 		return
@@ -145,6 +151,9 @@ func (s *Server) handleHistorySessions(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+		return
+	}
 	if s.History == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "history is unavailable")
 		return
@@ -180,6 +189,9 @@ func (s *Server) handleHistorySessionAction(w http.ResponseWriter, r *http.Reque
 	}
 	id := parts[0]
 	if len(parts) == 1 && r.Method == http.MethodGet {
+		if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+			return
+		}
 		session, err := s.History.GetSession(r.Context(), id)
 		if errors.Is(err, history.ErrNotFound) {
 			writeJSONError(w, http.StatusNotFound, err.Error())
@@ -193,6 +205,9 @@ func (s *Server) handleHistorySessionAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if len(parts) == 2 && parts[1] == "jobs" && r.Method == http.MethodGet {
+		if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+			return
+		}
 		limit := parseBoundedInt(r.URL.Query().Get("limit"), 100, 1, 100)
 		after, ok := decodeHistoryCursor(r.URL.Query().Get("cursor"))
 		if r.URL.Query().Get("cursor") != "" && !ok {
@@ -213,6 +228,9 @@ func (s *Server) handleHistorySessionAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if len(parts) == 2 && parts[1] == "result" && r.Method == http.MethodPut {
+		if !requireMCPScope(w, r, mcpScopeHistoryWrite) {
+			return
+		}
 		var request historyResultRequest
 		if err := decodeJSONBody(r, &request); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())

@@ -136,9 +136,9 @@ has no test suite; verify it against a running gateway by hand.
   `users.json`, `servers.json`, `session.key`, `user-key.key`, `history.db`,
   and the built `gpuardian` binary are all gitignored or operator-only.
 - **The MCP server is env-var driven and stdio-only.** All config is
-  `GPUARDIAN_MCP_*` (`URL`, `USER`, `PASSWORD`, `TIMEOUT`, `VERIFY_TLS`); it
-  speaks MCP over stdio and has no CLI flags. It logs in eagerly at startup
-  so bad credentials fail fast. Keep it a thin client over the gateway HTTP
+  `GPUARDIAN_MCP_*` (`URL`, `TOKEN`, legacy `USER`/`PASSWORD`, `TIMEOUT`,
+  `VERIFY_TLS`); it speaks MCP over stdio and has no CLI flags. It validates
+  credentials eagerly at startup. Keep it a thin client over the gateway HTTP
   API — do not duplicate reservation logic in Python.
 
 ## Gotchas

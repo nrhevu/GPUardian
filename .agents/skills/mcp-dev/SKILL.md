@@ -8,8 +8,9 @@ description: How to set up and run the GPUardian MCP server — the Python stdio
 The MCP server (`mcp/gpuardian_mcp/`) is a Python 3.11+ stdio server. It is
 **not** part of the Go build — it has its own venv and is a thin HTTP client
 over the web gateway's `/api/*` endpoints. It authenticates with a GPUardian
-**username + password** (not a `gk_` key, not an `rk_` root key). All
-authorization is enforced server-side by the gateway.
+a scoped **MCP access token** (`ga_...`, not a `gk_` key or `rk_` root key).
+All authorization is enforced server-side by the gateway. Legacy
+username/password login is accepted only when no MCP token is configured.
 
 ## 1. Install (one-time)
 
@@ -30,8 +31,9 @@ All config is `GPUARDIAN_MCP_*`. The server is stdio-only.
 | Env var | Required | Default | Purpose |
 |---|---|---|---|
 | `GPUARDIAN_MCP_URL` | yes | — | Gateway URL (`http://127.0.0.1:18080` dev, `https://gpuardian.example.com:8443` prod) |
-| `GPUARDIAN_MCP_USER` | yes | — | GPUardian username |
-| `GPUARDIAN_MCP_PASSWORD` | yes | — | GPUardian password |
+| `GPUARDIAN_MCP_TOKEN` | recommended | — | Scoped MCP access token created in the web account menu |
+| `GPUARDIAN_MCP_USER` | legacy | — | Username fallback when no token is configured |
+| `GPUARDIAN_MCP_PASSWORD` | legacy | — | Password fallback when no token is configured |
 | `GPUARDIAN_MCP_TIMEOUT` | no | `30` | HTTP timeout (seconds) |
 | `GPUARDIAN_MCP_VERIFY_TLS` | no | `1` | Verify TLS; set `0` **only** for dev self-signed certs |
 
@@ -42,14 +44,14 @@ Missing required vars → the server prints
 
 ```bash
 GPUARDIAN_MCP_URL=http://127.0.0.1:18080 \
-GPUARDIAN_MCP_USER=<username> \
-GPUARDIAN_MCP_PASSWORD=<password> \
+GPUARDIAN_MCP_TOKEN=<ga_token> \
 .venv/bin/python -m gpuardian_mcp
 ```
 
-The server **logs in eagerly at startup** so bad credentials fail fast before
-the MCP loop begins. If the session expires mid-conversation, the client
-auto-re-logs-in on a 401 and retries — no manual re-auth needed.
+The server validates the credential eagerly at startup. Revoked or expired
+tokens fail closed and are never refreshed automatically. The password
+fallback discards the password after the initial login and does not auto-login
+again after session expiry.
 
 ## 4. Wire it into an MCP client (AI assistant)
 
@@ -63,8 +65,7 @@ Add a `mcpServers` block to the client's config:
       "args": ["-m", "gpuardian_mcp"],
       "env": {
         "GPUARDIAN_MCP_URL": "http://127.0.0.1:18080",
-        "GPUARDIAN_MCP_USER": "<username>",
-        "GPUARDIAN_MCP_PASSWORD": "<password>"
+        "GPUARDIAN_MCP_TOKEN": "<ga_token>"
       },
       "cwd": "/path/to/gpuardian/mcp"
     }
@@ -111,8 +112,8 @@ the MCP client.
 
 ## What the user needs from the operator
 
-1. A GPUardian **account** (username + password) — either self-registered if
-   `GPUARDIAN_WEB_ALLOW_REGISTRATION=1`, or admin-created.
+1. A GPUARDIAN account and a scoped MCP access token created from **Account →
+   MCP access tokens** in the web UI.
 2. The **gateway URL**.
 3. (Optional, for the node CLI only) their `gk_...` fixed key, obtainable via
    the `reveal_key` tool. The MCP server itself does **not** need it.

@@ -57,8 +57,11 @@ type sessionPayload struct {
 }
 
 type sessionInfo struct {
-	User string
-	Role string
+	User       string
+	Role       string
+	AuthMethod string
+	TokenID    string
+	Scopes     []string
 }
 
 type sessionContextKey struct{}
@@ -246,6 +249,24 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) requireBrowserSession(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session, ok := s.browserSessionUser(r)
+		if !ok {
+			writeJSONError(w, http.StatusUnauthorized, "browser authentication required")
+			return
+		}
+		release, ok := s.acquireAuthenticatedRequest(session)
+		if !ok {
+			w.Header().Set("Retry-After", "1")
+			writeJSONError(w, http.StatusTooManyRequests, "too many concurrent requests; retry shortly")
+			return
+		}
+		defer release()
+		next(w, r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, session)))
+	}
+}
+
 func (s *Server) acquireAuthenticatedRequest(session sessionInfo) (func(), bool) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
@@ -292,12 +313,41 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+func (s *Server) requireBrowserAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireBrowserSession(func(w http.ResponseWriter, r *http.Request) {
+		session, _ := currentSession(r)
+		if session.Role != RoleAdmin {
+			writeJSONError(w, http.StatusForbidden, "admin access required")
+			return
+		}
+		next(w, r)
+	})
+}
+
 func currentSession(r *http.Request) (sessionInfo, bool) {
 	session, ok := r.Context().Value(sessionContextKey{}).(sessionInfo)
 	return session, ok
 }
 
 func (s *Server) sessionUser(r *http.Request) (sessionInfo, bool) {
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authorization != "" {
+		parts := strings.Fields(authorization)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return sessionInfo{}, false
+		}
+		token, ok := s.Users.AuthenticateMCPAccessToken(parts[1])
+		if !ok {
+			return sessionInfo{}, false
+		}
+		return sessionInfo{
+			User: token.User, Role: token.Role, AuthMethod: "mcp_token", TokenID: token.ID, Scopes: token.Scopes,
+		}, true
+	}
+	return s.browserSessionUser(r)
+}
+
+func (s *Server) browserSessionUser(r *http.Request) (sessionInfo, bool) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return sessionInfo{}, false
@@ -313,7 +363,34 @@ func (s *Server) sessionUser(r *http.Request) (sessionInfo, bool) {
 	if payload.CredentialVersion == 0 || payload.CredentialVersion != user.UpdatedAt.UnixNano() {
 		return sessionInfo{}, false
 	}
-	return sessionInfo{User: user.Username, Role: user.Role}, true
+	return sessionInfo{User: user.Username, Role: user.Role, AuthMethod: "browser"}, true
+}
+
+func requireMCPScope(w http.ResponseWriter, r *http.Request, scope string) bool {
+	session, ok := currentSession(r)
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "authentication required")
+		return false
+	}
+	if session.AuthMethod != "mcp_token" {
+		return true
+	}
+	for _, granted := range session.Scopes {
+		if granted == scope {
+			return true
+		}
+	}
+	writeJSONError(w, http.StatusForbidden, "MCP token is missing required scope: "+scope)
+	return false
+}
+
+func rejectMCPToken(w http.ResponseWriter, r *http.Request) bool {
+	session, ok := currentSession(r)
+	if ok && session.AuthMethod == "mcp_token" {
+		writeJSONError(w, http.StatusForbidden, "this operation requires browser authentication")
+		return true
+	}
+	return false
 }
 
 func (s *Server) signSession(user, role string, expires time.Time) string {

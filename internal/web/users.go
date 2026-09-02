@@ -47,17 +47,18 @@ var (
 )
 
 type UserRecord struct {
-	Username     string    `json:"username"`
-	Role         string    `json:"role"`
-	PasswordHash string    `json:"password_hash"`
-	KeyID        string    `json:"key_id,omitempty"`
-	KeyHash      string    `json:"key_hash,omitempty"`
-	KeyVersion   int64     `json:"key_version,omitempty"`
-	KeyCipher    string    `json:"key_cipher,omitempty"`
-	KeyCreatedAt time.Time `json:"key_created_at,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	Disabled     bool      `json:"disabled,omitempty"`
+	Username        string                 `json:"username"`
+	Role            string                 `json:"role"`
+	PasswordHash    string                 `json:"password_hash"`
+	KeyID           string                 `json:"key_id,omitempty"`
+	KeyHash         string                 `json:"key_hash,omitempty"`
+	KeyVersion      int64                  `json:"key_version,omitempty"`
+	KeyCipher       string                 `json:"key_cipher,omitempty"`
+	KeyCreatedAt    time.Time              `json:"key_created_at,omitempty"`
+	MCPAccessTokens []MCPAccessTokenRecord `json:"mcp_access_tokens,omitempty"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
+	Disabled        bool                   `json:"disabled,omitempty"`
 }
 
 type PublicUser struct {
@@ -290,6 +291,7 @@ func (s *UserStore) Delete(username string) error {
 		}
 		users[i].PasswordHash = ""
 		users[i].KeyCipher = ""
+		users[i].MCPAccessTokens = nil
 		users[i].Disabled = true
 		users[i].UpdatedAt = time.Now().UTC()
 		return s.saveLocked(users)
@@ -419,7 +421,7 @@ func (s *UserStore) releasePasswordWork() {
 
 func (s *UserStore) loadLocked() ([]UserRecord, error) {
 	if s.loaded {
-		return append([]UserRecord(nil), s.users...), nil
+		return cloneUserRecords(s.users), nil
 	}
 	data, err := readPrivateFile(s.path, "users file", maxUsersFileBytes)
 	if errors.Is(err, os.ErrNotExist) {
@@ -442,9 +444,9 @@ func (s *UserStore) loadLocked() ([]UserRecord, error) {
 	if len(users) > maxUsers {
 		return nil, fmt.Errorf("users file contains %d records; maximum is %d", len(users), maxUsers)
 	}
-	s.users = append([]UserRecord(nil), users...)
+	s.users = cloneUserRecords(users)
 	s.loaded = true
-	return append([]UserRecord(nil), users...), nil
+	return cloneUserRecords(users), nil
 }
 
 func (s *UserStore) saveLocked(users []UserRecord) error {
@@ -454,10 +456,29 @@ func (s *UserStore) saveLocked(users []UserRecord) error {
 	}
 	committed, err := writePrivateFile(s.path, append(data, '\n'))
 	if committed {
-		s.users = append([]UserRecord(nil), users...)
+		s.users = cloneUserRecords(users)
 		s.loaded = true
 	}
 	return err
+}
+
+func cloneUserRecords(users []UserRecord) []UserRecord {
+	out := append([]UserRecord(nil), users...)
+	for i := range out {
+		out[i].MCPAccessTokens = append([]MCPAccessTokenRecord(nil), users[i].MCPAccessTokens...)
+		for j := range out[i].MCPAccessTokens {
+			out[i].MCPAccessTokens[j].Scopes = append([]string(nil), users[i].MCPAccessTokens[j].Scopes...)
+			if users[i].MCPAccessTokens[j].LastUsedAt != nil {
+				lastUsed := *users[i].MCPAccessTokens[j].LastUsedAt
+				out[i].MCPAccessTokens[j].LastUsedAt = &lastUsed
+			}
+			if users[i].MCPAccessTokens[j].RevokedAt != nil {
+				revoked := *users[i].MCPAccessTokens[j].RevokedAt
+				out[i].MCPAccessTokens[j].RevokedAt = &revoked
+			}
+		}
+	}
+	return out
 }
 
 func newUserRecord(username, password, role string) (UserRecord, error) {

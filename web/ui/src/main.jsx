@@ -275,6 +275,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [mcpTokenOpen, setMCPTokenOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [deleteUserTarget, setDeleteUserTarget] = useState(null);
@@ -574,6 +575,7 @@ function App() {
       setActiveGPU(null);
       setView("gpu");
       setPasswordOpen(false);
+      setMCPTokenOpen(false);
       setSettingsOpen(false);
       setDeleteUserTarget(null);
       setReservationSuccess(null);
@@ -1451,6 +1453,18 @@ function App() {
                 <button
                   type="button"
                   role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] hover:bg-accent"
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    setMCPTokenOpen(true);
+                  }}
+                >
+                  <KeyRound className="h-4 w-4" />
+                  MCP access tokens
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-destructive hover:bg-status-danger-bg"
                   onClick={logout}
                 >
@@ -1577,6 +1591,7 @@ function App() {
         />
       )}
       {passwordOpen && <ChangePasswordModal onClose={() => setPasswordOpen(false)} onSubmit={changePassword} />}
+      {mcpTokenOpen && <MCPAccessTokenModal onClose={() => setMCPTokenOpen(false)} />}
       {isAdmin && userOpen && <CreateUserModal onClose={() => setUserOpen(false)} onSubmit={createUser} />}
       {isAdmin && deleteUserTarget && (
         <DeleteUserModal
@@ -3212,6 +3227,149 @@ function ChangePasswordModal({ onClose, onSubmit }) {
           <button className="primary-button" disabled={pending}>{pending ? "Saving" : "Save"}</button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+function MCPAccessTokenModal({ onClose }) {
+  const [tokens, setTokens] = useState([]);
+  const [supportedScopes, setSupportedScopes] = useState([]);
+  const [selectedScopes, setSelectedScopes] = useState(new Set());
+  const [name, setName] = useState("My MCP client");
+  const [expiryDays, setExpiryDays] = useState(30);
+  const [createdSecret, setCreatedSecret] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function loadTokens() {
+    const response = await api("/api/mcp-tokens");
+    setTokens(response.tokens || []);
+    setSupportedScopes(response.supported_scopes || []);
+    setSelectedScopes((current) => current.size > 0 ? current : new Set(response.default_scopes || []));
+  }
+
+  useEffect(() => {
+    loadTokens().catch((err) => setError(err.message));
+  }, []);
+
+  async function createToken(event) {
+    event.preventDefault();
+    if (pending) return;
+    setPending(true);
+    setError("");
+    try {
+      const token = await api("/api/mcp-tokens", {
+        method: "POST",
+        body: JSON.stringify({ name, expiry_days: Number(expiryDays), scopes: Array.from(selectedScopes) }),
+      });
+      setCreatedSecret(token.secret || "");
+      await loadTokens();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function revokeToken(id) {
+    setPending(true);
+    setError("");
+    try {
+      await api(`/api/mcp-tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await loadTokens();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function copySecret() {
+    await navigator.clipboard?.writeText(createdSecret);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  return (
+    <Modal title="MCP access tokens" onClose={onClose} className="max-w-3xl">
+      <div className="space-y-5">
+        <p className="text-sm text-muted-foreground">
+          Use a scoped token instead of storing your GPUardian password in an MCP client. The secret is shown only once.
+        </p>
+
+        {createdSecret && (
+          <div className="rounded-lg border border-status-warning-fg/40 bg-status-warning-bg p-3">
+            <p className="mb-2 text-xs font-medium text-status-warning-fg">Copy this token now. It cannot be revealed again.</p>
+            <div className="flex min-w-0 gap-2">
+              <code className="min-w-0 flex-1 break-all rounded-md bg-slate-950 px-3 py-2 text-xs text-slate-100">{createdSecret}</code>
+              <button type="button" className="small-button shrink-0" onClick={copySecret}>{copied ? "Copied" : "Copy"}</button>
+            </div>
+          </div>
+        )}
+
+        <form className="space-y-3 rounded-lg border p-4" onSubmit={createToken}>
+          <div className="grid gap-3 sm:grid-cols-[1fr_9rem]">
+            <label>Name<input value={name} maxLength={80} onChange={(event) => setName(event.target.value)} required /></label>
+            <label>Expires in
+              <select value={expiryDays} onChange={(event) => setExpiryDays(Number(event.target.value))}>
+                <option value={7}>7 days</option>
+                <option value={30}>30 days</option>
+                <option value={90}>90 days</option>
+                <option value={365}>1 year</option>
+              </select>
+            </label>
+          </div>
+          <fieldset>
+            <legend className="mb-2 text-sm font-medium">Scopes</legend>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {supportedScopes.map((scope) => (
+                <label key={scope} className="checkbox-line rounded-md border px-2.5 py-2 font-mono text-xs">
+                  <input
+                    type="checkbox"
+                    checked={selectedScopes.has(scope)}
+                    onChange={(event) => setSelectedScopes((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(scope); else next.delete(scope);
+                      return next;
+                    })}
+                  />
+                  {scope}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <button className="primary-button" disabled={pending || selectedScopes.size === 0}>{pending ? "Creating" : "Create token"}</button>
+        </form>
+
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">Existing tokens</h3>
+          <div className="space-y-2">
+            {tokens.length === 0 && <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">No MCP tokens yet.</p>}
+            {tokens.map((token) => {
+              const inactive = Boolean(token.revoked_at) || new Date(token.expires_at).getTime() <= Date.now();
+              return (
+                <div key={token.id} className="flex items-start gap-3 rounded-md border p-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <strong className="text-sm">{token.name}</strong>
+                      <code className="text-xs text-muted-foreground">{token.id}</code>
+                      {inactive && <span className="text-xs text-destructive">Inactive</span>}
+                    </div>
+                    <p className="mt-1 break-words text-xs text-muted-foreground">{(token.scopes || []).join(" · ")}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Expires {new Date(token.expires_at).toLocaleString()}
+                      {token.last_used_at ? ` · Last used ${new Date(token.last_used_at).toLocaleString()}` : " · Never used"}
+                    </p>
+                  </div>
+                  {!inactive && <button type="button" className="danger-button shrink-0" disabled={pending} onClick={() => revokeToken(token.id)}>Revoke</button>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {error && <div className="modal-error">{error}</div>}
+      </div>
     </Modal>
   );
 }
