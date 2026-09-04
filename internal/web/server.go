@@ -235,8 +235,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/logout", s.requireBrowserSession(s.handleLogout))
 	mux.HandleFunc("/api/password", s.requireBrowserSession(s.handleChangePassword))
 	mux.HandleFunc("/api/users", s.requireBrowserAdmin(s.handleUsers))
-	mux.HandleFunc("/api/mcp-tokens", s.requireBrowserSession(s.handleMCPAccessTokens))
-	mux.HandleFunc("/api/mcp-tokens/", s.requireBrowserSession(s.handleMCPAccessTokens))
+	mux.HandleFunc("/api/access-tokens", s.requireBrowserSession(s.handleAccessTokens))
+	mux.HandleFunc("/api/access-tokens/", s.requireBrowserSession(s.handleAccessTokens))
 	mux.HandleFunc("/api/keys", s.requireSession(s.handleKeys))
 	mux.HandleFunc("/api/keys/", s.requireSession(s.handleKeys))
 	mux.HandleFunc("/api/servers", s.requireSession(s.handleServers))
@@ -259,7 +259,7 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		if !requireMCPScope(w, r, mcpScopeKeysRead) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeKeysRead) {
 			return
 		}
 		keys, err := s.Users.FixedKeys()
@@ -292,11 +292,11 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	requiredScope := mcpScopeKeysReveal
+	requiredScope := accessTokenScopeKeysReveal
 	if parts[1] == "regenerate" {
-		requiredScope = mcpScopeKeysRotate
+		requiredScope = accessTokenScopeKeysRotate
 	}
-	if !requireMCPScope(w, r, requiredScope) {
+	if !requireAccessTokenScope(w, r, requiredScope) {
 		return
 	}
 	username := parts[0]
@@ -373,7 +373,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		if !requireMCPScope(w, r, mcpScopeNodesRead) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeNodesRead) {
 			return
 		}
 		records, err := s.Registry.PublicList()
@@ -383,7 +383,7 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, records)
 	case http.MethodPost:
-		if rejectMCPToken(w, r) {
+		if rejectAccessToken(w, r) {
 			return
 		}
 		session, _ := currentSession(r)
@@ -434,7 +434,7 @@ func (s *Server) handleNodeLayout(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		if !requireMCPScope(w, r, mcpScopeNodesRead) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeNodesRead) {
 			return
 		}
 		layout, err := s.Layout.Get(serverIDs)
@@ -444,7 +444,7 @@ func (s *Server) handleNodeLayout(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, layout)
 	case http.MethodPut:
-		if rejectMCPToken(w, r) {
+		if rejectAccessToken(w, r) {
 			return
 		}
 		session, _ := currentSession(r)
@@ -477,27 +477,27 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case action == "reservations" && r.Method == http.MethodPost:
-		if !requireMCPScope(w, r, mcpScopeReservationsWrite) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeReservationsWrite) {
 			return
 		}
 	case action == "allow" && r.Method == http.MethodPost:
-		if !requireMCPScope(w, r, mcpScopeAuthorizationsWrite) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeAuthorizationsWrite) {
 			return
 		}
 	case action == "revoke" && r.Method == http.MethodPost:
-		if !requireMCPScope(w, r, mcpScopeResourcesRevoke) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeResourcesRevoke) {
 			return
 		}
 	case action == "show-key" && r.Method == http.MethodPost:
-		if !requireMCPScope(w, r, mcpScopeKeysRead) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeKeysRead) {
 			return
 		}
 	case action == "" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):
-		if rejectMCPToken(w, r) {
+		if rejectAccessToken(w, r) {
 			return
 		}
 	default:
-		if rejectMCPToken(w, r) {
+		if rejectAccessToken(w, r) {
 			return
 		}
 	}
@@ -715,7 +715,7 @@ func (s *Server) handleFleetSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !requireMCPScope(w, r, mcpScopeNodesRead) {
+	if !requireAccessTokenScope(w, r, accessTokenScopeNodesRead) {
 		return
 	}
 	out, err := s.cachedFleetSnapshot(r.Context())

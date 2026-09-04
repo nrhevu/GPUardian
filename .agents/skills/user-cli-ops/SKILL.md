@@ -70,7 +70,7 @@ KEY=gk_xxx gpuardian token info  # info about the current token
   instead. Keep this invariant in mind for any enforcement-related change.
 - **One fixed key per account**, shared across all nodes and reservations.
   Revoking a reservation does **not** rotate the key; use `Regenerate` in the
-  web UI (or the `regenerate_key` MCP tool) to replace it.
+  web UI (or `regenerate_key()` in the Python SDK) to replace it.
 - **The CLI is the node-side tool.** It talks to the daemon on the node where
   the GPUs are — it does not talk to the web gateway. Run it on the GPU node
   (or a host that can reach the node's socket).

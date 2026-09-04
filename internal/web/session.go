@@ -336,12 +336,12 @@ func (s *Server) sessionUser(r *http.Request) (sessionInfo, bool) {
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			return sessionInfo{}, false
 		}
-		token, ok := s.Users.AuthenticateMCPAccessToken(parts[1])
+		token, ok := s.Users.AuthenticateAccessToken(parts[1])
 		if !ok {
 			return sessionInfo{}, false
 		}
 		return sessionInfo{
-			User: token.User, Role: token.Role, AuthMethod: "mcp_token", TokenID: token.ID, Scopes: token.Scopes,
+			User: token.User, Role: token.Role, AuthMethod: "access_token", TokenID: token.ID, Scopes: token.Scopes,
 		}, true
 	}
 	return s.browserSessionUser(r)
@@ -366,13 +366,13 @@ func (s *Server) browserSessionUser(r *http.Request) (sessionInfo, bool) {
 	return sessionInfo{User: user.Username, Role: user.Role, AuthMethod: "browser"}, true
 }
 
-func requireMCPScope(w http.ResponseWriter, r *http.Request, scope string) bool {
+func requireAccessTokenScope(w http.ResponseWriter, r *http.Request, scope string) bool {
 	session, ok := currentSession(r)
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "authentication required")
 		return false
 	}
-	if session.AuthMethod != "mcp_token" {
+	if session.AuthMethod != "access_token" {
 		return true
 	}
 	for _, granted := range session.Scopes {
@@ -380,13 +380,13 @@ func requireMCPScope(w http.ResponseWriter, r *http.Request, scope string) bool 
 			return true
 		}
 	}
-	writeJSONError(w, http.StatusForbidden, "MCP token is missing required scope: "+scope)
+	writeJSONError(w, http.StatusForbidden, "access token is missing required scope: "+scope)
 	return false
 }
 
-func rejectMCPToken(w http.ResponseWriter, r *http.Request) bool {
+func rejectAccessToken(w http.ResponseWriter, r *http.Request) bool {
 	session, ok := currentSession(r)
-	if ok && session.AuthMethod == "mcp_token" {
+	if ok && session.AuthMethod == "access_token" {
 		writeJSONError(w, http.StatusForbidden, "this operation requires browser authentication")
 		return true
 	}

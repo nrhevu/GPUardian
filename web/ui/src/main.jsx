@@ -275,7 +275,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const [mcpTokenOpen, setMCPTokenOpen] = useState(false);
+  const [accessTokenOpen, setAccessTokenOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [deleteUserTarget, setDeleteUserTarget] = useState(null);
@@ -575,7 +575,7 @@ function App() {
       setActiveGPU(null);
       setView("gpu");
       setPasswordOpen(false);
-      setMCPTokenOpen(false);
+      setAccessTokenOpen(false);
       setSettingsOpen(false);
       setDeleteUserTarget(null);
       setReservationSuccess(null);
@@ -1456,11 +1456,11 @@ function App() {
                   className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] hover:bg-accent"
                   onClick={() => {
                     setSettingsOpen(false);
-                    setMCPTokenOpen(true);
+                    setAccessTokenOpen(true);
                   }}
                 >
                   <KeyRound className="h-4 w-4" />
-                  MCP access tokens
+                  Access tokens
                 </button>
                 <button
                   type="button"
@@ -1591,7 +1591,7 @@ function App() {
         />
       )}
       {passwordOpen && <ChangePasswordModal onClose={() => setPasswordOpen(false)} onSubmit={changePassword} />}
-      {mcpTokenOpen && <MCPAccessTokenModal onClose={() => setMCPTokenOpen(false)} />}
+      {accessTokenOpen && <AccessTokenModal onClose={() => setAccessTokenOpen(false)} />}
       {isAdmin && userOpen && <CreateUserModal onClose={() => setUserOpen(false)} onSubmit={createUser} />}
       {isAdmin && deleteUserTarget && (
         <DeleteUserModal
@@ -3231,11 +3231,11 @@ function ChangePasswordModal({ onClose, onSubmit }) {
   );
 }
 
-function MCPAccessTokenModal({ onClose }) {
+function AccessTokenModal({ onClose }) {
   const [tokens, setTokens] = useState([]);
   const [supportedScopes, setSupportedScopes] = useState([]);
   const [selectedScopes, setSelectedScopes] = useState(new Set());
-  const [name, setName] = useState("My MCP client");
+  const [name, setName] = useState("My SDK client");
   const [expiryDays, setExpiryDays] = useState(30);
   const [createdSecret, setCreatedSecret] = useState("");
   const [copied, setCopied] = useState(false);
@@ -3243,7 +3243,7 @@ function MCPAccessTokenModal({ onClose }) {
   const [pending, setPending] = useState(false);
 
   async function loadTokens() {
-    const response = await api("/api/mcp-tokens");
+    const response = await api("/api/access-tokens");
     setTokens(response.tokens || []);
     setSupportedScopes(response.supported_scopes || []);
     setSelectedScopes((current) => current.size > 0 ? current : new Set(response.default_scopes || []));
@@ -3259,7 +3259,7 @@ function MCPAccessTokenModal({ onClose }) {
     setPending(true);
     setError("");
     try {
-      const token = await api("/api/mcp-tokens", {
+      const token = await api("/api/access-tokens", {
         method: "POST",
         body: JSON.stringify({ name, expiry_days: Number(expiryDays), scopes: Array.from(selectedScopes) }),
       });
@@ -3276,7 +3276,7 @@ function MCPAccessTokenModal({ onClose }) {
     setPending(true);
     setError("");
     try {
-      await api(`/api/mcp-tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await api(`/api/access-tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
       await loadTokens();
     } catch (err) {
       setError(err.message);
@@ -3292,10 +3292,10 @@ function MCPAccessTokenModal({ onClose }) {
   }
 
   return (
-    <Modal title="MCP access tokens" onClose={onClose} className="max-w-3xl">
+    <Modal title="Access tokens" onClose={onClose} className="max-w-3xl">
       <div className="space-y-5">
         <p className="text-sm text-muted-foreground">
-          Use a scoped token instead of storing your GPUardian password in an MCP client. The secret is shown only once.
+          Use a scoped token to authenticate SDK clients without storing your GPUardian password. The secret is shown only once.
         </p>
 
         {createdSecret && (
@@ -3345,7 +3345,7 @@ function MCPAccessTokenModal({ onClose }) {
         <div>
           <h3 className="mb-2 text-sm font-semibold">Existing tokens</h3>
           <div className="space-y-2">
-            {tokens.length === 0 && <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">No MCP tokens yet.</p>}
+            {tokens.length === 0 && <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">No access tokens yet.</p>}
             {tokens.map((token) => {
               const inactive = Boolean(token.revoked_at) || new Date(token.expires_at).getTime() <= Date.now();
               return (

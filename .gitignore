@@ -8,9 +8,10 @@ __pycache__/
 *.py[cod]
 web/ui/node_modules/
 web/ui/dist/
-mcp/.venv/
-mcp/build/
-mcp/*.egg-info/
+sdk/python/.venv/
+sdk/python/build/
+sdk/python/*.egg-info/
+/mcp/
 .zcode/
 
 deploy

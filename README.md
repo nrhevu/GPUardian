@@ -18,8 +18,10 @@ GPUardian reserves and enforces access to AMD and NVIDIA GPUs on shared Linux
 servers. It provides:
 
 - a root node daemon that observes GPU processes and enforces reservations;
-- a CLI for running and authorizing workloads; and
-- a Dockerized web gateway for accounts, scheduling, keys, and multiple nodes.
+- a CLI for running and authorizing workloads;
+- a Dockerized web gateway for accounts, scheduling, keys, and multiple nodes;
+  and
+- a token-authenticated Python SDK for automating gateway operations.
 
 GPUardian uses monitor-and-kill enforcement; it is not kernel-level device
 isolation. A user with root, sudo, or root-equivalent Docker access can bypass
@@ -470,6 +472,31 @@ Revoking a reservation ends only that reservation. It does not change the
 account's fixed key.
 
 Regular users never need a node root key.
+
+### Automate with the Python SDK
+
+Create a scoped token from **Account → Access tokens**, then install the SDK:
+
+```bash
+cd sdk/python
+python3 -m venv .venv
+.venv/bin/pip install -e .
+```
+
+Use the token as a Bearer credential; the SDK does not accept or retain an
+account password:
+
+```python
+from gpuardian_sdk import GpuardianClient
+
+client = GpuardianClient("https://gpuardian.example.com:8443", "ga_...")
+client.validate_auth()
+nodes = client.list_servers()
+client.close()
+```
+
+Grant only the scopes required by the application. See
+[`sdk/python/README.md`](sdk/python/README.md) for the complete client surface.
 
 ## Administration
 

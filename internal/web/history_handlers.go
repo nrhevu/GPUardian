@@ -37,7 +37,7 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+	if !requireAccessTokenScope(w, r, accessTokenScopeHistoryRead) {
 		return
 	}
 	if s.History == nil {
@@ -96,7 +96,7 @@ func (s *Server) handleHistorySummary(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+	if !requireAccessTokenScope(w, r, accessTokenScopeHistoryRead) {
 		return
 	}
 	if s.History == nil {
@@ -151,7 +151,7 @@ func (s *Server) handleHistorySessions(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+	if !requireAccessTokenScope(w, r, accessTokenScopeHistoryRead) {
 		return
 	}
 	if s.History == nil {
@@ -189,7 +189,7 @@ func (s *Server) handleHistorySessionAction(w http.ResponseWriter, r *http.Reque
 	}
 	id := parts[0]
 	if len(parts) == 1 && r.Method == http.MethodGet {
-		if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeHistoryRead) {
 			return
 		}
 		session, err := s.History.GetSession(r.Context(), id)
@@ -205,7 +205,7 @@ func (s *Server) handleHistorySessionAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if len(parts) == 2 && parts[1] == "jobs" && r.Method == http.MethodGet {
-		if !requireMCPScope(w, r, mcpScopeHistoryRead) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeHistoryRead) {
 			return
 		}
 		limit := parseBoundedInt(r.URL.Query().Get("limit"), 100, 1, 100)
@@ -228,7 +228,7 @@ func (s *Server) handleHistorySessionAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if len(parts) == 2 && parts[1] == "result" && r.Method == http.MethodPut {
-		if !requireMCPScope(w, r, mcpScopeHistoryWrite) {
+		if !requireAccessTokenScope(w, r, accessTokenScopeHistoryWrite) {
 			return
 		}
 		var request historyResultRequest

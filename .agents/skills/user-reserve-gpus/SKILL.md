@@ -47,8 +47,8 @@ Key facts about the fixed key:
 - Node badges in the UI show the key-snapshot sync state per node.
 
 The `gk_...` key is the credential for the **node CLI**
-(`KEY=gk_... gpuardian run ...`), not for the MCP server (which uses
-username + password). See the `user-cli-ops` skill for running workloads.
+(`KEY=gk_... gpuardian run ...`). Gateway SDK clients use a scoped `ga_...`
+access token instead. See the `user-cli-ops` skill for running workloads.
 
 ## Gotchas
 

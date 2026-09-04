@@ -1,9 +1,4 @@
-"""HTTP client for the Gpuardian web gateway API.
-
-Uses a scoped MCP Bearer token by default. Username/password login remains as
-a temporary compatibility path, but the password is discarded after login and
-is never reused automatically.
-"""
+"""Token-authenticated client for the GPUardian web gateway API."""
 
 from __future__ import annotations
 
@@ -23,68 +18,38 @@ class GpuardianClient:
     def __init__(
         self,
         base_url: str,
-        username: str | None = None,
-        password: str | None = None,
+        access_token: str,
         *,
-        token: str | None = None,
         timeout: float = 30.0,
         verify_tls: bool = True,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._username = username
-        self._password = password
-        self._token = token
-        if not token and (not username or not password):
-            raise ValueError("token or username/password is required")
-        headers = {"Accept": "application/json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        access_token = access_token.strip()
+        if not access_token:
+            raise ValueError("access_token is required")
         self._client = httpx.Client(
             base_url=self._base_url,
-            cookies=httpx.Cookies(),
             timeout=timeout,
             verify=verify_tls,
             follow_redirects=False,
-            headers=headers,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {access_token}",
+            },
         )
-        self._logged_in = bool(token)
 
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
 
-    def login(self) -> None:
-        """Authenticate once with the compatibility password flow."""
-        if self._token:
-            return
-        if not self._username or self._password is None:
-            raise GpuardianError("password session expired; configure an MCP access token")
-        password = self._password
-        self._password = None
-        resp = self._client.post(
-            "/api/login",
-            json={"username": self._username, "password": password},
-        )
-        if resp.status_code == 429:
-            retry = resp.headers.get("Retry-After")
-            raise GpuardianError(
-                f"login rate-limited, retry after {retry}s" if retry else "login rate-limited"
-            )
-        if resp.status_code != 200:
-            raise GpuardianError(f"login failed: HTTP {resp.status_code}")
-        self._logged_in = True
-
     def validate_auth(self) -> None:
         """Fail fast when the configured credential is invalid or expired."""
-        if not self._token:
-            self.login()
-            return
         resp = self._client.get("/api/session")
         if resp.status_code != 200:
             raise GpuardianError(f"credential validation failed: HTTP {resp.status_code}")
         body = resp.json()
         if not body.get("authenticated"):
-            raise GpuardianError("MCP access token is invalid, expired, or revoked")
+            raise GpuardianError("access token is invalid, expired, or revoked")
 
     def close(self) -> None:
         self._client.close()
@@ -101,8 +66,6 @@ class GpuardianClient:
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> Any:
-        if not self._logged_in:
-            self.login()
         resp = self._client.request(
             method,
             path,
@@ -110,10 +73,7 @@ class GpuardianClient:
             json=json_body,
         )
         if resp.status_code == 401:
-            self._logged_in = False
-            if self._token:
-                raise GpuardianError("MCP access token is invalid, expired, or revoked")
-            raise GpuardianError("password session expired; restart with an MCP access token")
+            raise GpuardianError("access token is invalid, expired, or revoked")
         if resp.status_code == 429:
             retry = resp.headers.get("Retry-After")
             raise GpuardianError(

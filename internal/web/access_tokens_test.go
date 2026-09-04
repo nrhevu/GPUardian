@@ -13,19 +13,19 @@ import (
 	"gpuardian/internal/config"
 )
 
-func TestMCPAccessTokenLifecycleStoresOnlyHash(t *testing.T) {
+func TestAccessTokenLifecycleStoresOnlyHash(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "users.json")
 	store := NewUserStore(path)
 	if err := store.BootstrapAdmin("admin", "test-password-strong"); err != nil {
 		t.Fatal(err)
 	}
-	created, err := store.CreateMCPAccessToken(
-		"admin", "Claude Desktop", []string{mcpScopeHistoryRead, mcpScopeNodesRead, mcpScopeHistoryRead}, time.Now().Add(24*time.Hour),
+	created, err := store.CreateAccessToken(
+		"admin", "training SDK", []string{accessTokenScopeHistoryRead, accessTokenScopeNodesRead, accessTokenScopeHistoryRead}, time.Now().Add(24*time.Hour),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(created.Secret, mcpAccessTokenPrefix) || created.ID == "" {
+	if !strings.HasPrefix(created.Secret, accessTokenPrefix) || !strings.HasPrefix(created.ID, "at_") {
 		t.Fatalf("created token = %+v", created)
 	}
 	data, err := os.ReadFile(path)
@@ -33,24 +33,60 @@ func TestMCPAccessTokenLifecycleStoresOnlyHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), created.Secret) {
-		t.Fatal("users file contains plaintext MCP access token")
+		t.Fatal("users file contains plaintext access token")
 	}
-	authenticated, ok := store.AuthenticateMCPAccessToken(created.Secret)
+	authenticated, ok := store.AuthenticateAccessToken(created.Secret)
 	if !ok || authenticated.User != "admin" || authenticated.ID != created.ID {
 		t.Fatalf("authenticated = %+v, ok=%v", authenticated, ok)
 	}
-	if len(authenticated.Scopes) != 2 || authenticated.Scopes[0] != mcpScopeHistoryRead || authenticated.Scopes[1] != mcpScopeNodesRead {
+	if len(authenticated.Scopes) != 2 || authenticated.Scopes[0] != accessTokenScopeHistoryRead || authenticated.Scopes[1] != accessTokenScopeNodesRead {
 		t.Fatalf("scopes = %v", authenticated.Scopes)
 	}
-	if err := store.RevokeMCPAccessToken("admin", created.ID); err != nil {
+	if err := store.RevokeAccessToken("admin", created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := store.AuthenticateMCPAccessToken(created.Secret); ok {
+	if _, ok := store.AuthenticateAccessToken(created.Secret); ok {
 		t.Fatal("revoked token authenticated")
 	}
 }
 
-func TestMCPAccessTokenAPIAndScopeEnforcement(t *testing.T) {
+func TestLegacyAccessTokenFieldMigratesWithoutInvalidatingSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.json")
+	store := NewUserStore(path)
+	if err := store.BootstrapAdmin("admin", "test-password-strong"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateAccessToken("admin", "legacy", []string{accessTokenScopeNodesRead}, time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyData := strings.Replace(string(data), `"access_tokens"`, `"mcp_access_tokens"`, 1)
+	if err := os.WriteFile(path, []byte(legacyData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewUserStore(path)
+	authenticated, ok := reloaded.AuthenticateAccessToken(created.Secret)
+	if !ok || authenticated.ID != created.ID {
+		t.Fatalf("legacy token authenticated = %+v, ok=%v", authenticated, ok)
+	}
+	if err := reloaded.RevokeAccessToken("admin", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(migrated), `"mcp_access_tokens"`) || !strings.Contains(string(migrated), `"access_tokens"`) {
+		t.Fatalf("legacy token field was not migrated: %s", migrated)
+	}
+}
+
+func TestAccessTokenAPIAndScopeEnforcement(t *testing.T) {
 	dir := t.TempDir()
 	server := New(config.Config{
 		WebRegistry: filepath.Join(dir, "servers.json"),
@@ -63,14 +99,14 @@ func TestMCPAccessTokenAPIAndScopeEnforcement(t *testing.T) {
 	cookie := testSessionCookie(t, server, "admin", RoleAdmin)
 
 	createdResponse := requestJSON(
-		handler, http.MethodPost, "/api/mcp-tokens",
+		handler, http.MethodPost, "/api/access-tokens",
 		`{"name":"history reader","expiry_days":30,"scopes":["history:read"]}`,
 		cookie,
 	)
 	if createdResponse.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, body=%s", createdResponse.Code, createdResponse.Body.String())
 	}
-	var created CreatedMCPAccessToken
+	var created CreatedAccessToken
 	if err := json.Unmarshal(createdResponse.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
@@ -87,11 +123,11 @@ func TestMCPAccessTokenAPIAndScopeEnforcement(t *testing.T) {
 	serversRequest.Header.Set("Authorization", "Bearer "+created.Secret)
 	serversResponse := httptest.NewRecorder()
 	handler.ServeHTTP(serversResponse, serversRequest)
-	if serversResponse.Code != http.StatusForbidden || !strings.Contains(serversResponse.Body.String(), mcpScopeNodesRead) {
+	if serversResponse.Code != http.StatusForbidden || !strings.Contains(serversResponse.Body.String(), accessTokenScopeNodesRead) {
 		t.Fatalf("servers response = %d %s", serversResponse.Code, serversResponse.Body.String())
 	}
 
-	manageRequest := httptest.NewRequest(http.MethodGet, "/api/mcp-tokens", nil)
+	manageRequest := httptest.NewRequest(http.MethodGet, "/api/access-tokens", nil)
 	manageRequest.Header.Set("Authorization", "Bearer "+created.Secret)
 	manageResponse := httptest.NewRecorder()
 	handler.ServeHTTP(manageResponse, manageRequest)
@@ -99,7 +135,7 @@ func TestMCPAccessTokenAPIAndScopeEnforcement(t *testing.T) {
 		t.Fatalf("token management response = %d %s", manageResponse.Code, manageResponse.Body.String())
 	}
 
-	revokeResponse := requestJSON(handler, http.MethodDelete, "/api/mcp-tokens/"+created.ID, "", cookie)
+	revokeResponse := requestJSON(handler, http.MethodDelete, "/api/access-tokens/"+created.ID, "", cookie)
 	if revokeResponse.Code != http.StatusOK {
 		t.Fatalf("revoke status = %d, body=%s", revokeResponse.Code, revokeResponse.Body.String())
 	}
