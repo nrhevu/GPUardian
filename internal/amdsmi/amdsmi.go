@@ -71,11 +71,7 @@ func (p CLIProvider) Processes(ctx context.Context) ([]model.GPUProcess, error) 
 	if command == "" {
 		command = "amd-smi"
 	}
-	out, err := p.output(ctx, command, "process", "--json")
-	if err != nil {
-		return nil, err
-	}
-	return ParseProcessJSON(out)
+	return p.processesPerGPU(ctx, command)
 }
 
 func (p CLIProvider) Metrics(ctx context.Context) ([]model.GPUMetric, error) {

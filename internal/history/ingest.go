@@ -303,7 +303,7 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 			starts_at_ms=MIN(reservation_sessions.starts_at_ms,excluded.starts_at_ms),
 			expires_at_ms=MAX(reservation_sessions.expires_at_ms,excluded.expires_at_ms),updated_at_ms=excluded.updated_at_ms`,
 			sessionID(nodeID, groupID), nodeID, serverID, serverName, groupID, payload.Holder, purpose,
-			millis(startedAt), millis(startedAt), millis(endAt), millis(occurredAt))
+			millis(startedAt), millis(startedAt), max(millis(startedAt)+1, millis(endAt)), millis(occurredAt))
 		if err != nil {
 			return err
 		}
@@ -399,18 +399,11 @@ func applyJob(ctx context.Context, tx *sql.Tx, nodeID, serverID, serverName stri
 			}
 		}
 	}
-	if kind == "claimed_run" {
-		_, err := tx.ExecContext(ctx, `UPDATE reservation_sessions SET
-			starts_at_ms=COALESCE((SELECT MIN(started_at_ms) FROM jobs WHERE session_id=?),starts_at_ms),
-			expires_at_ms=MAX(starts_at_ms+1,COALESCE((SELECT MAX(COALESCE(finished_at_ms,root_exited_at_ms,updated_at_ms,started_at_ms)) FROM jobs WHERE session_id=?),expires_at_ms)),
-			finalized_at_ms=CASE WHEN EXISTS(SELECT 1 FROM jobs WHERE session_id=? AND finished_at_ms IS NULL) THEN NULL
-				ELSE (SELECT MAX(finished_at_ms) FROM jobs WHERE session_id=?) END,
-			updated_at_ms=MAX(updated_at_ms,?) WHERE session_id=?`, session, session, session, session, millis(occurredAt), session)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	// Refresh historical claims even when this event now belongs to a reservation.
+	// Compute both bounds from the same aggregate: SQL assignments otherwise read
+	// the old start and can produce an end equal to the newly computed start.
+	_, err = tx.ExecContext(ctx, refreshJobClaimedSessionsSQL, nodeID, payload.ExecutionID)
+	return err
 }
 
 func isClaimedRun(tokenMode string) bool {
