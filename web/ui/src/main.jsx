@@ -1723,7 +1723,10 @@ function SidebarNodeItem({ server, item, active, nested, online, dryRun, isAdmin
       } : undefined}
       onDrop={isAdmin ? (event) => onDrop(event, { kind: "node", id: server.id, groupID: item.groupID || "" }) : undefined}
     >
-      <span className={`h-2 w-2 shrink-0 rounded-full ${online ? "bg-status-success-fg" : "bg-destructive"}`} />
+      <span
+        className={`h-2 w-2 shrink-0 rounded-full ${online ? (dryRun ? "bg-status-warning-fg" : "bg-status-success-fg") : "bg-destructive"}`}
+        title={dryRun ? "Dry run: the daemon monitors GPU processes but does not kill them." : undefined}
+      />
       {editing ? (
         <input
           className="h-6 min-w-0 flex-1 rounded border border-input bg-background px-1.5 text-xs text-foreground outline-none focus:border-ring"
@@ -1752,7 +1755,6 @@ function SidebarNodeItem({ server, item, active, nested, online, dryRun, isAdmin
           {server.name}
         </span>
       )}
-      {dryRun && <DryRunBadge />}
     </div>
   );
 }
