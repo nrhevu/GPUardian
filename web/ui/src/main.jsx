@@ -1311,6 +1311,7 @@ function App() {
                               active={server.id === currentServerId}
                               nested
                               online={fleetItem?.online}
+                              dryRun={fleetItem?.snapshot?.dry_run === true}
                               isAdmin={isAdmin}
                               editing={editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id}
                               draft={layoutNameDraft}
@@ -1351,6 +1352,7 @@ function App() {
                   item={{ kind: "node", id: server.id, groupID: "" }}
                   active={server.id === currentServerId}
                   online={fleetItem?.online}
+                  dryRun={fleetItem?.snapshot?.dry_run === true}
                   isAdmin={isAdmin}
                   editing={editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id}
                   draft={layoutNameDraft}
@@ -1386,9 +1388,10 @@ function App() {
         <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="truncate text-sm font-semibold">{viewTitle}</h1>
-            <StatusPill tone={current?.online ? "success" : current?.server ? "danger" : "neutral"}>
-              {current?.server?.name || "No node selected"}
+            <StatusPill tone={current?.online ? "success" : current?.server ? "danger" : "neutral"} className="min-w-0">
+              <span className="truncate">{current?.server?.name || "No node selected"}</span>
             </StatusPill>
+            {current?.snapshot?.dry_run === true && <DryRunBadge />}
           </div>
           <div className="flex-1" />
           <div className="relative hidden max-md:block">
@@ -1699,7 +1702,7 @@ function App() {
   );
 }
 
-function SidebarNodeItem({ server, item, active, nested, online, isAdmin, editing, draft, dragging, itemClass, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
+function SidebarNodeItem({ server, item, active, nested, online, dryRun, isAdmin, editing, draft, dragging, itemClass, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
   return (
     <div
       className={`${itemClass(active)} group/node select-none ${nested ? "ml-3" : ""} ${dragging ? "opacity-45" : ""}`.trim()}
@@ -1739,7 +1742,7 @@ function SidebarNodeItem({ server, item, active, nested, online, isAdmin, editin
         />
       ) : (
         <span
-          className={`truncate ${active ? "text-sidebar-primary-foreground" : "text-foreground"}`}
+          className={`min-w-0 flex-1 truncate ${active ? "text-sidebar-primary-foreground" : "text-foreground"}`}
           onDoubleClick={(event) => {
             event.stopPropagation();
             onRenameStart("node", server.id, server.name);
@@ -1749,6 +1752,7 @@ function SidebarNodeItem({ server, item, active, nested, online, isAdmin, editin
           {server.name}
         </span>
       )}
+      {dryRun && <DryRunBadge />}
     </div>
   );
 }
@@ -2482,6 +2486,14 @@ const statusPillClasses = {
   danger: "bg-status-danger-bg text-status-danger-fg",
   neutral: "bg-status-neutral-bg text-status-neutral-fg",
 };
+
+function DryRunBadge() {
+  return (
+    <span className="shrink-0" title="Dry run: the daemon monitors GPU processes but does not kill them.">
+      <StatusPill tone="warning">Dry run</StatusPill>
+    </span>
+  );
+}
 
 function StatusPill({ tone = "neutral", children, className = "" }) {
   return (

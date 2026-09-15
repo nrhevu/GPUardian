@@ -216,6 +216,7 @@ type GPUSnapshot struct {
 type NodeSnapshot struct {
 	Now            time.Time           `json:"now"`
 	Hostname       string              `json:"hostname,omitempty"`
+	DryRun         bool                `json:"dry_run"`
 	GPUs           []GPUSnapshot       `json:"gpus"`
 	Tokens         []TokenView         `json:"tokens,omitempty"`
 	Reservations   []ReservationView   `json:"reservations,omitempty"`

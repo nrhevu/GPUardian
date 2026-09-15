@@ -97,6 +97,7 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 	return model.NodeSnapshot{
 		Now:            status.Now,
 		Hostname:       hostname,
+		DryRun:         s.Cfg.DryRun,
 		GPUs:           gpus,
 		Tokens:         status.Tokens,
 		Reservations:   status.Reservations,

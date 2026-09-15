@@ -12,6 +12,38 @@ import (
 	"time"
 )
 
+func TestNodeClientSnapshotDryRun(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "dry run", body: `{"dry_run":true,"gpus":[]}`, want: true},
+		{name: "enforcing", body: `{"dry_run":false,"gpus":[]}`},
+		{name: "legacy daemon", body: `{"gpus":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			clients := newNodeHTTPClients()
+			defer clients.closeIdleConnections()
+			client := NodeClient{Timeout: time.Second, clients: clients}
+			snapshot, err := client.Snapshot(context.Background(), testNodeRecord(server.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, role := range []string{RoleAdmin, RoleUser} {
+				fleet := filterFleetSnapshot(fleetSnapshot{Servers: []serverSnapshot{{Snapshot: &snapshot}}}, sessionInfo{User: "alice", Role: role})
+				if got := fleet.Servers[0].Snapshot.DryRun; got != test.want {
+					t.Errorf("%s snapshot dry_run = %v, want %v", role, got, test.want)
+				}
+			}
+		})
+	}
+}
+
 func TestNodeClientReusesConnections(t *testing.T) {
 	var connections atomic.Int32
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

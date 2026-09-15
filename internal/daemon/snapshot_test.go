@@ -28,6 +28,39 @@ func (p *countingSnapshotAMD) Metrics(context.Context) ([]model.GPUMetric, error
 	return p.metrics, nil
 }
 
+func TestSnapshotReportsDryRun(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		dryRun bool
+	}{
+		{name: "enforcing"},
+		{name: "dry run", dryRun: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := testServer(t)
+			server.Cfg.DryRun = test.dryRun
+			server.GPU = &countingSnapshotAMD{}
+			snapshot, err := server.Snapshot(context.Background(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload struct {
+				DryRun *bool `json:"dry_run"`
+			}
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.DryRun == nil || *payload.DryRun != test.dryRun {
+				t.Fatalf("snapshot dry_run = %v, want explicit %v", payload.DryRun, test.dryRun)
+			}
+		})
+	}
+}
+
 func TestSnapshotSamplesProcessesOnce(t *testing.T) {
 	server := testServer(t)
 	usedBytes := uint64(2)
