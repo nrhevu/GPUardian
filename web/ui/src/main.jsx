@@ -2702,7 +2702,8 @@ function ScheduleBlockButton({ block, colors = reservationPalette[0], nowMS, onO
   const isActive = block.start.getTime() <= nowMS && block.end.getTime() > nowMS;
   const duration = durationLabel(isActive ? block.end.getTime() - nowMS : block.durationMinutes * 60 * 1000);
   const showSpan = block.density === "detailed" || block.density === "extended";
-  const description = `${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeLabel(block.start)} - ${timeLabel(block.end)} · ${duration} · ${gpuText}`;
+  const timeRange = reservationTimeRangeLabel(block.start, block.end);
+  const description = `${block.holder ? `${block.holder} · ` : ""}${block.label} · ${timeRange} · ${duration} · ${gpuText}`;
   return (
     <button
       type="button"
@@ -2732,7 +2733,7 @@ function ScheduleBlockButton({ block, colors = reservationPalette[0], nowMS, onO
         </div>
       )}
       <div className="booking-footer">
-        <span className="booking-time">{timeLabel(block.start)} - {timeLabel(block.end)}</span>
+        <span className="booking-time">{timeRange}</span>
         {block.holder && <span className="booking-holder">{block.holder}</span>}
       </div>
     </button>
@@ -3307,7 +3308,7 @@ function AccessTokenModal({ onClose }) {
 
   return (
     <Modal title="Access tokens" onClose={onClose} className="max-w-3xl">
-      <div className="space-y-5">
+      <div className="space-y-5 px-5 pt-4 pb-5">
         <p className="text-sm text-muted-foreground">
           Use a scoped token to authenticate SDK clients without storing your GPUardian password. The secret is shown only once.
         </p>
@@ -3591,7 +3592,7 @@ function ScheduleDetailModal({
       <div className="schedule-detail">
         <div className="revoke-summary">
           <strong>{target.label}</strong>
-          <span>{timeLabel(target.start)} - {timeLabel(target.end)}</span>
+          <span>{reservationTimeRangeLabel(target.start, target.end, { includeYear: true })}</span>
         </div>
         <div className="detail-row">
           <span>GPUs</span>
@@ -3648,7 +3649,7 @@ function RevokeModal({ target, onClose, onSubmit }) {
         >
         <div className="revoke-summary">
           <strong>{targetLabel}</strong>
-          <span>{timeLabel(target.start)} - {timeLabel(target.end)}</span>
+          <span>{reservationTimeRangeLabel(target.start, target.end, { includeYear: true })}</span>
         </div>
         <p className="muted">This ends the reservation on every selected GPU. Your fixed key remains active.</p>
         {error && <div className="modal-error">{error}</div>}
@@ -4051,7 +4052,7 @@ function layoutScheduleGroup(group) {
 function estimateScheduleBlockWidth(block) {
   const label = block.label || "";
   const holder = block.holder || "";
-  const time = `${timeLabel(block.start)} - ${timeLabel(block.end)}`;
+  const time = reservationTimeRangeLabel(block.start, block.end);
   const labelWidth = estimateTextWidth(label, block.compact ? 11 : 12);
   const holderWidth = holder ? estimateTextWidth(holder, 9) : 0;
   const timeWidth = estimateTextWidth(time, 11);
@@ -4157,6 +4158,26 @@ function sameText(left, right) {
 
 function timeLabel(value) {
   return new Date(value).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function reservationTimeRangeLabel(start, end, { includeYear = false } = {}) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  const dateOptions = {
+    month: "short",
+    day: "numeric",
+    ...(includeYear ? { year: "numeric" } : {}),
+  };
+  const startDay = startDate.toLocaleDateString(undefined, dateOptions);
+  const endDay = endDate.toLocaleDateString(undefined, dateOptions);
+  const sameDay = startDate.getFullYear() === endDate.getFullYear()
+    && startDate.getMonth() === endDate.getMonth()
+    && startDate.getDate() === endDate.getDate();
+
+  if (sameDay) {
+    return `${startDay} · ${timeLabel(startDate)} – ${timeLabel(endDate)}`;
+  }
+  return `${startDay}, ${timeLabel(startDate)} – ${endDay}, ${timeLabel(endDate)}`;
 }
 
 function dateTimeLabel(value) {
