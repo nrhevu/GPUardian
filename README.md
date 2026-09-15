@@ -495,6 +495,16 @@ nodes = client.list_servers()
 client.close()
 ```
 
+The SDK package also installs a gateway CLI. It uses the same scoped access
+token and can create a reservation on any registered node by exact name or ID:
+
+```bash
+export GPUARDIAN_URL=https://gpuardian.example.com:8443
+export GPUARDIAN_ACCESS_TOKEN=ga_xxx
+gpuardian-sdk nodes
+gpuardian-sdk reserve --node node-a --gpus 0,1 --purpose training --ttl 2h
+```
+
 Grant only the scopes required by the application. See
 [`sdk/python/README.md`](sdk/python/README.md) for the complete client surface.
 
