@@ -23,12 +23,21 @@ func (s *Store) ApplyPageWithOwners(ctx context.Context, serverID, serverName st
 	if strings.TrimSpace(page.NodeID) == "" || strings.TrimSpace(page.StreamID) == "" {
 		return errors.New("telemetry page is missing node or stream identity")
 	}
+	now := time.Now().UTC().UnixMilli()
+	if len(page.Events) == 0 {
+		current, err := s.idleSyncStateCurrent(ctx, serverID, page, now)
+		if err != nil {
+			return err
+		}
+		if current {
+			return nil
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	now := time.Now().UTC().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO nodes(node_id,last_server_id,first_seen_at_ms,last_seen_at_ms)
 		VALUES(?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET last_server_id=excluded.last_server_id,last_seen_at_ms=excluded.last_seen_at_ms`,
 		page.NodeID, serverID, now, now); err != nil {
@@ -57,16 +66,33 @@ func (s *Store) ApplyPageWithOwners(ctx context.Context, serverID, serverName st
 		serverID, page.NodeID, page.StreamID, page.NextCursor, lastSeq, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM ingested_event_ids WHERE ingested_at_ms < ?", time.Now().Add(-48*time.Hour).UnixMilli()); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM gpu_minute_rollups WHERE minute_ms < ?", time.Now().Add(-90*24*time.Hour).UnixMilli()); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM node_gpu_minute_rollups WHERE minute_ms < ?", time.Now().Add(-90*24*time.Hour).UnixMilli()); err != nil {
-		return err
-	}
 	return tx.Commit()
+}
+
+// idleSyncRefreshInterval bounds how stale node_sync_state.last_sync_at_ms and
+// nodes.last_seen_at_ms may become while a node keeps returning empty pages.
+// MarkGap uses last_sync_at_ms as the start of the possibly incomplete window,
+// so an older value only widens the range it conservatively marks partial.
+const idleSyncRefreshInterval = 30 * time.Second
+
+// idleSyncStateCurrent reports whether applying an empty page would only bump
+// timestamps that were written recently. It must be called with writeMu held.
+// A recorded sync error, a moved cursor, a different node or stream identity,
+// or a node attributed to another server always forces the write so recovery
+// is persisted immediately.
+func (s *Store) idleSyncStateCurrent(ctx context.Context, serverID string, page telemetry.Page, now int64) (bool, error) {
+	var lastSync sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT st.last_sync_at_ms FROM node_sync_state st
+		JOIN nodes n ON n.node_id=st.node_id
+		WHERE st.server_id=? AND st.node_id=? AND st.stream_id=? AND st.cursor=? AND st.sync_error='' AND n.last_server_id=?`,
+		serverID, page.NodeID, page.StreamID, page.NextCursor, serverID).Scan(&lastSync)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return lastSync.Valid && lastSync.Int64 <= now && now-lastSync.Int64 < idleSyncRefreshInterval.Milliseconds(), nil
 }
 
 func (s *Store) SyncCursor(ctx context.Context, serverID string) (string, error) {

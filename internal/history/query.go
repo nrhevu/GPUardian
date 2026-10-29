@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -25,11 +26,9 @@ func (s *Store) ListSessions(ctx context.Context, filter SessionFilter) ([]Sessi
 		limit = 100
 	}
 	now := time.Now().UTC().UnixMilli()
+	// Job facts are loaded for the returned page only, by loadSessionJobStats.
 	query := `SELECT r.session_id,r.kind,r.server_id,r.server_name,r.node_id,r.owner_username,r.owner_editable,r.purpose,r.source,r.created_at_ms,r.starts_at_ms,
-		r.expires_at_ms,r.revoked_at_ms,r.finalized_at_ms,r.history_quality,
-		(SELECT COUNT(*) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id)),
-		(SELECT MIN(j.started_at_ms) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id)),
-		(SELECT MAX(COALESCE(j.finished_at_ms,j.started_at_ms)) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id))
+		r.expires_at_ms,r.revoked_at_ms,r.finalized_at_ms,r.history_quality,0,NULL,NULL
 		FROM reservation_sessions r WHERE r.provisioning=0`
 	args := []any{}
 	if filter.ServerID != "" {
@@ -65,7 +64,7 @@ func (s *Store) ListSessions(ctx context.Context, filter SessionFilter) ([]Sessi
 	case "revoked":
 		query += " AND r.kind='reservation' AND r.revoked_at_ms IS NOT NULL"
 	}
-	query += ` GROUP BY r.session_id ORDER BY r.starts_at_ms DESC,r.session_id DESC LIMIT ?`
+	query += ` ORDER BY r.starts_at_ms DESC,r.session_id DESC LIMIT ?`
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -87,19 +86,35 @@ func (s *Store) ListSessions(ctx context.Context, filter SessionFilter) ([]Sessi
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	if err := loadSessionJobStats(ctx, s.db, sessions); err != nil {
+		return nil, err
+	}
 	if err := s.enrichSessions(ctx, sessions); err != nil {
 		return nil, err
 	}
 	return sessions, nil
 }
 
+// DefaultSessionTimelineLimit caps the minute rollups GetSession returns. A
+// 90-day session on eight GPUs has about a million rollups.
+const DefaultSessionTimelineLimit = 20000
+
+// GetSession returns a session with its newest DefaultSessionTimelineLimit
+// timeline rollups.
 func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
+	return s.GetSessionWithTimelineLimit(ctx, id, DefaultSessionTimelineLimit)
+}
+
+// GetSessionWithTimelineLimit is GetSession with an explicit timeline cap. The
+// newest timelineLimit minute rollups are returned in ascending (minute, gpu)
+// order; timelineLimit <= 0 selects DefaultSessionTimelineLimit.
+func (s *Store) GetSessionWithTimelineLimit(ctx context.Context, id string, timelineLimit int) (Session, error) {
+	if timelineLimit <= 0 {
+		timelineLimit = DefaultSessionTimelineLimit
+	}
 	row := s.db.QueryRowContext(ctx, `SELECT r.session_id,r.kind,r.server_id,r.server_name,r.node_id,r.owner_username,r.owner_editable,r.purpose,r.source,r.created_at_ms,r.starts_at_ms,
-		r.expires_at_ms,r.revoked_at_ms,r.finalized_at_ms,r.history_quality,
-		(SELECT COUNT(*) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id)),
-		(SELECT MIN(j.started_at_ms) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id)),
-		(SELECT MAX(COALESCE(j.finished_at_ms,j.started_at_ms)) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id))
-		FROM reservation_sessions r WHERE r.session_id=? AND r.provisioning=0 GROUP BY r.session_id`, id)
+		r.expires_at_ms,r.revoked_at_ms,r.finalized_at_ms,r.history_quality,0,NULL,NULL
+		FROM reservation_sessions r WHERE r.session_id=? AND r.provisioning=0`, id)
 	item, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
@@ -107,6 +122,11 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
+	loaded := []Session{item}
+	if err := loadSessionJobStats(ctx, s.db, loaded); err != nil {
+		return Session{}, err
+	}
+	item = loaded[0]
 	item.GPUs, err = s.sessionGPUs(ctx, id)
 	if err != nil {
 		return Session{}, err
@@ -115,7 +135,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	item.Timeline, err = s.timeline(ctx, id)
+	item.Timeline, err = s.timeline(ctx, id, timelineLimit)
 	if err != nil {
 		return Session{}, err
 	}
@@ -134,20 +154,12 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 	if limit > 100 {
 		limit = 100
 	}
-	query := `SELECT j.node_id,j.job_id,j.authorization_id,j.source,j.mode,j.holder,j.command_json,j.started_at_ms,j.root_exited_at_ms,j.finished_at_ms,
-		j.start_precision,j.finish_precision,j.exit_code,j.end_reason,COALESCE(a.selector,''),j.runtime_uid,j.runtime_username,
-		j.runtime_container_id,j.runtime_docker_container_name,j.runtime_kubernetes_namespace,j.runtime_kubernetes_pod_name,
-		j.runtime_kubernetes_container_name FROM jobs j LEFT JOIN authorization_scopes a
-		ON a.node_id=j.node_id AND a.authorization_id=j.authorization_id WHERE
-		(j.session_id=? OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=?))`
 	args := []any{sessionID, sessionID}
 	if afterMS > 0 {
-		query += " AND (COALESCE(j.started_at_ms,0)>? OR (COALESCE(j.started_at_ms,0)=? AND j.job_id>?))"
 		args = append(args, afterMS, afterMS, afterID)
 	}
-	query += " ORDER BY COALESCE(j.started_at_ms,0),j.job_id LIMIT ?"
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, listJobsSQL(afterMS > 0), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -202,30 +214,69 @@ func (s *Store) ListJobs(ctx context.Context, sessionID string, limit int, after
 		return nil, err
 	}
 	jobs := make([]Job, 0, len(pending))
+	if len(pending) == 0 {
+		return jobs, nil
+	}
+	gpuArgs := make([]any, 0, 2*len(pending))
 	for _, value := range pending {
-		job := value.job
-		gpuRows, err := s.db.QueryContext(ctx, "SELECT gpu FROM job_gpus WHERE node_id=? AND job_id=? ORDER BY gpu", value.nodeID, value.internalID)
-		if err != nil {
-			return nil, err
-		}
-		for gpuRows.Next() {
-			var gpu int
-			if err := gpuRows.Scan(&gpu); err != nil {
-				gpuRows.Close()
-				return nil, err
-			}
-			job.GPUs = append(job.GPUs, gpu)
-		}
-		if err := gpuRows.Err(); err != nil {
+		gpuArgs = append(gpuArgs, value.nodeID, value.internalID)
+	}
+	gpuRows, err := s.db.QueryContext(ctx, jobGPUsSQL(len(pending)), gpuArgs...)
+	if err != nil {
+		return nil, err
+	}
+	gpus := make(map[string][]int, len(pending))
+	for gpuRows.Next() {
+		var nodeID, internalID string
+		var gpu int
+		if err := gpuRows.Scan(&nodeID, &internalID, &gpu); err != nil {
 			gpuRows.Close()
 			return nil, err
 		}
-		if err := gpuRows.Close(); err != nil {
-			return nil, err
-		}
+		key := nodeID + "\x00" + internalID
+		gpus[key] = append(gpus[key], gpu)
+	}
+	if err := gpuRows.Err(); err != nil {
+		gpuRows.Close()
+		return nil, err
+	}
+	if err := gpuRows.Close(); err != nil {
+		return nil, err
+	}
+	for _, value := range pending {
+		job := value.job
+		job.GPUs = gpus[value.nodeID+"\x00"+value.internalID]
 		jobs = append(jobs, job)
 	}
 	return jobs, nil
+}
+
+// listJobsSQL selects one page of a session's jobs. A job belongs to a session
+// through jobs.session_id or job_sessions; the UNION of the two indexed
+// lookups lists a job linked both ways once, without scanning jobs.
+func listJobsSQL(withCursor bool) string {
+	query := `WITH session_jobs(node_id,job_id) AS (
+		SELECT node_id,job_id FROM jobs WHERE session_id=?
+		UNION
+		SELECT node_id,job_id FROM job_sessions WHERE session_id=?
+	) SELECT j.node_id,j.job_id,j.authorization_id,j.source,j.mode,j.holder,j.command_json,j.started_at_ms,j.root_exited_at_ms,j.finished_at_ms,
+		j.start_precision,j.finish_precision,j.exit_code,j.end_reason,COALESCE(a.selector,''),j.runtime_uid,j.runtime_username,
+		j.runtime_container_id,j.runtime_docker_container_name,j.runtime_kubernetes_namespace,j.runtime_kubernetes_pod_name,
+		j.runtime_kubernetes_container_name FROM session_jobs sj CROSS JOIN jobs j LEFT JOIN authorization_scopes a
+		ON a.node_id=j.node_id AND a.authorization_id=j.authorization_id
+		WHERE j.node_id=sj.node_id AND j.job_id=sj.job_id`
+	if withCursor {
+		query += " AND (COALESCE(j.started_at_ms,0)>? OR (COALESCE(j.started_at_ms,0)=? AND j.job_id>?))"
+	}
+	return query + " ORDER BY COALESCE(j.started_at_ms,0),j.job_id LIMIT ?"
+}
+
+// jobGPUsSQL loads the GPUs of count (node_id, job_id) pairs in one query.
+func jobGPUsSQL(count int) string {
+	values := strings.TrimSuffix(strings.Repeat("(?,?),", count), ",")
+	return `WITH wanted(node_id,job_id) AS (VALUES ` + values + `)
+		SELECT g.node_id,g.job_id,g.gpu FROM wanted w JOIN job_gpus g ON g.node_id=w.node_id AND g.job_id=w.job_id
+		ORDER BY g.node_id,g.job_id,g.gpu`
 }
 
 func (s *Store) Summary(ctx context.Context, filter SessionFilter) (DashboardSummary, error) {
@@ -281,18 +332,14 @@ func (s *Store) Summary(ctx context.Context, filter SessionFilter) (DashboardSum
 	if err := s.db.QueryRowContext(ctx, metricQuery, args...).Scan(&observed, &busy, &integral); err != nil {
 		return out, err
 	}
-	jobQuery := `SELECT COUNT(DISTINCT j.node_id||':'||j.job_id) FROM jobs j WHERE EXISTS (
-		SELECT 1 FROM reservation_sessions r` + where + ` AND (j.session_id=r.session_id OR EXISTS (
-			SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id
-		)))`
-	if err := s.db.QueryRowContext(ctx, jobQuery, args...).Scan(&out.Jobs); err != nil {
+	if err := s.db.QueryRowContext(ctx, summaryJobCountSQL(where), args...).Scan(&out.Jobs); err != nil {
 		return out, err
 	}
 	if reservedMS.Valid && reservedMS.Float64 > 0 {
 		out.ReservedGPUHours = reservedMS.Float64 / float64(time.Hour/time.Millisecond)
 		out.TelemetryCoverage = float64(observed) / reservedMS.Float64
 	}
-	globalObserved, globalBusy, globalIntegral, hasGlobalMetrics, err := nodeWideGPUMetrics(ctx, s.db, filter.ServerID)
+	globalObserved, globalBusy, globalIntegral, hasGlobalMetrics, err := nodeWideGPUMetricsQuery(ctx, s.db, filter.ServerID, filter.From, filter.To)
 	if err != nil {
 		return out, err
 	}
@@ -308,8 +355,25 @@ func (s *Store) Summary(ctx context.Context, filter SessionFilter) (DashboardSum
 	return out, nil
 }
 
+// summaryJobCountSQL counts distinct jobs linked to the sessions matching
+// where (a " WHERE ..." clause over reservation_sessions r) by expanding the
+// matched sessions through jobs_session_idx and job_sessions_session_idx.
+// CROSS JOIN keeps the sessions as the outer loop.
+func summaryJobCountSQL(where string) string {
+	return `WITH matched AS (SELECT r.session_id FROM reservation_sessions r` + where + `), matched_jobs AS (
+		SELECT j.node_id,j.job_id FROM matched m CROSS JOIN jobs j WHERE j.session_id=m.session_id
+		UNION
+		SELECT j.node_id,j.job_id FROM matched m CROSS JOIN job_sessions js CROSS JOIN jobs j
+		WHERE js.session_id=m.session_id AND j.node_id=js.node_id AND j.job_id=js.job_id
+	) SELECT COUNT(DISTINCT node_id||':'||job_id) FROM matched_jobs`
+}
+
 type queryRower interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type rowsQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func nodeWideGPUMetrics(ctx context.Context, queryer queryRower, serverID string) (int64, int64, sql.NullFloat64, bool, error) {
@@ -463,9 +527,12 @@ func (s *Store) DropProvisioningSession(ctx context.Context, id string) error {
 // absent from the node's current reservation snapshot. Missing end telemetry
 // can otherwise leave a session looking active after the node has already
 // removed it.
+//
+// The gateway calls it about once per second per node and nearly every call
+// finds nothing to close, so the open sessions are read without writeMu or a
+// write transaction first; the lock and transaction are taken only when a
+// session must be closed, and the set is re-read inside the transaction.
 func (s *Store) ReconcileOpenSessions(ctx context.Context, serverID string, liveGroupIDs []string, observedAt time.Time) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	if strings.TrimSpace(serverID) == "" || observedAt.IsZero() {
 		return errors.New("reservation reconciliation requires server id and observation time")
 	}
@@ -475,33 +542,20 @@ func (s *Store) ReconcileOpenSessions(ctx context.Context, serverID string, live
 			live[groupID] = true
 		}
 	}
+	at := millis(observedAt.UTC())
+	missing, err := missingOpenSessions(ctx, s.db, serverID, live, at)
+	if err != nil || len(missing) == 0 {
+		return err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	at := millis(observedAt.UTC())
-	rows, err := tx.QueryContext(ctx, `SELECT session_id,group_id FROM reservation_sessions
-		WHERE server_id=? AND kind='reservation' AND provisioning=0 AND revoked_at_ms IS NULL AND finalized_at_ms IS NULL AND expires_at_ms>?`, serverID, at)
-	if err != nil {
-		return err
-	}
-	var missing []string
-	for rows.Next() {
-		var sessionID, groupID string
-		if err := rows.Scan(&sessionID, &groupID); err != nil {
-			rows.Close()
-			return err
-		}
-		if !live[groupID] {
-			missing = append(missing, sessionID)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
+	missing, err = missingOpenSessions(ctx, tx, serverID, live, at)
+	if err != nil || len(missing) == 0 {
 		return err
 	}
 	for _, sessionID := range missing {
@@ -512,6 +566,34 @@ func (s *Store) ReconcileOpenSessions(ctx context.Context, serverID string, live
 		}
 	}
 	return tx.Commit()
+}
+
+// openReservationSessionsSQL lists the server's open reservations. Its literal
+// kind/provisioning/revoked/finalized terms must keep implying the WHERE clause
+// of the partial index sessions_open_reservation_idx (migration v10).
+const openReservationSessionsSQL = `SELECT session_id,group_id FROM reservation_sessions
+	WHERE server_id=? AND kind='reservation' AND provisioning=0 AND revoked_at_ms IS NULL AND finalized_at_ms IS NULL AND expires_at_ms>?`
+
+func missingOpenSessions(ctx context.Context, queryer rowsQueryer, serverID string, live map[string]bool, at int64) ([]string, error) {
+	rows, err := queryer.QueryContext(ctx, openReservationSessionsSQL, serverID, at)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var missing []string
+	for rows.Next() {
+		var sessionID, groupID string
+		if err := rows.Scan(&sessionID, &groupID); err != nil {
+			return nil, err
+		}
+		if !live[groupID] {
+			missing = append(missing, sessionID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return missing, rows.Close()
 }
 
 func scanSession(scanner interface{ Scan(...any) error }) (Session, error) {
@@ -631,9 +713,15 @@ func (s *Store) enrichSearchSessions(ctx context.Context, sessions []Session, lo
 	if !loadJobStats {
 		return nil
 	}
+	return loadSessionJobStats(ctx, s.db, sessions)
+}
 
-	values := strings.TrimSuffix(strings.Repeat("(?),", len(args)), ",")
-	jobRows, err := s.db.QueryContext(ctx, `WITH selected(session_id) AS (VALUES `+values+`), session_jobs AS (
+// sessionJobStatsSQL aggregates job facts for count sessions. A job belongs to
+// a session through jobs.session_id or job_sessions; the UNION of the two
+// indexed lookups counts a job linked both ways once.
+func sessionJobStatsSQL(count int) string {
+	values := strings.TrimSuffix(strings.Repeat("(?),", count), ",")
+	return `WITH selected(session_id) AS (VALUES ` + values + `), session_jobs AS (
 		SELECT selected.session_id,j.node_id,j.job_id,j.started_at_ms,j.finished_at_ms
 		FROM selected JOIN jobs j ON j.session_id=selected.session_id
 		UNION
@@ -641,7 +729,22 @@ func (s *Store) enrichSearchSessions(ctx context.Context, sessions []Session, lo
 		FROM selected JOIN job_sessions js ON js.session_id=selected.session_id
 		JOIN jobs j ON j.node_id=js.node_id AND j.job_id=js.job_id
 	) SELECT session_id,COUNT(*),MIN(started_at_ms),MAX(COALESCE(finished_at_ms,started_at_ms))
-		FROM session_jobs GROUP BY session_id`, args...)
+		FROM session_jobs GROUP BY session_id`
+}
+
+// loadSessionJobStats sets JobCount, FirstJobAt and LastJobAt of a page of
+// sessions with one batched query. Sessions without jobs keep zero values.
+func loadSessionJobStats(ctx context.Context, queryer rowsQueryer, sessions []Session) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	indexes := make(map[string]int, len(sessions))
+	args := make([]any, len(sessions))
+	for index := range sessions {
+		indexes[sessions[index].ID] = index
+		args[index] = sessions[index].ID
+	}
+	jobRows, err := queryer.QueryContext(ctx, sessionJobStatsSQL(len(args)), args...)
 	if err != nil {
 		return err
 	}
@@ -772,36 +875,141 @@ func (s *Store) gpuSummaries(ctx context.Context, session Session) ([]GPUSummary
 	return values, rows.Err()
 }
 
-func (s *Store) timeline(ctx context.Context, id string) ([]MinuteRollup, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT gpu,minute_ms,observed_ms,busy_ms,utilization_integral
-		FROM gpu_minute_rollups WHERE session_id=? ORDER BY minute_ms,gpu`, id)
+const (
+	// timelineGPUsSQL lists a session's rollup GPUs with one primary-key seek
+	// per GPU (a loose index scan) instead of reading every rollup row.
+	timelineGPUsSQL = `WITH RECURSIVE gpus(gpu) AS (
+		SELECT (SELECT MIN(gpu) FROM gpu_minute_rollups WHERE session_id=?)
+		UNION ALL
+		SELECT (SELECT MIN(gpu) FROM gpu_minute_rollups WHERE session_id=? AND gpu>gpus.gpu) FROM gpus WHERE gpus.gpu IS NOT NULL
+	) SELECT gpu FROM gpus WHERE gpu IS NOT NULL`
+	timelineMinutesSQL = `SELECT minute_ms FROM gpu_minute_rollups WHERE session_id=? AND gpu=? ORDER BY minute_ms DESC LIMIT ?`
+	timelineRowsSQL    = `SELECT gpu,minute_ms,observed_ms,busy_ms,utilization_integral
+		FROM gpu_minute_rollups WHERE session_id=? AND gpu=? AND minute_ms>=? ORDER BY minute_ms`
+)
+
+// timeline returns the newest limit minute rollups of a session in ascending
+// (minute, gpu) order. Each GPU is read along the primary key
+// (session_id,gpu,minute_ms): first at most limit minute keys per GPU from the
+// covering index to find the cut, then only the selected rows. The cost is
+// bounded by limit and the GPU count rather than by the session's length.
+func (s *Store) timeline(ctx context.Context, id string, limit int) ([]MinuteRollup, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	gpus, err := queryInt64s(ctx, tx, timelineGPUsSQL, id, id)
+	if err != nil {
+		return nil, err
+	}
+	type rollupKey struct {
+		minute int64
+		gpu    int64
+	}
+	var keys []rollupKey
+	for _, gpu := range gpus {
+		minutes, err := queryInt64s(ctx, tx, timelineMinutesSQL, id, gpu, limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, minute := range minutes {
+			keys = append(keys, rollupKey{minute: minute, gpu: gpu})
+		}
+	}
+	sort.Slice(keys, func(left, right int) bool {
+		if keys[left].minute != keys[right].minute {
+			return keys[left].minute > keys[right].minute
+		}
+		return keys[left].gpu > keys[right].gpu
+	})
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	// The kept keys of one GPU are its newest minutes, so each GPU contributes
+	// exactly its rows at or after its oldest kept minute.
+	floors := make(map[int64]int64, len(gpus))
+	for _, key := range keys {
+		if floor, ok := floors[key.gpu]; !ok || key.minute < floor {
+			floors[key.gpu] = key.minute
+		}
+	}
+	var values []MinuteRollup
+	for _, gpu := range gpus {
+		floor, ok := floors[gpu]
+		if !ok {
+			continue
+		}
+		rows, err := tx.QueryContext(ctx, timelineRowsSQL, id, gpu, floor)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var item MinuteRollup
+			var minute int64
+			var integral float64
+			if err := rows.Scan(&item.GPU, &minute, &item.ObservedMS, &item.BusyMS, &integral); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			item.Minute = timeFromMillis(minute)
+			if item.ObservedMS > 0 {
+				value := integral / float64(item.ObservedMS)
+				item.AverageUtilization = &value
+			}
+			values = append(values, item)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(values, func(left, right int) bool {
+		if !values[left].Minute.Equal(values[right].Minute) {
+			return values[left].Minute.Before(values[right].Minute)
+		}
+		return values[left].GPU < values[right].GPU
+	})
+	return values, tx.Commit()
+}
+
+func queryInt64s(ctx context.Context, queryer rowsQueryer, query string, args ...any) ([]int64, error) {
+	rows, err := queryer.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var values []MinuteRollup
+	var values []int64
 	for rows.Next() {
-		var item MinuteRollup
-		var minute int64
-		var integral float64
-		if err := rows.Scan(&item.GPU, &minute, &item.ObservedMS, &item.BusyMS, &integral); err != nil {
+		var value int64
+		if err := rows.Scan(&value); err != nil {
 			return nil, err
 		}
-		item.Minute = timeFromMillis(minute)
-		if item.ObservedMS > 0 {
-			value := integral / float64(item.ObservedMS)
-			item.AverageUtilization = &value
-		}
-		values = append(values, item)
+		values = append(values, value)
 	}
-	return values, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, rows.Close()
 }
 
+// authorizationScopesSQL lists scopes linked to a session through
+// authorization_scopes.session_id or authorization_sessions, using an indexed
+// lookup for each link instead of an OR that scans every scope.
+const authorizationScopesSQL = `WITH linked(node_id,authorization_id) AS (
+		SELECT node_id,authorization_id FROM authorization_scopes WHERE session_id=?
+		UNION
+		SELECT node_id,authorization_id FROM authorization_sessions WHERE session_id=?
+	) SELECT a.node_id,a.authorization_id,a.mode,a.holder,a.selector,a.command_json,a.created_at_ms,a.expires_at_ms,a.ended_at_ms,a.end_reason
+	FROM linked l CROSS JOIN authorization_scopes a
+	WHERE a.node_id=l.node_id AND a.authorization_id=l.authorization_id
+	ORDER BY a.created_at_ms,a.node_id,a.authorization_id`
+
 func (s *Store) authorizationScopes(ctx context.Context, id string) ([]AuthorizationScope, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.node_id,a.authorization_id,mode,holder,selector,command_json,created_at_ms,expires_at_ms,ended_at_ms,end_reason
-		FROM authorization_scopes a WHERE a.session_id=? OR EXISTS (
-			SELECT 1 FROM authorization_sessions s WHERE s.node_id=a.node_id AND s.authorization_id=a.authorization_id AND s.session_id=?
-		) ORDER BY created_at_ms,a.node_id,a.authorization_id`, id, id)
+	rows, err := s.db.QueryContext(ctx, authorizationScopesSQL, id, id)
 	if err != nil {
 		return nil, err
 	}
