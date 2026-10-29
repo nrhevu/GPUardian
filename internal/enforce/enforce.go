@@ -20,6 +20,18 @@ type Killer interface {
 	Kill(info model.ProcInfo, message string) error
 }
 
+// StagedKiller delivers SIGTERM and the later SIGKILL escalation as separate,
+// non-blocking steps. Each step revalidates the process identity (start time)
+// immediately before signalling. An Authorizer with Terminations set owns the
+// grace period between the steps, so an enforcement pass never sleeps while
+// the daemon holds its enforcement lock.
+type StagedKiller interface {
+	Killer
+	Terminate(info model.ProcInfo, message string) error
+	ForceKill(info model.ProcInfo, message string) error
+	GracePeriod() time.Duration
+}
+
 type RealKiller struct {
 	Grace time.Duration
 	Proc  proc.Reader
@@ -52,11 +64,7 @@ func (k RealKiller) Kill(info model.ProcInfo, _ string) error {
 	if err := k.sendSignal(info.PID, pidfd, syscall.SIGTERM); err != nil && !isNoSuchProcess(err) {
 		return err
 	}
-	grace := k.Grace
-	if grace <= 0 {
-		grace = 2 * time.Second
-	}
-	if waitForProcessExitWith(info.PID, grace, k.processAlive) {
+	if waitForProcessExitWith(info.PID, k.GracePeriod(), k.processAlive) {
 		return nil
 	}
 	if err := k.validateIdentity(info); err != nil {
@@ -67,6 +75,45 @@ func (k RealKiller) Kill(info model.ProcInfo, _ string) error {
 	}
 	if !waitForProcessExitWith(info.PID, 500*time.Millisecond, k.processAlive) {
 		return fmt.Errorf("pid %d did not exit after SIGKILL", info.PID)
+	}
+	return nil
+}
+
+// Terminate revalidates identity and sends SIGTERM without waiting.
+func (k RealKiller) Terminate(info model.ProcInfo, _ string) error {
+	return k.signalVerified(info, syscall.SIGTERM)
+}
+
+// ForceKill revalidates identity and sends SIGKILL without waiting.
+func (k RealKiller) ForceKill(info model.ProcInfo, _ string) error {
+	return k.signalVerified(info, syscall.SIGKILL)
+}
+
+func (k RealKiller) GracePeriod() time.Duration {
+	if k.Grace <= 0 {
+		return 2 * time.Second
+	}
+	return k.Grace
+}
+
+func (k RealKiller) signalVerified(info model.ProcInfo, signal syscall.Signal) error {
+	if info.PID <= 0 || info.StartTime == 0 {
+		return fmt.Errorf("refusing to signal pid %d: process identity is unverifiable", info.PID)
+	}
+	pidfd := -1
+	if k.signal == nil {
+		var err error
+		pidfd, err = openPIDFD(info.PID)
+		if err != nil {
+			return fmt.Errorf("open pidfd for pid %d: %w", info.PID, err)
+		}
+		defer syscall.Close(pidfd)
+	}
+	if err := k.validateIdentity(info); err != nil {
+		return err
+	}
+	if err := k.sendSignal(info.PID, pidfd, signal); err != nil && !isNoSuchProcess(err) {
+		return err
 	}
 	return nil
 }
@@ -154,6 +201,14 @@ type Authorizer struct {
 	DryRun         bool
 	pendingKills   *[]pendingKill
 	activeTokens   map[string]model.Token
+	// PrepareKillValidation, when set, is called once per batch of kills with
+	// every process about to be validated, before ValidateKill runs for any of
+	// them, so the validator can re-sample only the affected GPUs in one go.
+	PrepareKillValidation func(context.Context, []model.GPUProcess)
+	// Terminations, when set together with a StagedKiller, makes kills
+	// non-blocking: a pass sends SIGTERM and records it, and a later pass's
+	// EscalateTerminations sends SIGKILL once the grace period has passed.
+	Terminations *Terminations
 }
 
 type pendingKill struct {
@@ -228,13 +283,19 @@ func (a Authorizer) enforce(ctx context.Context, state model.State, processes []
 			decisions = append(decisions, Decision{Process: gpuProcess, Action: "skip", Reason: "no gpu resource usage"})
 			continue
 		}
-		if a.Proc == nil || !a.Proc.Exists(gpuProcess.PID) {
+		if a.Proc == nil {
 			decisions = append(decisions, Decision{Process: gpuProcess, Action: "skip", Reason: "stale pid"})
 			continue
 		}
 		info, err := a.Proc.Info(gpuProcess.PID)
 		if err != nil {
-			decisions = append(decisions, Decision{Process: gpuProcess, Action: "skip", Reason: "proc info unavailable"})
+			// Exists is consulted only to label the skip; the common path
+			// needs just the one Info read.
+			reason := "proc info unavailable"
+			if proc.IsNotExist(err) || !a.Proc.Exists(gpuProcess.PID) {
+				reason = "stale pid"
+			}
+			decisions = append(decisions, Decision{Process: gpuProcess, Action: "skip", Reason: reason})
 			continue
 		}
 		view := processView{Process: gpuProcess, Info: info}
@@ -363,6 +424,12 @@ func (a Authorizer) evictExpiredReservedProcesses(ctx context.Context, state mod
 		}
 		assessment.Leases[lease.ID] = true
 	}
+	if !staleEvictionPossible(state, tokensByHash, validReservations, staleReservations, now) {
+		// No scope can be stale-relevant on any GPU, so no sampled process can
+		// be evicted and the assessment above is necessarily empty. Skip the
+		// per-process /proc reads and runtime lookups.
+		return nil, assessment, nil
+	}
 
 	type cachedProcess struct {
 		info model.ProcInfo
@@ -387,7 +454,10 @@ func (a Authorizer) evictExpiredReservedProcesses(ctx context.Context, state mod
 			var err error
 			cached.info, err = a.Proc.Info(gpuProcess.PID)
 			if err != nil {
-				if os.IsNotExist(err) {
+				// os.IsNotExist does not unwrap the reader's wrapped errors, so
+				// a PID that exited after the sample used to be reported as an
+				// inspection failure.
+				if proc.IsNotExist(err) {
 					processesByPID[gpuProcess.PID] = cached
 					continue
 				}
@@ -548,6 +618,43 @@ func authorizationEvictionMode(authorization model.Authorization, tokens map[str
 	return normalizeTokenMode(authorization.TokenMode)
 }
 
+// staleEvictionPossible reports whether any authorization or lease can be
+// stale-relevant on some GPU, mirroring authorizationEvictionState and
+// leaseEvictionState without fixing a GPU.
+func staleEvictionPossible(state model.State, tokens map[string]model.Token, validReservations, staleReservations map[gpuTokenKey]bool, now time.Time) bool {
+	staleTokens := make(map[string]bool, len(staleReservations))
+	for key := range staleReservations {
+		staleTokens[key.tokenHash] = true
+	}
+	validTokens := make(map[string]bool, len(validReservations))
+	for key := range validReservations {
+		validTokens[key.tokenHash] = true
+	}
+	for _, authorization := range state.Authorizations {
+		globallyValid := authorizationGloballyValid(authorization, tokens, now)
+		switch authorizationEvictionMode(authorization, tokens) {
+		case model.TokenModeReserved:
+			if staleTokens[authorization.TokenHash] || (!globallyValid && validTokens[authorization.TokenHash]) {
+				return true
+			}
+		case model.TokenModeClaimed:
+			if !globallyValid {
+				return true
+			}
+		case model.TokenModeManaged:
+			if !globallyValid || staleTokens[authorization.TokenHash] {
+				return true
+			}
+		}
+	}
+	for _, lease := range state.Leases {
+		if !leaseEntitledOnGPU(lease, lease.GPU, tokens, now) {
+			return true
+		}
+	}
+	return false
+}
+
 func tokenHasKnownReservation(reservations map[gpuTokenKey]bool, tokenHash string) bool {
 	for key := range reservations {
 		if key.tokenHash == tokenHash {
@@ -598,7 +705,7 @@ func (a Authorizer) BusyProcessesForGPU(ctx context.Context, state model.State, 
 		if !usesGPUResources(gpuProcess) {
 			continue
 		}
-		if a.Proc == nil || !a.Proc.Exists(gpuProcess.PID) {
+		if a.Proc == nil {
 			continue
 		}
 		info, err := a.Proc.Info(gpuProcess.PID)
@@ -629,7 +736,7 @@ func (a Authorizer) BusyProcessesForLease(ctx context.Context, state model.State
 		if !usesGPUResources(gpuProcess) {
 			continue
 		}
-		if a.Proc == nil || !a.Proc.Exists(gpuProcess.PID) {
+		if a.Proc == nil {
 			continue
 		}
 		info, err := a.Proc.Info(gpuProcess.PID)
@@ -877,6 +984,13 @@ func (a Authorizer) kill(decisions *[]Decision, view processView, reason, leaseI
 		Holder:    holder,
 		TokenHash: tokenHash,
 	}
+	if _, staged := a.stagedKiller(); staged && a.Terminations.awaiting(view.Process.PID, view.Info.StartTime) {
+		// SIGTERM already went out on an earlier pass and EscalateTerminations
+		// owns the next step, so this neither signals again nor spends the
+		// per-pass kill budget.
+		*decisions = append(*decisions, decision)
+		return nil
+	}
 	if a.pendingKills != nil && !a.DryRun && len(*a.pendingKills) >= maxKillsPerEnforcementPass {
 		decision.Action = "skip"
 		decision.Reason = "kill budget exhausted; retry on next enforcement pass"
@@ -904,6 +1018,13 @@ func (a Authorizer) performKill(ctx context.Context, request pendingKill) error 
 		}
 	}
 	msg := fmt.Sprintf("gpuardian killed pid=%d on gpu=%d: %s", request.view.Process.PID, request.view.Process.GPU, request.reason)
+	if staged, ok := a.stagedKiller(); ok {
+		if err := staged.Terminate(request.view.Info, msg); err != nil {
+			return err
+		}
+		a.Terminations.record(request, a.now().Add(staged.GracePeriod()))
+		return nil
+	}
 	return a.Killer.Kill(request.view.Info, msg)
 }
 
@@ -923,6 +1044,14 @@ func (a Authorizer) auditKill(request pendingKill, killErr error) {
 		a.audit(event)
 		return
 	}
+	if _, staged := a.stagedKiller(); staged {
+		// Exit is confirmed (kind "kill") or escalated ("kill_escalated") by
+		// EscalateTerminations on a later pass.
+		event.Kind = "kill_term"
+		event.Message = request.reason + ": SIGTERM sent"
+		a.audit(event)
+		return
+	}
 	event.Kind = "kill"
 	a.audit(event)
 }
@@ -930,6 +1059,13 @@ func (a Authorizer) auditKill(request pendingKill, killErr error) {
 func (a Authorizer) executePendingKills(ctx context.Context, pending []pendingKill) error {
 	if len(pending) == 0 {
 		return nil
+	}
+	if a.PrepareKillValidation != nil && a.ValidateKill != nil && !a.DryRun && a.Killer != nil {
+		processes := make([]model.GPUProcess, 0, len(pending))
+		for _, request := range pending {
+			processes = append(processes, request.view.Process)
+		}
+		a.PrepareKillValidation(ctx, processes)
 	}
 	results := make([]error, len(pending))
 	_, realKiller := a.Killer.(RealKiller)

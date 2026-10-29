@@ -66,6 +66,9 @@ type Store struct {
 	committed    model.State
 	loaded       bool
 	syncStateDir func(string) error
+	// auditMu serializes audit log appends and rotation independently of mu,
+	// so auditing never waits on (or holds up) a state write.
+	auditMu sync.Mutex
 }
 
 func New(cfg config.Config) *Store {
@@ -244,6 +247,10 @@ func (s *Store) loadLocked() error {
 	if err := validateStateBounds(s.state); err != nil {
 		return fmt.Errorf("invalid persisted state: %w", err)
 	}
+	// Older daemons also kept the last audit events in state.json. Every one
+	// of them was appended to the audit log too, which is the durable record,
+	// so the copy is dropped here and disappears with the next save.
+	s.state.Audit = nil
 	s.committed = cloneState(s.state)
 	s.loaded = true
 	return nil
@@ -773,6 +780,54 @@ func (s *Store) ReleaseAuthorization(id string) error {
 	return nil
 }
 
+// ReleaseScopes marks the listed reservations, authorizations, and leases
+// inactive with a single state write, so a cleanup pass that ends several
+// scopes saves state.json once instead of once per row. Unknown IDs are
+// ignored. On error nothing is released.
+func (s *Store) ReleaseScopes(reservationIDs, authorizationIDs, leaseIDs []string) error {
+	if len(reservationIDs) == 0 && len(authorizationIDs) == 0 && len(leaseIDs) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.loadLocked(); err != nil {
+		return err
+	}
+	selected := func(ids []string) map[string]bool {
+		out := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			out[id] = true
+		}
+		return out
+	}
+	reservations := selected(reservationIDs)
+	authorizations := selected(authorizationIDs)
+	leases := selected(leaseIDs)
+	changed := false
+	for i := range s.state.Reservations {
+		if reservations[s.state.Reservations[i].ID] && s.state.Reservations[i].Active {
+			s.state.Reservations[i].Active = false
+			changed = true
+		}
+	}
+	for i := range s.state.Authorizations {
+		if authorizations[s.state.Authorizations[i].ID] && s.state.Authorizations[i].Active {
+			s.state.Authorizations[i].Active = false
+			changed = true
+		}
+	}
+	for i := range s.state.Leases {
+		if leases[s.state.Leases[i].ID] && s.state.Leases[i].Active {
+			s.state.Leases[i].Active = false
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.saveLocked()
+}
+
 func (s *Store) UpsertSoftClaim(claim model.SoftClaim, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -956,22 +1011,16 @@ func (s *Store) AppendAudit(event model.AuditEvent) error {
 	return s.AppendAudits([]model.AuditEvent{event})
 }
 
+// AppendAudits appends events to the audit log (GPUARDIAN_AUDIT_LOG), the
+// durable audit record. Events are not copied into state.json: nothing reads
+// them back at runtime, and rewriting and fsyncing the whole state file per
+// audit dominated the cost of every enforcement pass that audited anything.
 func (s *Store) AppendAudits(events []model.AuditEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.loadLocked(); err != nil {
-		return err
-	}
-	s.state.Audit = append(s.state.Audit, events...)
-	if len(s.state.Audit) > maxAuditEvents {
-		s.state.Audit = s.state.Audit[len(s.state.Audit)-maxAuditEvents:]
-	}
-	if err := s.saveLocked(); err != nil {
-		return err
-	}
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 	return appendAuditLogs(s.cfg.AuditLog, events)
 }
 
@@ -1380,6 +1429,11 @@ func appendAuditLogs(path string, events []model.AuditEvent) error {
 	if err := rotateAuditLogIfNeeded(path, int64(len(lines))); err != nil {
 		return err
 	}
+	// The directory entry only changes when this append creates the log
+	// (first write or right after rotation); otherwise the file fsync below is
+	// enough and the directory fsync is skipped.
+	_, statErr := os.Lstat(path)
+	syncDirectory := statErr != nil
 	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_APPEND|syscall.O_WRONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return err
@@ -1412,6 +1466,9 @@ func appendAuditLogs(path string, events []model.AuditEvent) error {
 	}
 	if err := file.Close(); err != nil {
 		return err
+	}
+	if !syncDirectory {
+		return nil
 	}
 	return syncDir(dir)
 }

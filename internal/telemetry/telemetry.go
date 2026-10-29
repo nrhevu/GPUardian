@@ -195,6 +195,9 @@ type segment struct {
 	last    uint64
 	size    int64
 	created time.Time
+	// lastAt is the OccurredAt of the segment's last event; retention uses it
+	// without scanning the event list.
+	lastAt time.Time
 }
 
 type Outbox struct {
@@ -206,7 +209,16 @@ type Outbox struct {
 	nextSeq  uint64
 	events   []storedEvent
 	segments []segment
-	current  *os.File
+	// totalBytes is the sum of segments[].size.
+	totalBytes int64
+	current    *os.File
+}
+
+// BatchEvent is one event for AppendBatch.
+type BatchEvent struct {
+	Type       string
+	Payload    any
+	OccurredAt time.Time
 }
 
 type metadata struct {
@@ -258,40 +270,80 @@ func (o *Outbox) Info() Info {
 }
 
 func (o *Outbox) Append(kind string, payload any, occurredAt time.Time) (Event, error) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
+	events, err := o.AppendBatch([]BatchEvent{{Type: kind, Payload: payload, OccurredAt: occurredAt}})
+	if len(events) == 0 {
 		return Event{}, err
 	}
-	if occurredAt.IsZero() {
-		occurredAt = time.Now()
+	return events[0], err
+}
+
+// AppendBatch appends events in order with one fsync for the whole batch
+// (plus one per segment rotated away from mid-batch). Nothing is appended if a
+// payload fails to encode. An event whose line reached the segment file keeps
+// its sequence number even if a later write or the final fsync fails, so a
+// sequence number is never reused; the returned slice holds those events.
+func (o *Outbox) AppendBatch(batch []BatchEvent) ([]Event, error) {
+	if len(batch) == 0 {
+		return nil, nil
+	}
+	payloads := make([]json.RawMessage, len(batch))
+	for i, item := range batch {
+		raw, err := json.Marshal(item.Payload)
+		if err != nil {
+			return nil, err
+		}
+		payloads[i] = raw
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	event := Event{Seq: o.nextSeq, OccurredAt: occurredAt.UTC(), BootID: o.bootID, Type: kind, Payload: raw}
-	line, err := json.Marshal(event)
-	if err != nil {
-		return Event{}, err
-	}
-	line = append(line, '\n')
-	if o.current == nil || len(o.segments) == 0 || o.segments[len(o.segments)-1].size+int64(len(line)) > maxSegmentBytes ||
-		time.Since(o.segments[len(o.segments)-1].created) >= maxSegmentAge {
-		if err := o.rotateLocked(event.Seq); err != nil {
-			return Event{}, err
+	appended := make([]Event, 0, len(batch))
+	unsynced := false
+	for i, item := range batch {
+		occurredAt := item.OccurredAt
+		if occurredAt.IsZero() {
+			occurredAt = time.Now()
 		}
+		event := Event{Seq: o.nextSeq, OccurredAt: occurredAt.UTC(), BootID: o.bootID, Type: item.Type, Payload: payloads[i]}
+		line, err := json.Marshal(event)
+		if err != nil {
+			return appended, errors.Join(err, o.syncIfLocked(unsynced))
+		}
+		line = append(line, '\n')
+		if o.current == nil || len(o.segments) == 0 || o.segments[len(o.segments)-1].size+int64(len(line)) > maxSegmentBytes ||
+			time.Since(o.segments[len(o.segments)-1].created) >= maxSegmentAge {
+			if err := o.syncIfLocked(unsynced); err != nil {
+				return appended, err
+			}
+			unsynced = false
+			if err := o.rotateLocked(event.Seq); err != nil {
+				return appended, err
+			}
+		}
+		if _, err := o.current.Write(line); err != nil {
+			return appended, errors.Join(err, o.syncIfLocked(unsynced))
+		}
+		unsynced = true
+		index := len(o.segments) - 1
+		o.segments[index].last = event.Seq
+		o.segments[index].size += int64(len(line))
+		o.segments[index].lastAt = event.OccurredAt
+		o.totalBytes += int64(len(line))
+		o.events = append(o.events, storedEvent{Event: event, segment: o.segments[index].path})
+		o.nextSeq++
+		appended = append(appended, event)
 	}
-	if _, err := o.current.Write(line); err != nil {
-		return Event{}, err
+	if err := o.syncIfLocked(unsynced); err != nil {
+		return appended, err
 	}
-	if err := o.current.Sync(); err != nil {
-		return Event{}, err
-	}
-	index := len(o.segments) - 1
-	o.segments[index].last = event.Seq
-	o.segments[index].size += int64(len(line))
-	o.events = append(o.events, storedEvent{Event: event, segment: o.segments[index].path})
-	o.nextSeq++
 	o.pruneLocked(time.Now().UTC())
-	return event, nil
+	return appended, nil
+}
+
+func (o *Outbox) syncIfLocked(unsynced bool) error {
+	if !unsynced || o.current == nil {
+		return nil
+	}
+	return o.current.Sync()
 }
 
 func (o *Outbox) Page(encoded string, limit int) (Page, error) {
@@ -326,10 +378,8 @@ func (o *Outbox) Page(encoded string, limit int) (Page, error) {
 	page := Page{SchemaVersion: SchemaVersion, NodeID: o.nodeID, StreamID: o.streamID, BootID: o.bootID, EarliestSeq: earliest, LatestSeq: latest}
 	used := 512
 	last := position
-	for _, stored := range o.events {
-		if stored.Seq <= position {
-			continue
-		}
+	start := sort.Search(len(o.events), func(i int) bool { return o.events[i].Seq > position })
+	for _, stored := range o.events[start:] {
 		size := len(stored.Payload) + len(stored.Type) + 160
 		if len(page.Events) >= limit || used+size > MaxPageBytes {
 			break
@@ -400,6 +450,7 @@ func (o *Outbox) loadSegment(path string) error {
 			seg.first = event.Seq
 		}
 		seg.last = event.Seq
+		seg.lastAt = event.OccurredAt
 		o.events = append(o.events, storedEvent{Event: event, segment: path})
 	}
 	if err := scanner.Err(); err != nil {
@@ -407,6 +458,7 @@ func (o *Outbox) loadSegment(path string) error {
 	}
 	if seg.first != 0 {
 		o.segments = append(o.segments, seg)
+		o.totalBytes += seg.size
 	}
 	return nil
 }
@@ -427,38 +479,27 @@ func (o *Outbox) rotateLocked(first uint64) error {
 	return nil
 }
 
+// pruneLocked drops whole segments from the front once the outbox exceeds its
+// size budget or the oldest segment's last event is past retention. It does
+// constant work per append unless a segment is actually removed.
 func (o *Outbox) pruneLocked(now time.Time) {
-	total := int64(0)
-	for _, seg := range o.segments {
-		total += seg.size
-	}
 	cutoff := now.Add(-maxRetention)
-	remove := map[string]bool{}
 	for len(o.segments) > 1 {
 		seg := o.segments[0]
-		lastTime := seg.created
-		for i := len(o.events) - 1; i >= 0; i-- {
-			if o.events[i].segment == seg.path {
-				lastTime = o.events[i].OccurredAt
-				break
-			}
+		lastTime := seg.lastAt
+		if lastTime.IsZero() {
+			lastTime = seg.created
 		}
-		if total <= maxOutboxBytes && !lastTime.Before(cutoff) {
+		if o.totalBytes <= maxOutboxBytes && !lastTime.Before(cutoff) {
 			break
 		}
-		remove[seg.path] = true
-		total -= seg.size
+		o.totalBytes -= seg.size
 		_ = os.Remove(seg.path)
 		o.segments = o.segments[1:]
-	}
-	if len(remove) > 0 {
-		kept := o.events[:0]
-		for _, event := range o.events {
-			if !remove[event.segment] {
-				kept = append(kept, event)
-			}
-		}
-		o.events = kept
+		// Events are ordered by Seq and a segment holds a contiguous range, so
+		// the removed segment's events are a prefix of o.events.
+		cut := sort.Search(len(o.events), func(i int) bool { return o.events[i].Seq > seg.last })
+		o.events = o.events[cut:]
 	}
 }
 

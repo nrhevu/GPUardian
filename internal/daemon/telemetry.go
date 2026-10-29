@@ -52,6 +52,8 @@ func (s *Server) bootstrapTelemetry() {
 	if err != nil {
 		return
 	}
+	var events []telemetry.BatchEvent
+	defer func() { s.emitTelemetryBatch(events) }()
 	groups := make(map[string][]model.ReservationView)
 	for _, reservation := range status.Reservations {
 		groups[reservation.GroupID] = append(groups[reservation.GroupID], reservation)
@@ -74,10 +76,10 @@ func (s *Server) bootstrapTelemetry() {
 		for _, reservation := range reservations {
 			payload.Members = append(payload.Members, telemetry.ReservationMember{ReservationID: reservation.ID, GPU: reservation.GPU})
 		}
-		s.emitTelemetry(telemetry.EventReservationUpsert, payload, time.Now())
+		events = append(events, telemetry.BatchEvent{Type: telemetry.EventReservationUpsert, Payload: payload, OccurredAt: time.Now()})
 	}
 	for _, authorization := range status.Authorizations {
-		s.emitAuthorizationView(authorization, status.Reservations)
+		events = append(events, authorizationViewEvent(authorization, status.Reservations))
 	}
 }
 
@@ -129,7 +131,7 @@ func (s *Server) emitAuthorization(tokenID string, authorization model.Authoriza
 	s.emitTelemetry(telemetry.EventAuthorizationUpsert, payload, authorization.CreatedAt)
 }
 
-func (s *Server) emitAuthorizationView(authorization model.AuthorizationView, reservations []model.ReservationView) {
+func authorizationViewEvent(authorization model.AuthorizationView, reservations []model.ReservationView) telemetry.BatchEvent {
 	var groupIDs []string
 	for _, reservation := range reservations {
 		if reservation.GroupID == "" || !strings.EqualFold(strings.TrimSpace(reservation.Holder), strings.TrimSpace(authorization.Holder)) {
@@ -157,33 +159,57 @@ func (s *Server) emitAuthorizationView(authorization model.AuthorizationView, re
 	if len(groupIDs) > 0 {
 		payload.GroupID = groupIDs[0]
 	}
-	s.emitTelemetry(telemetry.EventAuthorizationUpsert, payload, authorization.CreatedAt)
+	return telemetry.BatchEvent{Type: telemetry.EventAuthorizationUpsert, Payload: payload, OccurredAt: authorization.CreatedAt}
 }
 
 func (s *Server) emitAuthorizationEnded(id, reason string, at time.Time) {
-	s.emitTelemetry(telemetry.EventAuthorizationEnded, telemetry.AuthorizationEnded{AuthorizationID: id, EndedAt: at.UTC(), Reason: reason}, at)
+	s.emitTelemetryBatch([]telemetry.BatchEvent{authorizationEndedEvent(id, reason, at)})
+}
+
+func authorizationEndedEvent(id, reason string, at time.Time) telemetry.BatchEvent {
+	return telemetry.BatchEvent{Type: telemetry.EventAuthorizationEnded, Payload: telemetry.AuthorizationEnded{AuthorizationID: id, EndedAt: at.UTC(), Reason: reason}, OccurredAt: at}
 }
 
 func (s *Server) emitTelemetry(kind string, payload any, at time.Time) {
-	if s.Telemetry == nil {
+	s.emitTelemetryBatch([]telemetry.BatchEvent{{Type: kind, Payload: payload, OccurredAt: at}})
+}
+
+// emitTelemetryBatch appends events with one outbox fsync. A pending
+// write-failure gap is recorded first. If the gap itself cannot be written the
+// batch is dropped and the gap stays pending; if the batch fails part-way, a
+// new gap starts at the first event that did not make it.
+func (s *Server) emitTelemetryBatch(events []telemetry.BatchEvent) {
+	if s.Telemetry == nil || len(events) == 0 {
 		return
 	}
 	s.telemetryWriteMu.Lock()
 	defer s.telemetryWriteMu.Unlock()
-	if !s.telemetryGapFrom.IsZero() {
+	batch := events
+	gapPending := !s.telemetryGapFrom.IsZero()
+	if gapPending {
+		at := events[0].OccurredAt
 		gap := telemetry.Gap{From: s.telemetryGapFrom, To: at.UTC(), Reason: "outbox_write_failure"}
-		if _, err := s.Telemetry.Append(telemetry.EventGap, gap, at); err != nil {
-			_ = s.Store.AppendAudit(model.AuditEvent{Time: time.Now().UTC(), Kind: "telemetry_error", Message: "append telemetry recovery gap: " + err.Error()})
-			return
-		}
+		batch = append([]telemetry.BatchEvent{{Type: telemetry.EventGap, Payload: gap, OccurredAt: at}}, events...)
+	}
+	appended, err := s.Telemetry.AppendBatch(batch)
+	if err == nil {
 		s.telemetryGapFrom = time.Time{}
+		return
 	}
-	if _, err := s.Telemetry.Append(kind, payload, at); err != nil {
-		if s.telemetryGapFrom.IsZero() {
-			s.telemetryGapFrom = at.UTC()
-		}
-		_ = s.Store.AppendAudit(model.AuditEvent{Time: time.Now().UTC(), Kind: "telemetry_error", Message: "append telemetry: " + err.Error()})
+	if gapPending && len(appended) == 0 {
+		_ = s.Store.AppendAudit(model.AuditEvent{Time: time.Now().UTC(), Kind: "telemetry_error", Message: "append telemetry recovery gap: " + err.Error()})
+		return
 	}
+	failed := len(appended)
+	if gapPending {
+		failed--
+	}
+	// Every event was written but not synced: treat the whole batch as at risk.
+	if failed >= len(events) {
+		failed = 0
+	}
+	s.telemetryGapFrom = events[failed].OccurredAt.UTC()
+	_ = s.Store.AppendAudit(model.AuditEvent{Time: time.Now().UTC(), Kind: "telemetry_error", Message: "append telemetry: " + err.Error()})
 }
 
 func (s *Server) metricMonitor(ctx context.Context) {
@@ -292,6 +318,12 @@ func (s *Server) sampleTelemetryMetrics(ctx context.Context, start, end time.Tim
 	s.emitTelemetry(telemetry.EventGPUSample, payload, end)
 }
 
+// trackObservedTelemetryJobs runs under enforceMu during the monitor pass. It
+// never runs docker or kubectl: a new job's runtime metadata comes from the
+// resolver cache (usually warm, since enforcement just resolved the same
+// container), and a miss is queued for completePendingRuntimeContexts, which
+// emits a job.updated carrying the metadata after the lock is released. All
+// events of one call are appended to the outbox with a single fsync.
 func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enforce.Decision, now time.Time) {
 	if s.Telemetry == nil {
 		return
@@ -305,8 +337,12 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		authorizations[authorization.ID] = authorization
 	}
 	seen := make(map[string]bool)
+	var events []telemetry.BatchEvent
 	s.telemetryJobsMu.Lock()
 	defer s.telemetryJobsMu.Unlock()
+	// Runs before the unlock above, keeping events ordered with other job
+	// updates exactly as when each was emitted under the lock.
+	defer func() { s.emitTelemetryBatch(events) }()
 	if s.observedJobs == nil {
 		s.observedJobs = make(map[string]*observedTelemetryJob)
 	}
@@ -325,7 +361,7 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		if authorization.Mode == model.ModeBare {
 			if job, ok := s.runJobs[authorization.ID]; ok && addGPU(&job.GPUs, decision.Process.GPU) {
 				s.runJobs[authorization.ID] = job
-				s.emitTelemetry(telemetry.EventJobUpdated, job, now)
+				events = append(events, jobBatchEvent(telemetry.EventJobUpdated, job, now))
 			}
 			continue
 		}
@@ -350,11 +386,16 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		seen[key] = true
 		job := s.observedJobs[key]
 		if job == nil {
-			event := s.newObservedTelemetryJobEvent(authorization, decision, groupIDs, now,
+			event, lookupPending := s.newObservedTelemetryJobEvent(authorization, decision, groupIDs, now,
 				observedExecutionID(s.bootID, authorization.ID, decision.Process.PID, decision.Info.StartTime))
 			job = &observedTelemetryJob{event: event, lastSeen: now}
 			s.observedJobs[key] = job
-			s.emitTelemetry(telemetry.EventJobStarted, event, now)
+			events = append(events, jobBatchEvent(telemetry.EventJobStarted, event, now))
+			if lookupPending && len(s.pendingRuntimeContexts) < maxPendingRuntimeContexts {
+				s.pendingRuntimeContexts = append(s.pendingRuntimeContexts, pendingRuntimeContext{
+					key: key, mode: authorization.Mode, containerID: event.RuntimeContext.ContainerID,
+				})
+			}
 		} else {
 			job.lastSeen = now
 			job.missed = 0
@@ -363,7 +404,7 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 				groupsChanged = addString(&job.event.GroupIDs, groupID) || groupsChanged
 			}
 			if addGPU(&job.event.GPUs, decision.Process.GPU) || groupsChanged {
-				s.emitTelemetry(telemetry.EventJobUpdated, job.event, now)
+				events = append(events, jobBatchEvent(telemetry.EventJobUpdated, job.event, now))
 			}
 		}
 	}
@@ -377,7 +418,7 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		previous.FinishedAt = &finished
 		previous.FinishPrecision = "observed"
 		previous.Reason = "reservation_ended"
-		s.emitTelemetry(telemetry.EventJobFinished, previous, finished)
+		events = append(events, jobBatchEvent(telemetry.EventJobFinished, previous, finished))
 
 		continued := job.event
 		continued.ExecutionID = observedContinuationExecutionID(s.bootID, continued.AuthorizationID, continued.PID, continued.ProcStartTicks, now)
@@ -391,7 +432,7 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		continued.ExitCode = nil
 		continued.Reason = ""
 		s.observedJobs[key] = &observedTelemetryJob{event: continued, lastSeen: now}
-		s.emitTelemetry(telemetry.EventJobStarted, continued, now)
+		events = append(events, jobBatchEvent(telemetry.EventJobStarted, continued, now))
 	}
 	for key, job := range s.observedJobs {
 		if seen[key] {
@@ -405,13 +446,98 @@ func (s *Server) trackObservedTelemetryJobs(state model.State, decisions []enfor
 		job.event.FinishedAt = &finished
 		job.event.FinishPrecision = "observed"
 		job.event.Reason = "process_gone"
-		s.emitTelemetry(telemetry.EventJobFinished, job.event, finished)
+		events = append(events, jobBatchEvent(telemetry.EventJobFinished, job.event, finished))
 		delete(s.observedJobs, key)
 	}
 }
 
-func (s *Server) newObservedTelemetryJobEvent(authorization model.Authorization, decision enforce.Decision, groupIDs []string, at time.Time, executionID string) telemetry.JobEvent {
+// maxPendingRuntimeContexts bounds the runtime lookups deferred by one pass.
+const maxPendingRuntimeContexts = 256
+
+// pendingRuntimeContext names an observed job by its tracking key (one
+// authorization, PID, and start time), so metadata also reaches the job that
+// continues it after a reservation ends.
+type pendingRuntimeContext struct {
+	key         string
+	mode        string
+	containerID string
+}
+
+// jobBatchEvent queues a job event for a batched append. The event is copied
+// deeply because the tracked job keeps mutating its slices (addGPU sorts in
+// place) before the batch is encoded.
+func jobBatchEvent(kind string, event telemetry.JobEvent, at time.Time) telemetry.BatchEvent {
+	event.GroupIDs = append([]string(nil), event.GroupIDs...)
+	event.GPUs = append([]int(nil), event.GPUs...)
+	event.Command = append([]string(nil), event.Command...)
+	if event.RuntimeContext != nil {
+		runtimeContext := *event.RuntimeContext
+		event.RuntimeContext = &runtimeContext
+	}
+	return telemetry.BatchEvent{Type: kind, Payload: event, OccurredAt: at}
+}
+
+// completePendingRuntimeContexts looks up runtime metadata that was not cached
+// when observed jobs started, without holding enforceMu or telemetryJobsMu
+// during the docker/kubectl calls, and emits a job.updated for each job that
+// gained metadata.
+func (s *Server) completePendingRuntimeContexts(ctx context.Context) {
+	s.telemetryJobsMu.Lock()
+	pending := s.pendingRuntimeContexts
+	s.pendingRuntimeContexts = nil
+	s.telemetryJobsMu.Unlock()
+	if len(pending) == 0 || s.Runtime == nil {
+		return
+	}
+	type lookupKey struct{ mode, containerID string }
+	resolved := make(map[lookupKey]telemetry.RuntimeContext, len(pending))
+	for _, item := range pending {
+		key := lookupKey{mode: item.mode, containerID: item.containerID}
+		if _, done := resolved[key]; done || ctx.Err() != nil {
+			continue
+		}
+		value := telemetry.RuntimeContext{ContainerID: item.containerID}
+		s.resolveRuntimeMetadata(ctx, &value, item.mode)
+		resolved[key] = value
+	}
+	s.telemetryJobsMu.Lock()
+	defer s.telemetryJobsMu.Unlock()
+	var events []telemetry.BatchEvent
+	defer func() { s.emitTelemetryBatch(events) }()
+	now := time.Now()
+	for _, item := range pending {
+		value, ok := resolved[lookupKey{mode: item.mode, containerID: item.containerID}]
+		job := s.observedJobs[item.key]
+		if !ok || job == nil || job.event.RuntimeContext == nil || job.event.RuntimeContext.ContainerID != item.containerID {
+			continue
+		}
+		merged := *job.event.RuntimeContext
+		changed := false
+		for _, field := range []struct {
+			dst *string
+			src string
+		}{
+			{&merged.DockerContainerName, value.DockerContainerName},
+			{&merged.KubernetesNamespace, value.KubernetesNamespace},
+			{&merged.KubernetesPodName, value.KubernetesPodName},
+			{&merged.KubernetesContainerName, value.KubernetesContainerName},
+		} {
+			if *field.dst == "" && field.src != "" {
+				*field.dst = field.src
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		job.event.RuntimeContext = &merged
+		events = append(events, jobBatchEvent(telemetry.EventJobUpdated, job.event, now))
+	}
+}
+
+func (s *Server) newObservedTelemetryJobEvent(authorization model.Authorization, decision enforce.Decision, groupIDs []string, at time.Time, executionID string) (telemetry.JobEvent, bool) {
 	started := at.UTC()
+	runtimeContext, lookupPending := s.buildJobRuntimeContext(decision.Info, authorization.Mode, true)
 	event := telemetry.JobEvent{
 		ExecutionID:     executionID,
 		AuthorizationID: authorization.ID,
@@ -427,12 +553,12 @@ func (s *Server) newObservedTelemetryJobEvent(authorization model.Authorization,
 		GPUs:            []int{decision.Process.GPU},
 		StartedAt:       &started,
 		StartPrecision:  "observed",
-		RuntimeContext:  s.jobRuntimeContext(decision.Info, authorization.Mode),
+		RuntimeContext:  runtimeContext,
 	}
 	if len(groupIDs) > 0 {
 		event.GroupID = groupIDs[0]
 	}
-	return event
+	return event, lookupPending && runtimeContext != nil
 }
 
 func (s *Server) rememberRunJob(token model.Token, authorization model.Authorization, pid int, command []string, at time.Time) telemetry.JobEvent {
@@ -478,6 +604,15 @@ func (s *Server) rememberRunJob(token model.Token, authorization model.Authoriza
 }
 
 func (s *Server) jobRuntimeContext(info model.ProcInfo, mode string) *telemetry.RuntimeContext {
+	value, _ := s.buildJobRuntimeContext(info, mode, false)
+	return value
+}
+
+// buildJobRuntimeContext assembles a job's runtime context. With cachedOnly
+// and a resolver that implements runtime.CachedLookup, docker and Kubernetes
+// metadata come from the resolver cache only and lookupPending reports a miss
+// for the caller to resolve later outside its locks.
+func (s *Server) buildJobRuntimeContext(info model.ProcInfo, mode string, cachedOnly bool) (_ *telemetry.RuntimeContext, lookupPending bool) {
 	value := telemetry.RuntimeContext{ContainerID: strings.TrimSpace(info.ContainerID)}
 	if info.UID >= 0 {
 		uid := info.UID
@@ -488,29 +623,52 @@ func (s *Server) jobRuntimeContext(info model.ProcInfo, mode string) *telemetry.
 		}
 	}
 	if s.Runtime != nil && value.ContainerID != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		switch mode {
-		case model.ModeDocker:
-			value.DockerContainerName, _ = s.Runtime.DockerContainerName(ctx, value.ContainerID)
-		case model.ModeK8s:
-			if resolver, ok := s.Runtime.(runtime.KubernetesWorkloadResolver); ok {
-				workload, err := resolver.KubernetesWorkloadForContainer(ctx, value.ContainerID)
-				if err == nil {
-					value.KubernetesNamespace = workload.Namespace
-					value.KubernetesPodName = workload.PodName
-					value.KubernetesContainerName = workload.ContainerName
-				}
-			} else {
-				value.KubernetesNamespace, _ = s.Runtime.NamespaceForContainer(ctx, value.ContainerID)
-			}
+		cache, cached := s.Runtime.(runtime.CachedLookup)
+		switch {
+		case cachedOnly && cached && mode == model.ModeDocker:
+			name, ok := cache.CachedDockerContainerName(value.ContainerID)
+			value.DockerContainerName = name
+			lookupPending = !ok
+		case cachedOnly && cached && mode == model.ModeK8s:
+			workload, ok := cache.CachedKubernetesWorkload(value.ContainerID)
+			value.KubernetesNamespace = workload.Namespace
+			value.KubernetesPodName = workload.PodName
+			value.KubernetesContainerName = workload.ContainerName
+			lookupPending = !ok
+		default:
+			s.resolveRuntimeMetadata(context.Background(), &value, mode)
 		}
 	}
 	if value.UID == nil && value.Username == "" && value.ContainerID == "" && value.DockerContainerName == "" &&
 		value.KubernetesNamespace == "" && value.KubernetesPodName == "" && value.KubernetesContainerName == "" {
-		return nil
+		return nil, false
 	}
-	return &value
+	return &value, lookupPending
+}
+
+// resolveRuntimeMetadata fills docker or Kubernetes metadata for
+// value.ContainerID through the runtime resolver, bounded to two seconds.
+func (s *Server) resolveRuntimeMetadata(ctx context.Context, value *telemetry.RuntimeContext, mode string) {
+	if s.Runtime == nil || value.ContainerID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	switch mode {
+	case model.ModeDocker:
+		value.DockerContainerName, _ = s.Runtime.DockerContainerName(ctx, value.ContainerID)
+	case model.ModeK8s:
+		if resolver, ok := s.Runtime.(runtime.KubernetesWorkloadResolver); ok {
+			workload, err := resolver.KubernetesWorkloadForContainer(ctx, value.ContainerID)
+			if err == nil {
+				value.KubernetesNamespace = workload.Namespace
+				value.KubernetesPodName = workload.PodName
+				value.KubernetesContainerName = workload.ContainerName
+			}
+		} else {
+			value.KubernetesNamespace, _ = s.Runtime.NamespaceForContainer(ctx, value.ContainerID)
+		}
+	}
 }
 
 func reservationTelemetryGroup(reservation model.Reservation, fallback string) string {
@@ -576,22 +734,29 @@ func (s *Server) updateRunJobRootExit(authorizationID string, exitCode int, at t
 }
 
 func (s *Server) finishRunJob(authorizationID, reason string, at time.Time) {
+	if event, ok := s.takeFinishedRunJob(authorizationID, reason, at); ok {
+		s.emitTelemetryBatch([]telemetry.BatchEvent{event})
+	}
+}
+
+// takeFinishedRunJob ends a tracked run job and returns its job.finished event
+// for the caller to emit, possibly batched with other events.
+func (s *Server) takeFinishedRunJob(authorizationID, reason string, at time.Time) (telemetry.BatchEvent, bool) {
 	if s.Telemetry == nil {
-		return
+		return telemetry.BatchEvent{}, false
 	}
 	s.telemetryJobsMu.Lock()
+	defer s.telemetryJobsMu.Unlock()
 	event, ok := s.runJobs[authorizationID]
-	if ok {
-		finished := at.UTC()
-		event.FinishedAt = &finished
-		event.FinishPrecision = "exact"
-		event.Reason = reason
-		delete(s.runJobs, authorizationID)
+	if !ok {
+		return telemetry.BatchEvent{}, false
 	}
-	s.telemetryJobsMu.Unlock()
-	if ok {
-		s.emitTelemetry(telemetry.EventJobFinished, event, at)
-	}
+	finished := at.UTC()
+	event.FinishedAt = &finished
+	event.FinishPrecision = "exact"
+	event.Reason = reason
+	delete(s.runJobs, authorizationID)
+	return jobBatchEvent(telemetry.EventJobFinished, event, at), true
 }
 
 func boundedTelemetryCommand(command []string) []string {

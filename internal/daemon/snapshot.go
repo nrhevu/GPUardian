@@ -9,6 +9,7 @@ import (
 	"gpuardian/internal/enforce"
 	"gpuardian/internal/gpusmi"
 	"gpuardian/internal/model"
+	"gpuardian/internal/proc"
 )
 
 func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapshot, error) {
@@ -16,8 +17,8 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 	if err != nil {
 		return model.NodeSnapshot{}, err
 	}
-	processes, _ := s.processesForRead(ctx)
-	rows, _ := s.psWithProcesses(ctx, now, processes)
+	processes, procReader, _ := s.processesForReadWithProc(ctx)
+	rows, _ := s.psWithProcesses(ctx, now, processes, procReader)
 	metricsByGPU := map[int]model.GPUMetric{}
 	if metrics, err := s.metricsForRead(ctx); err == nil {
 		for _, metric := range metrics {
@@ -50,7 +51,7 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 	claimByGPU := map[int]model.SoftClaimView{}
 	liveSoftClaims := make([]model.SoftClaimView, 0, len(status.SoftClaims))
 	for _, claim := range status.SoftClaims {
-		if !s.softClaimHasLiveGPUProcess(claim, processesByGPU[claim.GPU]) {
+		if !softClaimHasLiveGPUProcess(procReader, claim, processesByGPU[claim.GPU]) {
 			continue
 		}
 		ids[claim.GPU] = true
@@ -109,8 +110,8 @@ func (s *Server) Snapshot(ctx context.Context, now time.Time) (model.NodeSnapsho
 	}, nil
 }
 
-func (s *Server) softClaimHasLiveGPUProcess(claim model.SoftClaimView, processes []model.GPUProcess) bool {
-	if s.Proc == nil {
+func softClaimHasLiveGPUProcess(reader proc.Reader, claim model.SoftClaimView, processes []model.GPUProcess) bool {
+	if reader == nil {
 		return false
 	}
 	runtimeClaim := model.SoftClaim{
@@ -120,7 +121,7 @@ func (s *Server) softClaimHasLiveGPUProcess(claim model.SoftClaimView, processes
 		RuntimeStartTime:   claim.RuntimeStartTime,
 	}
 	for _, process := range processes {
-		info, err := s.Proc.Info(process.PID)
+		info, err := reader.Info(process.PID)
 		if err != nil {
 			continue
 		}
@@ -131,6 +132,16 @@ func (s *Server) softClaimHasLiveGPUProcess(claim model.SoftClaimView, processes
 	return false
 }
 
+const (
+	// metricsReadTTL bounds the age of the metric sample a snapshot reuses.
+	// The telemetry metric monitor refreshes it every telemetryMetricInterval;
+	// without telemetry, snapshots refresh it themselves after this long.
+	metricsReadTTL = 2 * telemetryMetricInterval
+	// devicesRetryInterval spaces out retries of a failed static device query.
+	// A successful query is cached for the life of the daemon.
+	devicesRetryInterval = 30 * time.Second
+)
+
 func (s *Server) metricsForRead(ctx context.Context) ([]model.GPUMetric, error) {
 	provider, ok := s.GPU.(gpusmi.MetricsProvider)
 	if !ok {
@@ -138,7 +149,7 @@ func (s *Server) metricsForRead(ctx context.Context) ([]model.GPUMetric, error) 
 	}
 	s.metricsReadMu.Lock()
 	defer s.metricsReadMu.Unlock()
-	if !s.metricsReadAt.IsZero() {
+	if !s.metricsReadAt.IsZero() && time.Since(s.metricsReadAt) < metricsReadTTL {
 		return append([]model.GPUMetric(nil), s.metricsReadRows...), s.metricsReadErr
 	}
 	rows, err := provider.Metrics(ctx)
@@ -148,10 +159,11 @@ func (s *Server) metricsForRead(ctx context.Context) ([]model.GPUMetric, error) 
 	return append([]model.GPUMetric(nil), rows...), err
 }
 
-// devicesForRead returns the cached static device identity for this enforcement
-// pass, or samples it from the GPU provider's DeviceProvider implementation
-// (if any). A provider that does not implement DeviceProvider yields an empty
-// map, so the snapshot simply omits vendor/model/UUID.
+// devicesForRead returns the cached static device identity, or samples it from
+// the GPU provider's DeviceProvider implementation (if any). A provider that
+// does not implement DeviceProvider yields an empty map, so the snapshot
+// simply omits vendor/model/UUID. Identity is static, so a successful result
+// is kept; a failure is retried after devicesRetryInterval.
 func (s *Server) devicesForRead(ctx context.Context) (map[int]gpusmi.DeviceInfo, error) {
 	provider, ok := s.GPU.(gpusmi.DeviceProvider)
 	if !ok {
@@ -159,7 +171,7 @@ func (s *Server) devicesForRead(ctx context.Context) (map[int]gpusmi.DeviceInfo,
 	}
 	s.devicesReadMu.Lock()
 	defer s.devicesReadMu.Unlock()
-	if !s.devicesReadAt.IsZero() {
+	if !s.devicesReadAt.IsZero() && (s.devicesReadErr == nil || time.Since(s.devicesReadAt) < devicesRetryInterval) {
 		return s.devicesReadRows, s.devicesReadErr
 	}
 	rows, err := provider.Devices(ctx)

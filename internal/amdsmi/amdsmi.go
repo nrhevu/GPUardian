@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,11 @@ type CLIProvider struct {
 	Command    string
 	Timeout    time.Duration
 	runCommand func(context.Context, string, ...string) ([]byte, error)
+	// cache is shared by copies of a provider built with NewCLIProvider. It
+	// remembers the GPU inventory, static VRAM totals, and the metric source,
+	// and coalesces concurrent process samples. A literal CLIProvider has no
+	// cache and runs every query on each call.
+	cache *cliCache
 }
 
 const maxSMIOutputBytes = 16 << 20
@@ -57,58 +63,105 @@ func (b *boundedOutput) Write(data []byte) (int, error) {
 }
 
 func NewCLIProvider() CLIProvider {
-	return CLIProvider{Command: "amd-smi", Timeout: 5 * time.Second}
+	return CLIProvider{Command: "amd-smi", Timeout: 5 * time.Second, cache: newCLICache()}
 }
 
 func (p CLIProvider) Processes(ctx context.Context) ([]model.GPUProcess, error) {
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
+	return p.FreshProcesses(ctx, time.Time{})
+}
+
+// FreshProcesses shares an in-flight sample only when it started at or after
+// notBefore; see gpusmi.FreshProvider.
+func (p CLIProvider) FreshProcesses(ctx context.Context, notBefore time.Time) ([]model.GPUProcess, error) {
+	if p.cache == nil {
+		return p.sampleProcesses(ctx)
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	return p.cache.flight.Do(ctx, notBefore, p.sampleProcesses)
+}
+
+func (p CLIProvider) sampleProcesses(ctx context.Context) ([]model.GPUProcess, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.timeout())
 	defer cancel()
-	command := p.Command
-	if command == "" {
-		command = "amd-smi"
+	return p.processesPerGPU(ctx, p.command())
+}
+
+// ProcessesForGPUs re-samples only the listed GPUs with one per-GPU query each
+// and never joins a coalesced sample; see gpusmi.GPUProcessProvider.
+func (p CLIProvider) ProcessesForGPUs(ctx context.Context, gpus []int) ([]model.GPUProcess, error) {
+	seen := make(map[int]struct{}, len(gpus))
+	ids := make([]int, 0, len(gpus))
+	for _, gpu := range gpus {
+		if gpu < 0 || gpu > maxGPUIndex {
+			return nil, fmt.Errorf("gpu index %d is outside 0..%d", gpu, maxGPUIndex)
+		}
+		if err := addGPU(seen, gpu, "GPU request"); err != nil {
+			continue
+		}
+		ids = append(ids, gpu)
 	}
-	return p.processesPerGPU(ctx, command)
+	sort.Ints(ids)
+	ctx, cancel := context.WithTimeout(ctx, p.timeout())
+	defer cancel()
+	return p.processesForGPUs(ctx, p.command(), ids)
+}
+
+func (p CLIProvider) timeout() time.Duration {
+	if p.Timeout <= 0 {
+		return 5 * time.Second
+	}
+	return p.Timeout
+}
+
+func (p CLIProvider) command() string {
+	if p.Command == "" {
+		return "amd-smi"
+	}
+	return p.Command
 }
 
 func (p CLIProvider) Metrics(ctx context.Context) ([]model.GPUMetric, error) {
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, p.timeout())
 	defer cancel()
-	command := p.Command
-	if command == "" {
-		command = "amd-smi"
-	}
-	metricOut, metricErr := p.output(ctx, command, "metric", "--mem-usage", "--usage", "--json")
+	command := p.command()
+	tryRocm := command == "amd-smi" || strings.HasSuffix(command, "/amd-smi")
+	// A node whose amd-smi metric query fails while rocm-smi reports complete
+	// metrics is remembered for metricSourceTTL so each sample skips the
+	// failing probe.
+	rocmOnly := tryRocm && p.cache.rocmOnly()
+	var metricErr error
 	var metrics []model.GPUMetric
 	var parseErr error
-	if metricErr == nil {
-		metrics, parseErr = ParseMetricJSON(metricOut)
+	if !rocmOnly {
+		var metricOut []byte
+		metricOut, metricErr = p.output(ctx, command, "metric", "--mem-usage", "--usage", "--json")
+		if metricErr == nil {
+			metrics, parseErr = ParseMetricJSON(metricOut)
+		}
 	}
 
 	var staticErr error
 	if metricsNeedTotal(metrics) {
-		var staticOut []byte
-		staticOut, staticErr = p.output(ctx, command, "static", "--vram", "--json")
-		if staticErr == nil {
-			staticMetrics, err := ParseStaticJSON(staticOut)
-			if err == nil {
-				metrics = mergeGPUMetrics(metrics, staticMetrics)
-				parseErr = nil
-			} else if parseErr == nil {
-				parseErr = err
+		if staticMetrics, ok := p.cache.staticTotals(metrics); ok {
+			metrics = mergeGPUMetrics(metrics, staticMetrics)
+			parseErr = nil
+		} else {
+			var staticOut []byte
+			staticOut, staticErr = p.output(ctx, command, "static", "--vram", "--json")
+			if staticErr == nil {
+				staticMetrics, err := ParseStaticJSON(staticOut)
+				if err == nil {
+					p.cache.storeStatic(staticMetrics)
+					metrics = mergeGPUMetrics(metrics, staticMetrics)
+					parseErr = nil
+				} else if parseErr == nil {
+					parseErr = err
+				}
 			}
 		}
 	}
 
 	var rocmErr error
-	tryRocm := command == "amd-smi" || strings.HasSuffix(command, "/amd-smi")
+	rocmFilled := false
 	if tryRocm && !metricsComplete(metrics) {
 		var rocmOut []byte
 		rocmOut, rocmErr = p.output(ctx, "rocm-smi", "--showmeminfo", "vram", "--showuse", "--json")
@@ -117,11 +170,21 @@ func (p CLIProvider) Metrics(ctx context.Context) ([]model.GPUMetric, error) {
 			if err == nil {
 				metrics = mergeGPUMetrics(metrics, rocmMetrics)
 				parseErr = nil
+				rocmFilled = true
 			} else if parseErr == nil {
 				parseErr = err
 			}
 		}
 	}
+	if tryRocm {
+		rocmComplete := rocmFilled && metricsComplete(metrics)
+		if rocmOnly && !rocmComplete {
+			p.cache.setRocmOnly(false)
+		} else if !rocmOnly && metricErr != nil && rocmComplete {
+			p.cache.setRocmOnly(true)
+		}
+	}
+	p.cache.noteMetricGPUs(metrics)
 	if len(metrics) > 0 {
 		return metrics, nil
 	}

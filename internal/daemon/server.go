@@ -83,6 +83,19 @@ type Server struct {
 	// mount. Production servers leave it false and fail closed if a process
 	// cannot be born directly into its managed cgroup.
 	allowUnsafeCgroupFallback bool
+	// processReadProc memoizes /proc reads for processReadRows. The monitor
+	// pass that took the sample uses it for eviction and enforcement, and
+	// ps/snapshot reuse it instead of re-reading /proc per request. Guarded by
+	// processReadMu.
+	processReadProc *proc.Memo
+	// pendingRuntimeContexts lists observed jobs whose runtime context was not
+	// cached when the job started; the monitor resolves them after releasing
+	// enforceMu. Guarded by telemetryJobsMu.
+	pendingRuntimeContexts []pendingRuntimeContext
+	// terminations tracks processes sent SIGTERM by a staged kill until their
+	// exit is confirmed or SIGKILL escalation completes.
+	terminationsOnce sync.Once
+	terminations     *enforce.Terminations
 }
 
 const (
@@ -126,8 +139,9 @@ func New(cfg config.Config) *Server {
 		Store:          st,
 		GPU:            selectGPUProvider(cfg),
 		Proc:           procReader,
-		Runtime:        runtime.NewCachedResolver(runtime.CLIResolver{}),
+		Runtime:        runtime.NewCachedResolver(runtime.NewCLIResolver()),
 		Killer:         enforce.RealKiller{Grace: 2 * time.Second, Proc: procReader},
+		terminations:   enforce.NewTerminations(),
 		Interval:       time.Second,
 		evictionClean:  make(map[string]int),
 		bootID:         bootID,
@@ -433,9 +447,17 @@ func (s *Server) dispatch(ctx context.Context, p peer, req protocol.Request) (an
 			if !expiresAt.After(now) {
 				return nil, errors.New("reservation end must be in the future")
 			}
+			// The busy check needs a GPU sample taken after this request
+			// arrived. Take it before acquiring enforceMu so a slow SMI exec
+			// never blocks enforcement, sharing an in-flight sample only if it
+			// started after the request. The lock does not protect the GPU
+			// process set (processes start regardless of it); it keeps the
+			// store overlap check and the reservation write atomic, and both
+			// still happen under it.
+			presample := s.freshProcessSample(ctx, now, args.GPUs, startsAt, expiresAt)
 			s.enforceMu.Lock()
 			defer s.enforceMu.Unlock()
-			if err := s.ensureGPUsCanReserveWindow(ctx, args.GPUs, startsAt, expiresAt); err != nil {
+			if err := s.ensureGPUsCanReserveWindowSampled(ctx, args.GPUs, startsAt, expiresAt, presample); err != nil {
 				return nil, err
 			}
 			var secret, groupID string
@@ -1084,6 +1106,10 @@ func (s *Server) runCommand(ctx context.Context, conn net.Conn, reqID, tokenSecr
 	s.updateRunJobRootExit(authorization.ID, exitCode, time.Now())
 	if cgroupEmptyOrOnlyExitedRoot(cgroupPath, authorization.RootPID) {
 		if err := s.releaseAuthorization(authorization.ID); err != nil {
+			// The deferred cleanup retries the release, and the monitor
+			// releases a finished bare authorization on its own; either way
+			// the run job ends here so runJobs cannot leak the entry.
+			s.finishRunJob(authorization.ID, "exited", time.Now())
 			return model.RunResult{AuthorizationID: authorization.ID, ExitCode: exitCode}, err
 		}
 		authorizationActive = false
@@ -1120,7 +1146,43 @@ func (s *Server) ensureGPUCanReserveWindow(ctx context.Context, gpu int, startsA
 	return s.ensureGPUsCanReserveWindow(ctx, []int{gpu}, startsAt, expiresAt)
 }
 
+// processSample is a GPU process sample taken ahead of the enforcement lock.
+type processSample struct {
+	rows []model.GPUProcess
+	err  error
+}
+
+// freshProcessSample samples GPU processes for a reservation request when its
+// window is already open (the only case the busy check needs a sample). It
+// returns nil otherwise; the busy check then samples on its own if the window
+// opened while the caller waited for the lock.
+func (s *Server) freshProcessSample(ctx context.Context, requested time.Time, gpus []int, startsAt, expiresAt time.Time) *processSample {
+	if s.GPU == nil || s.validateConfiguredGPUs(gpus) != nil {
+		return nil
+	}
+	if startsAt.IsZero() {
+		startsAt = requested
+	}
+	if requested.Before(startsAt) || !requested.Before(expiresAt) {
+		return nil
+	}
+	var sample processSample
+	if fresh, ok := s.GPU.(gpusmi.FreshProvider); ok {
+		sample.rows, sample.err = fresh.FreshProcesses(ctx, requested)
+	} else {
+		sample.rows, sample.err = s.GPU.Processes(ctx)
+	}
+	return &sample
+}
+
 func (s *Server) ensureGPUsCanReserveWindow(ctx context.Context, gpus []int, startsAt, expiresAt time.Time) error {
+	return s.ensureGPUsCanReserveWindowSampled(ctx, gpus, startsAt, expiresAt, nil)
+}
+
+// ensureGPUsCanReserveWindowSampled is ensureGPUsCanReserveWindow with an
+// optional sample taken before the caller acquired enforceMu; a nil presample
+// samples here.
+func (s *Server) ensureGPUsCanReserveWindowSampled(ctx context.Context, gpus []int, startsAt, expiresAt time.Time, presample *processSample) error {
 	if err := s.validateConfiguredGPUs(gpus); err != nil {
 		return err
 	}
@@ -1157,7 +1219,12 @@ func (s *Server) ensureGPUsCanReserveWindow(ctx context.Context, gpus []int, sta
 	if now.Before(startsAt) || !now.Before(expiresAt) {
 		return nil
 	}
-	processes, err := s.GPU.Processes(ctx)
+	var processes []model.GPUProcess
+	if presample != nil {
+		processes, err = presample.rows, presample.err
+	} else {
+		processes, err = s.GPU.Processes(ctx)
+	}
 	if err != nil {
 		return fmt.Errorf("GPU process list: %w", err)
 	}
@@ -1210,11 +1277,12 @@ func (s *Server) ps(ctx context.Context, now time.Time, allowedTokenHash string,
 	if err != nil {
 		return nil, err
 	}
-	processes, err := s.processesForRead(ctx)
+	processes, procReader, err := s.processesForReadWithProc(ctx)
 	if err != nil {
 		processes = nil
 	}
 	auth := s.authorizer()
+	auth.Proc = procReader
 	auth.DryRun = true
 	auth.Killer = nil
 	auth.OnAudit = nil
@@ -1325,17 +1393,46 @@ func boundedPSField(value string) string {
 	return out.String()
 }
 
-func (s *Server) processesForRead(ctx context.Context) ([]model.GPUProcess, error) {
+// processesForReadWithProc returns the latest GPU process sample together with
+// the /proc memo bound to it, so read-only views read each PID at most once
+// per sample (and not at all for PIDs the monitor pass already read).
+func (s *Server) processesForReadWithProc(ctx context.Context) ([]model.GPUProcess, proc.Reader, error) {
 	s.processReadMu.Lock()
 	defer s.processReadMu.Unlock()
-	if !s.processReadAt.IsZero() {
-		return append([]model.GPUProcess(nil), s.processReadRows...), s.processReadErr
+	if s.processReadAt.IsZero() {
+		rows, err := s.GPU.Processes(ctx)
+		s.processReadAt = time.Now()
+		s.processReadRows = append(s.processReadRows[:0], rows...)
+		s.processReadErr = err
+		s.processReadProc = s.newProcMemo()
 	}
-	rows, err := s.GPU.Processes(ctx)
+	var reader proc.Reader
+	if s.processReadProc != nil {
+		reader = s.processReadProc
+	} else if s.Proc != nil {
+		reader = s.Proc
+	}
+	return append([]model.GPUProcess(nil), s.processReadRows...), reader, s.processReadErr
+}
+
+// storeProcessSample publishes a monitor sample for read-only views and
+// returns the /proc memo the monitor pass should use for it.
+func (s *Server) storeProcessSample(rows []model.GPUProcess, err error) *proc.Memo {
+	memo := s.newProcMemo()
+	s.processReadMu.Lock()
 	s.processReadAt = time.Now()
 	s.processReadRows = append(s.processReadRows[:0], rows...)
 	s.processReadErr = err
-	return append([]model.GPUProcess(nil), rows...), err
+	s.processReadProc = memo
+	s.processReadMu.Unlock()
+	return memo
+}
+
+func (s *Server) newProcMemo() *proc.Memo {
+	if s.Proc == nil {
+		return nil
+	}
+	return proc.NewMemo(s.Proc)
 }
 
 type psRowBuilder struct {
@@ -1523,17 +1620,25 @@ func (s *Server) monitor(ctx context.Context) {
 
 func (s *Server) monitorOnce(ctx context.Context) {
 	processes, err := s.GPU.Processes(ctx)
-	s.processReadMu.Lock()
-	s.processReadAt = time.Now()
-	s.processReadRows = append(s.processReadRows[:0], processes...)
-	s.processReadErr = err
-	s.processReadMu.Unlock()
+	memo := s.storeProcessSample(processes, err)
 	if err != nil {
 		s.auditGPUProcessError(err)
 		s.cleanupExpiredManagedCgroups()
+		s.escalateTerminationsWithoutSample(ctx, memo)
 		return
 	}
 	s.auditGPUProcessRecovery()
+	s.enforcePass(ctx, processes, memo)
+	// Runtime metadata for newly observed jobs is looked up without holding
+	// enforceMu; see trackObservedTelemetryJobs.
+	s.completePendingRuntimeContexts(ctx)
+}
+
+// enforcePass runs stale-scope eviction, enforcement, SIGKILL escalation, and
+// cleanup for one GPU sample under enforceMu. memo backs every /proc read of
+// the pass except the identity revalidation right before each signal, which
+// the killer performs with its own uncached reader.
+func (s *Server) enforcePass(ctx context.Context, processes []model.GPUProcess, memo *proc.Memo) {
 	s.enforceMu.Lock()
 	defer s.enforceMu.Unlock()
 	state, err := s.Store.EnforcementSnapshot()
@@ -1541,6 +1646,9 @@ func (s *Server) monitorOnce(ctx context.Context) {
 		return
 	}
 	authorizer := s.authorizer()
+	if memo != nil {
+		authorizer.Proc = memo
+	}
 	var enforcementAudits []model.AuditEvent
 	authorizer.OnAudit = func(event model.AuditEvent) {
 		if s.acceptEnforcementAudit(event) {
@@ -1570,9 +1678,13 @@ func (s *Server) monitorOnce(ctx context.Context) {
 	}
 	regularDecisions, enforceErr := authorizer.Enforce(enforcementCtx, state, processes)
 	decisions = append(decisions, regularDecisions...)
+	// Processes signalled with SIGTERM on earlier passes are confirmed gone,
+	// spared if this pass allowed them, or sent SIGKILL after the grace period.
+	escalationErr := authorizer.EscalateTerminations(enforcementCtx, state, decisions)
 	now := time.Now()
 	s.trackObservedTelemetryJobs(state, decisions, now)
-	_ = enforceErr // Kill failures are audited by the authorizer callback.
+	_ = enforceErr    // Kill failures are audited by the authorizer callback.
+	_ = escalationErr // Likewise for escalation failures.
 	for _, decision := range decisions {
 		switch decision.Action {
 		case "claim":
@@ -1590,6 +1702,45 @@ func (s *Server) monitorOnce(ctx context.Context) {
 	if evictionErr == nil && cleanupOK {
 		_ = s.Store.Prune(now)
 	}
+}
+
+// escalateTerminationsWithoutSample keeps SIGKILL escalation on schedule while
+// the GPU process inventory is unavailable. Without a sample nothing can be
+// newly allowed, so escalation proceeds on identity and bypass rules alone,
+// exactly as the blocking killer would have.
+func (s *Server) escalateTerminationsWithoutSample(ctx context.Context, memo *proc.Memo) {
+	if s.terminationTracker().Len() == 0 {
+		return
+	}
+	s.enforceMu.Lock()
+	defer s.enforceMu.Unlock()
+	state, err := s.Store.EnforcementSnapshot()
+	if err != nil {
+		return
+	}
+	authorizer := s.authorizer()
+	if memo != nil {
+		authorizer.Proc = memo
+	}
+	var audits []model.AuditEvent
+	authorizer.OnAudit = func(event model.AuditEvent) {
+		if s.acceptEnforcementAudit(event) {
+			audits = append(audits, event)
+		}
+	}
+	escalationCtx, cancel := context.WithTimeout(ctx, enforcementPassTimeout)
+	defer cancel()
+	_ = authorizer.EscalateTerminations(escalationCtx, state, nil)
+	_ = s.Store.AppendAudits(audits)
+}
+
+func (s *Server) terminationTracker() *enforce.Terminations {
+	s.terminationsOnce.Do(func() {
+		if s.terminations == nil {
+			s.terminations = enforce.NewTerminations()
+		}
+	})
+	return s.terminations
 }
 
 func (s *Server) revoke(id string) error {
@@ -1668,6 +1819,7 @@ func (s *Server) cleanupFinishedBareAuthorizations() {
 
 func (s *Server) cleanupFinishedBareAuthorizationsState(state model.State) {
 	now := time.Now()
+	var released []model.Authorization
 	for _, authorization := range state.Authorizations {
 		if !authorization.Active || authorization.Mode != model.ModeBare || authorization.RootPID <= 0 {
 			continue
@@ -1686,12 +1838,19 @@ func (s *Server) cleanupFinishedBareAuthorizationsState(state model.State) {
 		} else if s.Proc != nil && s.Proc.Exists(authorization.RootPID) {
 			continue
 		}
-		if err := s.Store.ReleaseAuthorization(authorization.ID); err != nil {
-			continue
+		released = append(released, authorization)
+	}
+	if len(released) == 0 || s.Store.ReleaseScopes(nil, authorizationIDs(released), nil) != nil {
+		return
+	}
+	var events []telemetry.BatchEvent
+	audits := make([]model.AuditEvent, 0, len(released))
+	for _, authorization := range released {
+		events = append(events, authorizationEndedEvent(authorization.ID, "released", now))
+		if event, ok := s.takeFinishedRunJob(authorization.ID, "cgroup_empty", now); ok {
+			events = append(events, event)
 		}
-		s.emitAuthorizationEnded(authorization.ID, "released", now)
-		s.finishRunJob(authorization.ID, "cgroup_empty", now)
-		_ = s.Store.AppendAudit(model.AuditEvent{
+		audits = append(audits, model.AuditEvent{
 			Time:    now.UTC(),
 			Kind:    "authorization_released",
 			Message: "bare authorization released after process exit",
@@ -1699,6 +1858,24 @@ func (s *Server) cleanupFinishedBareAuthorizationsState(state model.State) {
 			User:    authorization.Holder,
 		})
 	}
+	s.emitTelemetryBatch(events)
+	_ = s.Store.AppendAudits(audits)
+}
+
+func authorizationIDs(authorizations []model.Authorization) []string {
+	ids := make([]string, 0, len(authorizations))
+	for _, authorization := range authorizations {
+		ids = append(ids, authorization.ID)
+	}
+	return ids
+}
+
+func leaseIDs(leases []model.Lease) []string {
+	ids := make([]string, 0, len(leases))
+	for _, lease := range leases {
+		ids = append(ids, lease.ID)
+	}
+	return ids
 }
 
 func (s *Server) cleanupExpiredAuthorizations() {
@@ -1765,10 +1942,14 @@ func (s *Server) inactiveManagedCgroupReadyForPrune(cgroupPath string) bool {
 	return err == nil || errors.Is(err, os.ErrNotExist)
 }
 
+// cleanupExpiredAuthorizationsState releases every authorization whose scope
+// is ready in one state write, then emits their telemetry and audits in one
+// batch each.
 func (s *Server) cleanupExpiredAuthorizationsState(state model.State) bool {
 	now := time.Now()
 	ok := true
 	tokens := tokenValidityByHash(state.Tokens, now)
+	var released []model.Authorization
 	for _, authorization := range state.Authorizations {
 		if !authorization.Active || (!authorization.Revoked && !authorizationExpiredAt(authorization, now) && tokenValidForCleanup(tokens, authorization.TokenHash)) {
 			continue
@@ -1782,10 +1963,17 @@ func (s *Server) cleanupExpiredAuthorizationsState(state model.State) bool {
 			ok = false
 			continue
 		}
-		if err := s.Store.ReleaseAuthorization(authorization.ID); err != nil {
-			ok = false
-			continue
-		}
+		released = append(released, authorization)
+	}
+	if len(released) == 0 {
+		return ok
+	}
+	if err := s.Store.ReleaseScopes(nil, authorizationIDs(released), nil); err != nil {
+		return false
+	}
+	var events []telemetry.BatchEvent
+	audits := make([]model.AuditEvent, 0, len(released))
+	for _, authorization := range released {
 		kind := "authorization_expired"
 		message := "authorization expired"
 		reason := "expired"
@@ -1794,12 +1982,16 @@ func (s *Server) cleanupExpiredAuthorizationsState(state model.State) bool {
 			message = "authorization revoked"
 			reason = "revoked"
 		}
-		s.emitAuthorizationEnded(authorization.ID, reason, now)
+		events = append(events, authorizationEndedEvent(authorization.ID, reason, now))
 		if authorization.Mode == model.ModeBare {
-			s.finishRunJob(authorization.ID, reason, now)
+			if event, found := s.takeFinishedRunJob(authorization.ID, reason, now); found {
+				events = append(events, event)
+			}
 		}
-		_ = s.Store.AppendAudit(model.AuditEvent{Time: now.UTC(), Kind: kind, Message: message, LeaseID: authorization.ID, User: authorization.Holder})
+		audits = append(audits, model.AuditEvent{Time: now.UTC(), Kind: kind, Message: message, LeaseID: authorization.ID, User: authorization.Holder})
 	}
+	s.emitTelemetryBatch(events)
+	_ = s.Store.AppendAudits(audits)
 	return ok
 }
 
@@ -1818,15 +2010,27 @@ func (s *Server) cleanupExpiredReservationsState(state model.State) bool {
 	for _, token := range state.Tokens {
 		tokenIDs[token.Hash] = token.ID
 	}
-	emitted := make(map[string]bool)
+	var released []model.Reservation
 	for _, reservation := range state.Reservations {
 		if !reservation.Active || (!reservation.Revoked && now.Before(reservation.ExpiresAt)) {
 			continue
 		}
-		if err := s.Store.ReleaseReservation(reservation.ID); err != nil {
-			ok = false
-			continue
-		}
+		released = append(released, reservation)
+	}
+	if len(released) == 0 {
+		return ok
+	}
+	ids := make([]string, 0, len(released))
+	for _, reservation := range released {
+		ids = append(ids, reservation.ID)
+	}
+	if err := s.Store.ReleaseScopes(ids, nil, nil); err != nil {
+		return false
+	}
+	emitted := make(map[string]bool)
+	var events []telemetry.BatchEvent
+	audits := make([]model.AuditEvent, 0, len(released))
+	for _, reservation := range released {
 		groupID := tokenIDs[reservation.TokenHash]
 		if reservation.GroupID != "" {
 			groupID = reservation.GroupID
@@ -1836,11 +2040,13 @@ func (s *Server) cleanupExpiredReservationsState(state model.State) bool {
 			if reservation.Revoked {
 				reason = "revoked"
 			}
-			s.emitTelemetry(telemetry.EventReservationEnded, telemetry.ReservationEnded{GroupID: groupID, EndedAt: now.UTC(), Reason: reason}, now)
+			events = append(events, telemetry.BatchEvent{Type: telemetry.EventReservationEnded, Payload: telemetry.ReservationEnded{GroupID: groupID, EndedAt: now.UTC(), Reason: reason}, OccurredAt: now})
 			emitted[groupID] = true
 		}
-		_ = s.Store.AppendAudit(model.AuditEvent{Time: now.UTC(), Kind: "reservation_expired", Message: "reserved GPU reservation expired", GPU: reservation.GPU, LeaseID: reservation.ID, User: reservation.Holder})
+		audits = append(audits, model.AuditEvent{Time: now.UTC(), Kind: "reservation_expired", Message: "reserved GPU reservation expired", GPU: reservation.GPU, LeaseID: reservation.ID, User: reservation.Holder})
 	}
+	s.emitTelemetryBatch(events)
+	_ = s.Store.AppendAudits(audits)
 	return ok
 }
 
@@ -1854,6 +2060,7 @@ func (s *Server) cleanupFinishedBareLeases() {
 
 func (s *Server) cleanupFinishedBareLeasesState(state model.State) {
 	now := time.Now()
+	var released []model.Lease
 	for _, lease := range state.Leases {
 		if !lease.Active || lease.Mode != model.ModeBare || lease.RootPID <= 0 {
 			continue
@@ -1872,10 +2079,14 @@ func (s *Server) cleanupFinishedBareLeasesState(state model.State) {
 		} else if s.Proc != nil && s.Proc.Exists(lease.RootPID) {
 			continue
 		}
-		if err := s.Store.ReleaseLease(lease.ID); err != nil {
-			continue
-		}
-		_ = s.Store.AppendAudit(model.AuditEvent{
+		released = append(released, lease)
+	}
+	if len(released) == 0 || s.Store.ReleaseScopes(nil, nil, leaseIDs(released)) != nil {
+		return
+	}
+	audits := make([]model.AuditEvent, 0, len(released))
+	for _, lease := range released {
+		audits = append(audits, model.AuditEvent{
 			Time:    now.UTC(),
 			Kind:    "lease_released",
 			Message: "bare lease released after process exit",
@@ -1884,6 +2095,7 @@ func (s *Server) cleanupFinishedBareLeasesState(state model.State) {
 			User:    lease.Holder,
 		})
 	}
+	_ = s.Store.AppendAudits(audits)
 }
 
 func (s *Server) cleanupExpiredLeases() {
@@ -1898,6 +2110,7 @@ func (s *Server) cleanupExpiredLeasesState(state model.State) bool {
 	now := time.Now()
 	ok := true
 	tokens := tokenValidityByHash(state.Tokens, now)
+	var released []model.Lease
 	for _, lease := range state.Leases {
 		if !lease.Active || (now.Before(lease.ExpiresAt) && tokenValidForCleanup(tokens, lease.TokenHash)) {
 			continue
@@ -1911,12 +2124,19 @@ func (s *Server) cleanupExpiredLeasesState(state model.State) bool {
 			ok = false
 			continue
 		}
-		if err := s.Store.ReleaseLease(lease.ID); err != nil {
-			ok = false
-			continue
-		}
-		_ = s.Store.AppendAudit(model.AuditEvent{Time: now.UTC(), Kind: "lease_expired", Message: "lease expired", GPU: lease.GPU, LeaseID: lease.ID})
+		released = append(released, lease)
 	}
+	if len(released) == 0 {
+		return ok
+	}
+	if err := s.Store.ReleaseScopes(nil, nil, leaseIDs(released)); err != nil {
+		return false
+	}
+	audits := make([]model.AuditEvent, 0, len(released))
+	for _, lease := range released {
+		audits = append(audits, model.AuditEvent{Time: now.UTC(), Kind: "lease_expired", Message: "lease expired", GPU: lease.GPU, LeaseID: lease.ID})
+	}
+	_ = s.Store.AppendAudits(audits)
 	return ok
 }
 
@@ -1996,47 +2216,119 @@ func cgroupPathWithinRoot(root, candidate string) (bool, error) {
 }
 
 func (s *Server) authorizer() enforce.Authorizer {
-	type gpuProcessKey struct {
-		gpu int
-		pid int
-	}
-	var sampleOnce sync.Once
-	var sampleErr error
-	present := make(map[gpuProcessKey]struct{})
-	validateKill := func(ctx context.Context, process model.GPUProcess) error {
-		sampleOnce.Do(func() {
-			if s.GPU == nil {
-				sampleErr = errors.New("GPU process provider is unavailable")
-				return
-			}
-			var processes []model.GPUProcess
-			processes, sampleErr = s.GPU.Processes(ctx)
-			if sampleErr != nil {
-				s.auditGPUProcessError(sampleErr)
-				return
-			}
-			for _, current := range processes {
-				if current.PID > 0 {
-					present[gpuProcessKey{gpu: current.GPU, pid: current.PID}] = struct{}{}
-				}
-			}
-		})
-		if sampleErr != nil {
-			return sampleErr
-		}
-		if _, ok := present[gpuProcessKey{gpu: process.GPU, pid: process.PID}]; !ok {
-			return errors.New("pid is no longer present in the GPU process inventory")
-		}
-		return nil
-	}
+	validator := &killValidator{gpu: s.GPU, onError: s.auditGPUProcessError}
 	return enforce.Authorizer{
-		Proc:         s.Proc,
-		Runtime:      s.Runtime,
-		Killer:       s.Killer,
-		BootID:       s.bootID,
-		ValidateKill: validateKill,
-		DryRun:       s.Cfg.DryRun,
-		OnAudit:      s.appendEnforcementAudit,
+		Proc:                  s.Proc,
+		Runtime:               s.Runtime,
+		Killer:                s.Killer,
+		BootID:                s.bootID,
+		ValidateKill:          validator.validate,
+		PrepareKillValidation: validator.prepare,
+		Terminations:          s.terminationTracker(),
+		DryRun:                s.Cfg.DryRun,
+		OnAudit:               s.appendEnforcementAudit,
+	}
+}
+
+type gpuProcessKey struct {
+	gpu int
+	pid int
+}
+
+// killValidator re-verifies, right before a process is signalled, that it is
+// still in the GPU process inventory. It serves one authorizer (one pass):
+// each GPU is re-sampled at most once, after the pass's decisions were made.
+// With a gpusmi.GPUProcessProvider only GPUs that have pending kills are
+// re-sampled, in one call per batch; otherwise one full sample is taken.
+type killValidator struct {
+	gpu     gpusmi.Provider
+	onError func(error)
+
+	mu      sync.Mutex
+	sampled map[int]error
+	full    bool
+	fullErr error
+	present map[gpuProcessKey]struct{}
+}
+
+func (v *killValidator) prepare(ctx context.Context, processes []model.GPUProcess) {
+	subset, ok := v.gpu.(gpusmi.GPUProcessProvider)
+	if !ok {
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	var gpus []int
+	seen := make(map[int]bool, len(processes))
+	for _, process := range processes {
+		if _, done := v.sampled[process.GPU]; done || seen[process.GPU] {
+			continue
+		}
+		seen[process.GPU] = true
+		gpus = append(gpus, process.GPU)
+	}
+	if len(gpus) > 0 {
+		v.sampleGPUsLocked(ctx, subset, gpus)
+	}
+}
+
+func (v *killValidator) validate(ctx context.Context, process model.GPUProcess) error {
+	if v.gpu == nil {
+		return errors.New("GPU process provider is unavailable")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if subset, ok := v.gpu.(gpusmi.GPUProcessProvider); ok {
+		if _, done := v.sampled[process.GPU]; !done {
+			v.sampleGPUsLocked(ctx, subset, []int{process.GPU})
+		}
+		if err := v.sampled[process.GPU]; err != nil {
+			return err
+		}
+	} else {
+		if !v.full {
+			v.full = true
+			var processes []model.GPUProcess
+			processes, v.fullErr = v.gpu.Processes(ctx)
+			if v.fullErr != nil {
+				v.onError(v.fullErr)
+			}
+			v.addPresentLocked(processes)
+		}
+		if v.fullErr != nil {
+			return v.fullErr
+		}
+	}
+	if _, ok := v.present[gpuProcessKey{gpu: process.GPU, pid: process.PID}]; !ok {
+		return errors.New("pid is no longer present in the GPU process inventory")
+	}
+	return nil
+}
+
+func (v *killValidator) sampleGPUsLocked(ctx context.Context, subset gpusmi.GPUProcessProvider, gpus []int) {
+	processes, err := subset.ProcessesForGPUs(ctx, gpus)
+	if err != nil {
+		v.onError(err)
+	}
+	if v.sampled == nil {
+		v.sampled = make(map[int]error)
+	}
+	for _, gpu := range gpus {
+		v.sampled[gpu] = err
+	}
+	if err == nil {
+		v.addPresentLocked(processes)
+	}
+}
+
+func (v *killValidator) addPresentLocked(processes []model.GPUProcess) {
+	if v.present == nil {
+		v.present = make(map[gpuProcessKey]struct{})
+	}
+	for _, current := range processes {
+		if current.PID > 0 {
+			v.present[gpuProcessKey{gpu: current.GPU, pid: current.PID}] = struct{}{}
+		}
 	}
 }
 
