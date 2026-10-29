@@ -5,12 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import httpx
 
 from .client import GpuardianClient, GpuardianError
+
+# Node IDs the gateway generates ("srv_" + 8 random bytes in hex).
+_GENERATED_NODE_ID = re.compile(r"srv_[0-9a-f]{16}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     nodes.set_defaults(handler=_nodes)
 
     fleet = commands.add_parser("fleet", help="Get the current fleet snapshot.")
+    fleet.add_argument(
+        "--compact",
+        action="store_true",
+        help="Omit per-node tokens, soft claims, leases, bypasses, and ps rows.",
+    )
     fleet.set_defaults(handler=_fleet)
 
     reserve = commands.add_parser("reserve", help="Create a reservation on a node.")
@@ -91,10 +100,18 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--filters-json", type=_filter_groups, help="JSON array of history filter groups.")
     search.add_argument("--sort-field")
     search.add_argument("--sort-direction", choices=("asc", "desc"))
+    search.add_argument(
+        "--no-summary",
+        dest="include_summary",
+        action="store_false",
+        default=None,
+        help="Skip the dashboard summary (useful when fetching further --cursor pages).",
+    )
     _add_page_arguments(search)
     search.set_defaults(handler=_history_search)
     session = history_commands.add_parser("session")
     session.add_argument("--id", required=True, dest="session_id")
+    session.add_argument("--timeline-limit", type=int, help="Keep only the most recent N timeline rows.")
     session.set_defaults(handler=_history_session)
     jobs = history_commands.add_parser("jobs")
     jobs.add_argument("--id", required=True, dest="session_id")
@@ -166,6 +183,24 @@ def _filter_groups(value: str) -> list[dict[str, Any]]:
     return groups
 
 
+def _call_on_node(client: GpuardianClient, reference: str, action: Callable[[str], Any]) -> Any:
+    """Run ``action(node_id)`` for a ``--node`` reference (exact ID or name).
+
+    A reference shaped like a gateway-generated node ID is tried directly,
+    saving the ``GET /api/servers`` round trip. The gateway looks the node up
+    before any side effect and answers 404 "server not found" for an unknown
+    ID; only then is the reference resolved through the node list (it may be a
+    node *named* like an ID), so the result matches resolving up front.
+    """
+    if _GENERATED_NODE_ID.fullmatch(reference):
+        try:
+            return action(reference)
+        except GpuardianError as error:
+            if error.status_code != 404 or error.detail != "server not found":
+                raise
+    return action(_resolve_node(client, reference))
+
+
 def _resolve_node(client: GpuardianClient, reference: str) -> str:
     servers = client.list_servers()
     for server in servers:
@@ -188,34 +223,42 @@ def _nodes(client: GpuardianClient, _args: argparse.Namespace) -> Any:
     return client.list_servers()
 
 
-def _fleet(client: GpuardianClient, _args: argparse.Namespace) -> Any:
-    return client.fleet_snapshot()
+def _fleet(client: GpuardianClient, args: argparse.Namespace) -> Any:
+    return client.fleet_snapshot(compact=args.compact)
 
 
 def _reserve(client: GpuardianClient, args: argparse.Namespace) -> Any:
-    return client.create_reservation(
-        _resolve_node(client, args.node),
-        gpus=args.gpus,
-        purpose=args.purpose,
-        ttl=args.ttl,
-        starts_at=args.starts_at,
-        expires_at=args.expires_at,
-        mode=args.mode,
+    return _call_on_node(
+        client,
+        args.node,
+        lambda node_id: client.create_reservation(
+            node_id,
+            gpus=args.gpus,
+            purpose=args.purpose,
+            ttl=args.ttl,
+            starts_at=args.starts_at,
+            expires_at=args.expires_at,
+            mode=args.mode,
+        ),
     )
 
 
 def _revoke(client: GpuardianClient, args: argparse.Namespace) -> Any:
-    return client.revoke(_resolve_node(client, args.node), args.id)
+    return _call_on_node(client, args.node, lambda node_id: client.revoke(node_id, args.id))
 
 
 def _allow(client: GpuardianClient, args: argparse.Namespace) -> Any:
-    return client.allow(
-        _resolve_node(client, args.node),
-        mode=args.allow_mode,
-        run_name=args.run_name,
-        container=getattr(args, "container", None),
-        namespace=getattr(args, "namespace", None),
-        user=getattr(args, "user", None),
+    return _call_on_node(
+        client,
+        args.node,
+        lambda node_id: client.allow(
+            node_id,
+            mode=args.allow_mode,
+            run_name=args.run_name,
+            container=getattr(args, "container", None),
+            namespace=getattr(args, "namespace", None),
+            user=getattr(args, "user", None),
+        ),
     )
 
 
@@ -250,11 +293,12 @@ def _history_search(client: GpuardianClient, args: argparse.Namespace) -> Any:
         sort_direction=args.sort_direction,
         limit=args.limit,
         cursor=args.cursor,
+        include_summary=args.include_summary,
     )
 
 
 def _history_session(client: GpuardianClient, args: argparse.Namespace) -> Any:
-    return client.history_session(args.session_id)
+    return client.history_session(args.session_id, timeline_limit=args.timeline_limit)
 
 
 def _history_jobs(client: GpuardianClient, args: argparse.Namespace) -> Any:

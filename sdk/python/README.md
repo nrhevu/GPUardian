@@ -93,9 +93,19 @@ gpuardian-sdk keys list
 gpuardian-sdk keys reveal --user alice
 gpuardian-sdk keys rotate --user alice
 gpuardian-sdk history summary --node srv_xxx --limit 20
-gpuardian-sdk history session --id sess_xxx
+gpuardian-sdk history search --limit 50
+gpuardian-sdk history search --limit 50 --cursor <next_cursor> --no-summary
+gpuardian-sdk history session --id sess_xxx --timeline-limit 180
 gpuardian-sdk history jobs --id sess_xxx --limit 100
+gpuardian-sdk fleet --compact
 ```
+
+`history search` returns the dashboard summary on every page unless
+`--no-summary` is given; it depends only on the filter, so skip it when
+fetching further `--cursor` pages. `fleet --compact` omits per-node tokens,
+soft claims, leases, bypasses, and ps rows. A `--node` value that is a
+gateway-generated node ID (`srv_` + 16 hex characters) is used directly
+without first listing nodes.
 
 All successful commands write formatted JSON to stdout. Errors go to stderr
 and return a non-zero exit status. Use `--insecure` only for a trusted test
