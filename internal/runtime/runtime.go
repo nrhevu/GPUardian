@@ -28,10 +28,58 @@ type KubernetesWorkloadResolver interface {
 	KubernetesWorkloadForContainer(ctx context.Context, containerID string) (KubernetesWorkload, error)
 }
 
+// CachedLookup is implemented by resolvers that can answer from cache alone,
+// without running docker, crictl, or kubectl. Only unexpired successful
+// lookups are reported.
+type CachedLookup interface {
+	CachedDockerContainerName(containerID string) (string, bool)
+	CachedKubernetesWorkload(containerID string) (KubernetesWorkload, bool)
+}
+
 var ErrNotFound = errors.New("runtime object not found")
 
 type CLIResolver struct {
 	Timeout time.Duration
+	// pods shares one kubectl pod listing across container lookups. It is set
+	// by NewCLIResolver; a literal CLIResolver lists every pod per lookup.
+	pods *podListCache
+}
+
+func NewCLIResolver() CLIResolver {
+	return CLIResolver{pods: &podListCache{}}
+}
+
+const (
+	// podListTTL bounds how long one kubectl pod listing answers lookups.
+	podListTTL = 5 * time.Second
+	// podListMissRefresh is the age after which a lookup that misses in the
+	// shared listing fetches a new one, so a just-started container is never
+	// declared absent based on a listing older than this.
+	podListMissRefresh = time.Second
+)
+
+type kubePod struct {
+	namespace             string
+	name                  string
+	containerStatuses     []KubeContainerStatus
+	initContainerStatuses []KubeContainerStatus
+}
+
+type podListCache struct {
+	mu        sync.Mutex
+	pods      []kubePod
+	fetchedAt time.Time
+	call      *podListCall
+	now       func() time.Time
+	// fetch replaces the kubectl listing in tests.
+	fetch func(context.Context) ([]kubePod, error)
+}
+
+type podListCall struct {
+	done chan struct{}
+	pods []kubePod
+	at   time.Time
+	err  error
 }
 
 type cacheEntry struct {
@@ -58,6 +106,13 @@ type workloadResolveCall struct {
 	err   error
 }
 
+// CachedResolver caches lookups from Base and coalesces concurrent lookups of
+// the same key. Unless TTL overrides every lifetime, successful lookups live
+// for a lifetime suited to how stable the answer is: a Kubernetes namespace,
+// pod, and container name never change for a container ID (IDs are never
+// reused), Docker names change only on rename, and a name-to-ID resolution
+// must follow container replacement. Failures are retried after
+// defaultResolverTTL.
 type CachedResolver struct {
 	Base Resolver
 	TTL  time.Duration
@@ -76,6 +131,17 @@ const (
 	maxResolverCacheEntries = 1024
 	maxRuntimeOutputBytes   = 64 << 20
 	maxRuntimeErrorBytes    = 64 << 10
+
+	// defaultResolverTTL applies to failures and to Docker name-to-ID
+	// resolution.
+	defaultResolverTTL = 5 * time.Second
+	// defaultDockerNameTTL applies to Docker container names and to partial
+	// Kubernetes workloads (namespace without pod or container name).
+	defaultDockerNameTTL = 30 * time.Second
+	// defaultKubernetesTTL keeps a complete Kubernetes workload for the life
+	// of its container in practice; the bounded cache evicts it earlier when
+	// full.
+	defaultKubernetesTTL = 24 * time.Hour
 )
 
 type commandError struct {
@@ -121,16 +187,46 @@ func NewCachedResolver(base Resolver) *CachedResolver {
 
 func (r *CachedResolver) ResolveDockerContainer(ctx context.Context, nameOrID string) (string, error) {
 	key := strings.TrimSpace(nameOrID)
-	return r.resolve(ctx, r.dockerIDs, r.dockerIDCalls, key, func() (string, error) {
+	return r.resolve(ctx, r.dockerIDs, r.dockerIDCalls, key, r.successTTL(defaultResolverTTL), func() (string, error) {
 		return r.Base.ResolveDockerContainer(ctx, nameOrID)
 	})
 }
 
 func (r *CachedResolver) DockerContainerName(ctx context.Context, containerID string) (string, error) {
 	key := strings.ToLower(strings.TrimSpace(containerID))
-	return r.resolve(ctx, r.dockerNames, r.dockerNameCalls, key, func() (string, error) {
+	return r.resolve(ctx, r.dockerNames, r.dockerNameCalls, key, r.successTTL(defaultDockerNameTTL), func() (string, error) {
 		return r.Base.DockerContainerName(ctx, containerID)
 	})
+}
+
+func (r *CachedResolver) CachedDockerContainerName(containerID string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	key := strings.ToLower(strings.TrimSpace(containerID))
+	now := r.nowTime()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.dockerNames[key]
+	if !found || entry.err != nil || !now.Before(entry.expiresAt) {
+		return "", false
+	}
+	return entry.value, true
+}
+
+func (r *CachedResolver) CachedKubernetesWorkload(containerID string) (KubernetesWorkload, bool) {
+	if r == nil {
+		return KubernetesWorkload{}, false
+	}
+	key := strings.ToLower(strings.TrimSpace(containerID))
+	now := r.nowTime()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.workloads[key]
+	if !found || entry.err != nil || !now.Before(entry.expiresAt) {
+		return KubernetesWorkload{}, false
+	}
+	return entry.value, true
 }
 
 func (r *CachedResolver) NamespaceForContainer(ctx context.Context, containerID string) (string, error) {
@@ -189,7 +285,13 @@ func (r *CachedResolver) KubernetesWorkloadForContainer(ctx context.Context, con
 		}
 	}
 	if ctx.Err() == nil {
-		r.workloads[key] = workloadCacheEntry{value: value, err: err, expiresAt: completedAt.Add(r.ttl())}
+		ttl := r.successTTL(defaultDockerNameTTL)
+		if err != nil {
+			ttl = r.successTTL(defaultResolverTTL)
+		} else if value.Namespace != "" && value.PodName != "" && value.ContainerName != "" {
+			ttl = r.successTTL(defaultKubernetesTTL)
+		}
+		r.workloads[key] = workloadCacheEntry{value: value, err: err, expiresAt: completedAt.Add(ttl)}
 	}
 	pending.value = value
 	pending.err = err
@@ -199,7 +301,7 @@ func (r *CachedResolver) KubernetesWorkloadForContainer(ctx context.Context, con
 	return value, err
 }
 
-func (r *CachedResolver) resolve(ctx context.Context, cache map[string]cacheEntry, calls map[string]*resolveCall, key string, call func() (string, error)) (string, error) {
+func (r *CachedResolver) resolve(ctx context.Context, cache map[string]cacheEntry, calls map[string]*resolveCall, key string, successTTL time.Duration, call func() (string, error)) (string, error) {
 	if r == nil || r.Base == nil {
 		return "", errors.New("runtime resolver is unavailable")
 	}
@@ -243,7 +345,11 @@ func (r *CachedResolver) resolve(ctx context.Context, cache map[string]cacheEntr
 		}
 	}
 	if ctx.Err() == nil {
-		cache[key] = cacheEntry{value: value, err: err, expiresAt: completedAt.Add(r.ttl())}
+		ttl := successTTL
+		if err != nil {
+			ttl = r.successTTL(defaultResolverTTL)
+		}
+		cache[key] = cacheEntry{value: value, err: err, expiresAt: completedAt.Add(ttl)}
 	}
 	pending.value = value
 	pending.err = err
@@ -253,11 +359,13 @@ func (r *CachedResolver) resolve(ctx context.Context, cache map[string]cacheEntr
 	return value, err
 }
 
-func (r *CachedResolver) ttl() time.Duration {
+// successTTL returns r.TTL when it is set, overriding every cache lifetime, and
+// otherwise the given default.
+func (r *CachedResolver) successTTL(def time.Duration) time.Duration {
 	if r.TTL > 0 {
 		return r.TTL
 	}
-	return 5 * time.Second
+	return def
 }
 
 func (r *CachedResolver) nowTime() time.Time {
@@ -383,12 +491,99 @@ func (r CLIResolver) workloadFromCRICTL(ctx context.Context, containerID string)
 	return workload, nil
 }
 
+// workloadFromKubectl finds containerID in a cluster-wide pod listing. With a
+// shared listing (NewCLIResolver), one listing answers every container for up
+// to podListTTL; a miss in a listing older than podListMissRefresh fetches a
+// new one before the container is reported absent.
 func (r CLIResolver) workloadFromKubectl(ctx context.Context, containerID string) (KubernetesWorkload, error) {
+	if r.pods == nil {
+		pods, err := r.listPods(ctx)
+		if err != nil {
+			return KubernetesWorkload{}, err
+		}
+		return findPodWorkload(pods, containerID)
+	}
+	fetch := r.listPods
+	if r.pods.fetch != nil {
+		fetch = r.pods.fetch
+	}
+	pods, fetchedAt, err := r.pods.get(ctx, podListTTL, fetch)
+	if err != nil {
+		return KubernetesWorkload{}, err
+	}
+	workload, err := findPodWorkload(pods, containerID)
+	if err == nil || r.pods.nowTime().Sub(fetchedAt) < podListMissRefresh {
+		return workload, err
+	}
+	if pods, _, err = r.pods.get(ctx, podListMissRefresh, fetch); err != nil {
+		return KubernetesWorkload{}, err
+	}
+	return findPodWorkload(pods, containerID)
+}
+
+func findPodWorkload(pods []kubePod, containerID string) (KubernetesWorkload, error) {
+	short := shortID(containerID)
+	for _, pod := range pods {
+		if name, ok := matchingContainerName(pod.containerStatuses, containerID, short); ok {
+			return KubernetesWorkload{Namespace: pod.namespace, PodName: pod.name, ContainerName: name}, nil
+		}
+		if name, ok := matchingContainerName(pod.initContainerStatuses, containerID, short); ok {
+			return KubernetesWorkload{Namespace: pod.namespace, PodName: pod.name, ContainerName: name}, nil
+		}
+	}
+	return KubernetesWorkload{}, fmt.Errorf("%w: kubernetes container", ErrNotFound)
+}
+
+// get returns a pod listing fetched less than maxAge ago, joining an in-flight
+// fetch or starting one otherwise. The fetch is detached from the caller's
+// cancellation and bounded by the resolver timeout; a caller whose context
+// ends stops waiting.
+func (c *podListCache) get(ctx context.Context, maxAge time.Duration, fetch func(context.Context) ([]kubePod, error)) ([]kubePod, time.Time, error) {
+	c.mu.Lock()
+	if c.pods != nil && c.nowTime().Sub(c.fetchedAt) < maxAge {
+		pods, at := c.pods, c.fetchedAt
+		c.mu.Unlock()
+		return pods, at, nil
+	}
+	call := c.call
+	if call == nil {
+		call = &podListCall{done: make(chan struct{})}
+		c.call = call
+		fetchCtx := context.WithoutCancel(ctx)
+		go func() {
+			pods, err := fetch(fetchCtx)
+			c.mu.Lock()
+			call.pods, call.err, call.at = pods, err, c.nowTime()
+			if err == nil {
+				c.pods, c.fetchedAt = pods, call.at
+			}
+			c.call = nil
+			c.mu.Unlock()
+			close(call.done)
+		}()
+	}
+	c.mu.Unlock()
+	select {
+	case <-call.done:
+		return call.pods, call.at, call.err
+	case <-ctx.Done():
+		return nil, time.Time{}, ctx.Err()
+	}
+}
+
+func (c *podListCache) nowTime() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (r CLIResolver) listPods(ctx context.Context) ([]kubePod, error) {
 	ctx, cancel := r.withTimeout(ctx)
 	defer cancel()
 	out, err := limitedCommandOutput(ctx, "kubectl", "get", "pod", "-A", "-o", "json")
 	if err != nil {
-		return KubernetesWorkload{}, err
+		return nil, err
 	}
 	var list struct {
 		Items []struct {
@@ -403,18 +598,19 @@ func (r CLIResolver) workloadFromKubectl(ctx context.Context, containerID string
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
-		return KubernetesWorkload{}, err
+		return nil, err
 	}
-	short := shortID(containerID)
+	// Non-nil even when empty so an empty cluster listing is still cached.
+	pods := make([]kubePod, 0, len(list.Items))
 	for _, item := range list.Items {
-		if name, ok := matchingContainerName(item.Status.ContainerStatuses, containerID, short); ok {
-			return KubernetesWorkload{Namespace: item.Metadata.Namespace, PodName: item.Metadata.Name, ContainerName: name}, nil
-		}
-		if name, ok := matchingContainerName(item.Status.InitContainerStatuses, containerID, short); ok {
-			return KubernetesWorkload{Namespace: item.Metadata.Namespace, PodName: item.Metadata.Name, ContainerName: name}, nil
-		}
+		pods = append(pods, kubePod{
+			namespace:             item.Metadata.Namespace,
+			name:                  item.Metadata.Name,
+			containerStatuses:     item.Status.ContainerStatuses,
+			initContainerStatuses: item.Status.InitContainerStatuses,
+		})
 	}
-	return KubernetesWorkload{}, fmt.Errorf("%w: kubernetes container", ErrNotFound)
+	return pods, nil
 }
 
 func (r CLIResolver) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

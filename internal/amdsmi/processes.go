@@ -17,7 +17,33 @@ const processQueryWorkers = 4
 // every GPU in a bulk query. Separate CLI invocations preserve attribution.
 // All queries share the caller's deadline; a partial sample is never returned
 // as success because the daemon uses it to finalize jobs and enforce access.
+//
+// The GPU inventory from amd-smi list is reused for up to gpuListTTL when the
+// provider has a cache. Any per-GPU failure (including a response for an
+// unexpected GPU) drops the cached inventory; if the failing sample used the
+// cached inventory it is retried once against a fresh list within the same
+// deadline.
 func (p CLIProvider) processesPerGPU(ctx context.Context, command string) ([]model.GPUProcess, error) {
+	for attempt := 0; ; attempt++ {
+		gpus, cached := p.cache.cachedGPUs()
+		if !cached {
+			var err error
+			if gpus, err = p.listGPUs(ctx, command); err != nil {
+				return nil, err
+			}
+		}
+		rows, err := p.processesForGPUs(ctx, command, gpus)
+		if err == nil {
+			return rows, nil
+		}
+		p.cache.invalidateGPUs()
+		if !cached || attempt > 0 || ctx.Err() != nil {
+			return nil, err
+		}
+	}
+}
+
+func (p CLIProvider) listGPUs(ctx context.Context, command string) ([]int, error) {
 	out, err := p.output(ctx, command, "list", "--json")
 	if err != nil {
 		return nil, fmt.Errorf("list GPUs: %w", err)
@@ -26,6 +52,11 @@ func (p CLIProvider) processesPerGPU(ctx context.Context, command string) ([]mod
 	if err != nil {
 		return nil, fmt.Errorf("list GPUs: %w", err)
 	}
+	p.cache.storeGPUs(gpus)
+	return gpus, nil
+}
+
+func (p CLIProvider) processesForGPUs(ctx context.Context, command string, gpus []int) ([]model.GPUProcess, error) {
 	type result struct {
 		rows []model.GPUProcess
 		err  error
