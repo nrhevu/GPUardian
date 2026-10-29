@@ -371,3 +371,16 @@ UPDATE reservation_sessions AS r SET
 FROM aggregates a WHERE r.session_id=a.session_id;
 DELETE FROM history_daily_summaries;
 `
+
+// Indexes for hot maintenance paths: PruneRetention's time-bounded deletes,
+// the authorization scope lookup by primary session, and the per-second
+// ReconcileOpenSessions scan, whose partial index holds only open
+// reservations. The partial index WHERE clause must stay implied by the
+// literal terms of openReservationSessionsQuery.
+const migrationV10 = `
+CREATE INDEX IF NOT EXISTS ingested_event_ids_time_idx ON ingested_event_ids(ingested_at_ms);
+CREATE INDEX IF NOT EXISTS gpu_rollups_time_idx ON gpu_minute_rollups(minute_ms);
+CREATE INDEX IF NOT EXISTS authorization_scopes_session_idx ON authorization_scopes(session_id);
+CREATE INDEX IF NOT EXISTS sessions_open_reservation_idx ON reservation_sessions(server_id,expires_at_ms)
+  WHERE kind='reservation' AND provisioning=0 AND revoked_at_ms IS NULL AND finalized_at_ms IS NULL;
+`

@@ -20,7 +20,28 @@ const (
 
 var ErrInvalidSearchFilter = errors.New("invalid history filter")
 
-const sessionFactsCTE = `WITH session_facts AS (
+// sessionFactsCTE derives the per-session facts that search predicates and
+// sorts refer to as f.*. Its three placeholders are the evaluation time in
+// milliseconds. Job facts are the costliest to derive, so job_count is only
+// present when a rule or sort refers to it; list pages load job facts for the
+// returned rows with loadSessionJobStats.
+func sessionFactsCTE(withJobCount bool) string {
+	jobCount := ""
+	if withJobCount {
+		jobCount = sessionJobCountColumn
+	}
+	return sessionFactsHead + jobCount + sessionFactsTail
+}
+
+// sessionJobCountColumn counts the jobs linked through jobs.session_id plus
+// those linked only through job_sessions, so a job linked both ways counts
+// once and both terms are indexed lookups.
+const sessionJobCountColumn = `
+		((SELECT COUNT(*) FROM jobs j WHERE j.session_id=r.session_id)+
+			(SELECT COUNT(*) FROM job_sessions js JOIN jobs j ON j.node_id=js.node_id AND j.job_id=js.job_id
+				WHERE js.session_id=r.session_id AND j.session_id<>r.session_id)) AS job_count,`
+
+const sessionFactsHead = `WITH session_facts AS (
 	SELECT r.*,
 		CASE WHEN r.kind='claimed_run' THEN COALESCE(r.finalized_at_ms,r.updated_at_ms)
 			ELSE MIN(r.expires_at_ms,COALESCE(r.revoked_at_ms,r.expires_at_ms)) END AS effective_end_ms,
@@ -32,10 +53,9 @@ const sessionFactsCTE = `WITH session_facts AS (
 			WHEN r.starts_at_ms>? THEN 'scheduled'
 			WHEN r.expires_at_ms>? THEN 'active' ELSE 'completed' END AS derived_status,
 		(SELECT COUNT(*) FROM session_gpus g WHERE g.session_id=r.session_id) AS gpu_count,
-		(SELECT MIN(g.gpu) FROM session_gpus g WHERE g.session_id=r.session_id) AS first_gpu,
-		(SELECT COUNT(*) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id)) AS job_count,
-		(SELECT MIN(j.started_at_ms) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id)) AS first_job_at_ms,
-		(SELECT MAX(COALESCE(j.finished_at_ms,j.started_at_ms)) FROM jobs j WHERE j.session_id=r.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=r.session_id)) AS last_job_at_ms,
+		(SELECT MIN(g.gpu) FROM session_gpus g WHERE g.session_id=r.session_id) AS first_gpu,`
+
+const sessionFactsTail = `
 		COALESCE((SELECT SUM(s.observed_ms) FROM session_gpu_summaries s WHERE s.session_id=r.session_id),0) AS observed_ms,
 		COALESCE((SELECT SUM(s.busy_ms) FROM session_gpu_summaries s WHERE s.session_id=r.session_id),0) AS busy_ms,
 		(SELECT SUM(s.utilization_integral) FROM session_gpu_summaries s WHERE s.session_id=r.session_id) AS utilization_integral,
@@ -82,23 +102,9 @@ func (s *Store) searchSummary(ctx context.Context, expression SearchExpression, 
 	var summary DashboardSummary
 	var reserved, reservationObserved, observed, busy int64
 	var integral sql.NullFloat64
-	summaryQuery := sessionFactsCTE + ` SELECT COUNT(*),
-		COUNT(CASE WHEN kind='reservation' THEN 1 END),COUNT(CASE WHEN kind='claimed_run' THEN 1 END),
-		COALESCE(SUM(CASE WHEN kind='reservation' THEN duration_ms*gpu_count ELSE 0 END),0),
-		COALESCE(SUM(CASE WHEN kind='reservation' THEN observed_ms ELSE 0 END),0),
-		COALESCE(SUM(observed_ms),0),COALESCE(SUM(busy_ms),0),
-		SUM(utilization_integral) FROM session_facts f WHERE ` + predicate
 	summaryArgs := append(append([]any{}, cteArgs...), predicateArgs...)
-	if err := tx.QueryRowContext(ctx, summaryQuery, summaryArgs...).Scan(&summary.Sessions, &summary.Reservations, &summary.ClaimedRuns, &reserved, &reservationObserved, &observed, &busy, &integral); err != nil {
-		return DashboardSummary{}, err
-	}
-	jobSummaryQuery := sessionFactsCTE + `, matched_sessions AS (SELECT f.session_id FROM session_facts f WHERE ` + predicate + `), matched_jobs AS (
-		SELECT j.node_id,j.job_id FROM matched_sessions m JOIN jobs j ON j.session_id=m.session_id
-		UNION
-		SELECT j.node_id,j.job_id FROM matched_sessions m JOIN job_sessions js ON js.session_id=m.session_id
-		JOIN jobs j ON j.node_id=js.node_id AND j.job_id=js.job_id
-	) SELECT COUNT(*) FROM matched_jobs`
-	if err := tx.QueryRowContext(ctx, jobSummaryQuery, summaryArgs...).Scan(&summary.Jobs); err != nil {
+	if err := tx.QueryRowContext(ctx, searchSummarySQL(predicate, searchExpressionUsesJobCount(expression)), summaryArgs...).Scan(
+		&summary.Sessions, &summary.Reservations, &summary.ClaimedRuns, &reserved, &reservationObserved, &observed, &busy, &integral, &summary.Jobs); err != nil {
 		return DashboardSummary{}, err
 	}
 	if reserved > 0 {
@@ -127,6 +133,28 @@ func (s *Store) searchSummary(ctx context.Context, expression SearchExpression, 
 		return DashboardSummary{}, err
 	}
 	return summary, nil
+}
+
+// searchSummarySQL evaluates the session facts once: the matched sessions are
+// materialized and feed both the session aggregates and the distinct job
+// count. CROSS JOIN keeps the matched sessions as the outer loop so jobs are
+// reached through jobs_session_idx and job_sessions_session_idx; otherwise the
+// planner prefers scanning jobs against an automatic index on matched.
+func searchSummarySQL(predicate string, withJobCount bool) string {
+	return sessionFactsCTE(withJobCount) + `, matched AS MATERIALIZED (
+		SELECT f.session_id,f.kind,f.duration_ms,f.gpu_count,f.observed_ms,f.busy_ms,f.utilization_integral
+		FROM session_facts f WHERE ` + predicate + `
+	), matched_jobs AS (
+		SELECT j.node_id,j.job_id FROM matched m CROSS JOIN jobs j WHERE j.session_id=m.session_id
+		UNION
+		SELECT j.node_id,j.job_id FROM matched m CROSS JOIN job_sessions js CROSS JOIN jobs j
+		WHERE js.session_id=m.session_id AND j.node_id=js.node_id AND j.job_id=js.job_id
+	) SELECT COUNT(*),
+		COUNT(CASE WHEN kind='reservation' THEN 1 END),COUNT(CASE WHEN kind='claimed_run' THEN 1 END),
+		COALESCE(SUM(CASE WHEN kind='reservation' THEN duration_ms*gpu_count ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN kind='reservation' THEN observed_ms ELSE 0 END),0),
+		COALESCE(SUM(observed_ms),0),COALESCE(SUM(busy_ms),0),
+		SUM(utilization_integral),(SELECT COUNT(*) FROM matched_jobs) FROM matched`
 }
 
 // SearchPage returns one keyset-paginated list page. The common unfiltered,
@@ -226,10 +254,8 @@ func (s *Store) searchAdvancedPage(ctx context.Context, expression SearchExpress
 		pagePredicate += fmt.Sprintf(" AND (%s%s? OR (%s=? AND f.session_id%s?))", sortSpec.expression, comparison, sortSpec.expression, comparison)
 		pageArgs = append(pageArgs, value, value, cursor.ID)
 	}
-	listQuery := sessionFactsCTE + ` SELECT f.session_id,f.kind,f.server_id,f.server_name,f.node_id,f.owner_username,f.owner_editable,f.purpose,f.source,
-		f.created_at_ms,f.starts_at_ms,f.expires_at_ms,f.revoked_at_ms,f.finalized_at_ms,f.history_quality,
-		f.job_count,f.first_job_at_ms,f.last_job_at_ms FROM session_facts f WHERE ` + pagePredicate +
-		" ORDER BY " + sortSpec.expression + " " + strings.ToUpper(sortSpec.direction) + ",f.session_id " + strings.ToUpper(sortSpec.direction) + " LIMIT ?"
+	facts := sessionFactsCTE(searchExpressionUsesJobCount(expression) || sortSpec.field == "job_count")
+	listQuery := searchAdvancedPageSQL(facts, pagePredicate, sortSpec)
 	listArgs := append(append([]any{}, cteArgs...), pageArgs...)
 	listArgs = append(listArgs, limit)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -257,10 +283,13 @@ func (s *Store) searchAdvancedPage(ctx context.Context, expression SearchExpress
 	if err := rows.Close(); err != nil {
 		return nil, SearchCursor{}, err
 	}
+	if err := loadSessionJobStats(ctx, tx, sessions); err != nil {
+		return nil, SearchCursor{}, err
+	}
 	next := SearchCursor{Field: sortSpec.field, Direction: sortSpec.direction}
 	if len(sessions) > 0 {
 		next.ID = sessions[len(sessions)-1].ID
-		cursorQuery := sessionFactsCTE + " SELECT " + sortSpec.expression + " FROM session_facts f WHERE f.session_id=?"
+		cursorQuery := facts + " SELECT " + sortSpec.expression + " FROM session_facts f WHERE f.session_id=?"
 		cursorArgs := append(append([]any{}, cteArgs...), next.ID)
 		if sortSpec.kind == "text" {
 			var value string
@@ -285,8 +314,30 @@ func (s *Store) searchAdvancedPage(ctx context.Context, expression SearchExpress
 	return sessions, next, nil
 }
 
+// searchAdvancedPageSQL selects one sorted page from facts. Job facts are left
+// empty here and loaded for the page rows afterwards.
+func searchAdvancedPageSQL(facts, predicate string, sortSpec searchSortSpec) string {
+	direction := strings.ToUpper(sortSpec.direction)
+	return facts + ` SELECT f.session_id,f.kind,f.server_id,f.server_name,f.node_id,f.owner_username,f.owner_editable,f.purpose,f.source,
+		f.created_at_ms,f.starts_at_ms,f.expires_at_ms,f.revoked_at_ms,f.finalized_at_ms,f.history_quality,
+		0,NULL,NULL FROM session_facts f WHERE ` + predicate +
+		" ORDER BY " + sortSpec.expression + " " + direction + ",f.session_id " + direction + " LIMIT ?"
+}
+
 func searchExpressionFiltered(expression SearchExpression) bool {
 	return len(expression.Groups) > 0 || strings.TrimSpace(expression.Query) != ""
+}
+
+// searchExpressionUsesJobCount reports whether a rule refers to f.job_count.
+func searchExpressionUsesJobCount(expression SearchExpression) bool {
+	for _, group := range expression.Groups {
+		for _, rule := range group.Rules {
+			if strings.TrimSpace(rule.Field) == "job_count" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type searchSortSpec struct {
@@ -456,12 +507,24 @@ var searchTimeFields = map[string]string{
 	"created_at": "f.created_at_ms", "starts_at": "f.starts_at_ms", "effective_end": "f.effective_end_ms",
 }
 
+// searchSessionJobs is the FROM source of the jobs j linked to session f
+// through jobs.session_id or job_sessions; it must be paired with
+// searchSessionJobsJoin. The links come from two indexed lookups and CROSS
+// JOIN keeps them as the outer loop, where an OR association would scan jobs
+// for every session. A job linked both ways appears twice, which EXISTS
+// tolerates.
+const (
+	searchSessionJobs = `(SELECT node_id,job_id FROM jobs WHERE session_id=f.session_id
+		UNION ALL SELECT node_id,job_id FROM job_sessions WHERE session_id=f.session_id) linked CROSS JOIN jobs j`
+	searchSessionJobsJoin = "j.node_id=linked.node_id AND j.job_id=linked.job_id"
+)
+
 func compileJobRule(field, op string, raw json.RawMessage) (string, []any, error) {
 	textColumns := map[string]string{"source": "j.source", "mode": "j.mode", "holder": "j.holder", "end_reason": "j.end_reason", "start_precision": "j.start_precision", "finish_precision": "j.finish_precision"}
 	numberColumns := map[string]string{"exit_code": "j.exit_code"}
 	timeColumns := map[string]string{"started_at": "j.started_at_ms", "finished_at": "j.finished_at_ms"}
-	association := "(j.session_id=f.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=f.session_id))"
-	prefix := "SELECT 1 FROM jobs j WHERE " + association + " AND "
+	prefix := "SELECT 1 FROM " + searchSessionJobs + " WHERE " + searchSessionJobsJoin + " AND "
+	gpuPrefix := "SELECT 1 FROM " + searchSessionJobs + " JOIN job_gpus jg ON jg.node_id=j.node_id AND jg.job_id=j.job_id WHERE " + searchSessionJobsJoin
 	if column, ok := textColumns[field]; ok {
 		return compileExistsTextRule(prefix, column, op, raw)
 	}
@@ -473,13 +536,12 @@ func compileJobRule(field, op string, raw json.RawMessage) (string, []any, error
 	}
 	if field == "gpu" {
 		if op == "is_empty" {
-			return `EXISTS (SELECT 1 FROM jobs j WHERE (j.session_id=f.session_id OR EXISTS (SELECT 1 FROM job_sessions js WHERE js.node_id=j.node_id AND js.job_id=j.job_id AND js.session_id=f.session_id))
-				AND NOT EXISTS (SELECT 1 FROM job_gpus jg WHERE jg.node_id=j.node_id AND jg.job_id=j.job_id))`, nil, nil
+			return "EXISTS (" + prefix + "NOT EXISTS (SELECT 1 FROM job_gpus jg WHERE jg.node_id=j.node_id AND jg.job_id=j.job_id))", nil, nil
 		}
 		if op == "is_not_empty" {
-			return "EXISTS (SELECT 1 FROM jobs j JOIN job_gpus jg ON jg.node_id=j.node_id AND jg.job_id=j.job_id WHERE " + association + ")", nil, nil
+			return "EXISTS (" + gpuPrefix + ")", nil, nil
 		}
-		return compileExistsNumberRule("SELECT 1 FROM jobs j JOIN job_gpus jg ON jg.node_id=j.node_id AND jg.job_id=j.job_id WHERE "+association+" AND ", "jg.gpu", op, raw)
+		return compileExistsNumberRule(gpuPrefix+" AND ", "jg.gpu", op, raw)
 	}
 	if field == "command" {
 		if op == "is_empty" || op == "is_not_empty" {
@@ -487,7 +549,7 @@ func compileJobRule(field, op string, raw json.RawMessage) (string, []any, error
 			if op == "is_not_empty" {
 				compare = "COALESCE(json_array_length(j.command_json),0)>0"
 			}
-			return "EXISTS (SELECT 1 FROM jobs j WHERE " + association + " AND " + compare + ")", nil, nil
+			return "EXISTS (" + prefix + compare + ")", nil, nil
 		}
 		negative := op == "not_contains" || op == "not_equals"
 		positiveOp := map[string]string{"not_contains": "contains", "not_equals": "equals"}[op]
@@ -505,7 +567,7 @@ func compileJobRule(field, op string, raw json.RawMessage) (string, []any, error
 		if positiveOp == "contains" {
 			compare = "INSTR(LOWER(CAST(a.value AS TEXT)),LOWER(?))>0"
 		}
-		query := "EXISTS (SELECT 1 FROM jobs j, json_each(j.command_json) a WHERE " + association + " AND " + compare + ")"
+		query := "EXISTS (SELECT 1 FROM " + searchSessionJobs + ", json_each(j.command_json) a WHERE " + searchSessionJobsJoin + " AND " + compare + ")"
 		if negative {
 			query = "NOT " + query
 		}
@@ -530,7 +592,11 @@ func compileTextRule(column, op string, raw json.RawMessage) (string, []any, err
 		if op == "not_in" {
 			verb = " NOT IN "
 		}
-		return "LOWER(" + column + ")" + verb + "(" + placeholders + ")", lowerAny(values), nil
+		// NOCASE folds ASCII only, exactly like SQLite's LOWER, and the
+		// operands are pre-lowered with strings.ToLower as before, so this
+		// matches LOWER(column) IN (...) while letting NOCASE indexes
+		// (sessions_owner_idx, sessions_purpose_idx) serve the lookup.
+		return column + " COLLATE NOCASE" + verb + "(" + placeholders + ")", lowerAny(values), nil
 	case "equals", "not_equals", "contains", "not_contains":
 		value, err := stringValue(raw)
 		if err != nil {
@@ -539,9 +605,10 @@ func compileTextRule(column, op string, raw json.RawMessage) (string, []any, err
 		var expression string
 		switch op {
 		case "equals":
-			expression = "LOWER(" + column + ")=LOWER(?)"
+			// Same result as LOWER(column)=LOWER(?) but index-friendly.
+			expression = column + " COLLATE NOCASE=?"
 		case "not_equals":
-			expression = "(" + column + " IS NULL OR LOWER(" + column + ")!=LOWER(?))"
+			expression = "(" + column + " IS NULL OR " + column + " COLLATE NOCASE!=?)"
 		case "contains":
 			expression = "INSTR(LOWER(COALESCE(" + column + ",'')),LOWER(?))>0"
 		case "not_contains":
