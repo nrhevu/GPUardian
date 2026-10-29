@@ -197,7 +197,16 @@ func (s *Server) handleHistorySessionAction(w http.ResponseWriter, r *http.Reque
 		if !requireAccessTokenScope(w, r, accessTokenScopeHistoryRead) {
 			return
 		}
-		session, err := s.History.GetSession(r.Context(), id)
+		timelineLimit := 0
+		if raw := r.URL.Query().Get("timeline_limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 {
+				writeJSONError(w, http.StatusBadRequest, "timeline_limit must be a positive integer")
+				return
+			}
+			timelineLimit = min(parsed, history.DefaultSessionTimelineLimit)
+		}
+		session, err := s.History.GetSessionWithTimelineLimit(r.Context(), id, timelineLimit)
 		if errors.Is(err, history.ErrNotFound) {
 			writeJSONError(w, http.StatusNotFound, err.Error())
 			return

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gpuardian/internal/config"
+	"gpuardian/internal/history"
 	"gpuardian/internal/model"
 	"gpuardian/internal/protocol"
 )
@@ -307,5 +308,43 @@ func TestEnsureManagedKeysSkipsNodesHoldingCurrentSnapshot(t *testing.T) {
 		if got := client.syncCount(); got != step.wantSyncs {
 			t.Fatalf("%s: syncs = %d, want %d", step.name, got, step.wantSyncs)
 		}
+	}
+}
+
+func TestHistorySessionTimelineLimitValidation(t *testing.T) {
+	server, _, _ := newAuthzServer(t)
+	store, err := history.Open(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server.History = store
+	start := time.Now().UTC().Add(-time.Hour)
+	if err := store.PrepareSession(t.Context(), "sess_limit", "node-a", "server-a", "GPU node", "alice", "training", start, start.Add(30*time.Minute), []int{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfirmSession(t.Context(), "sess_limit", "group-limit", []string{"reservation-limit"}, []int{0}); err != nil {
+		t.Fatal(err)
+	}
+	handler := server.routes()
+	cookie := testSessionCookie(t, server, "alice", RoleUser)
+	tests := []struct {
+		query string
+		want  int
+	}{
+		{query: "", want: http.StatusOK},
+		{query: "?timeline_limit=180", want: http.StatusOK},
+		{query: "?timeline_limit=1000000", want: http.StatusOK},
+		{query: "?timeline_limit=0", want: http.StatusBadRequest},
+		{query: "?timeline_limit=-5", want: http.StatusBadRequest},
+		{query: "?timeline_limit=all", want: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			response := requestJSON(handler, http.MethodGet, "/api/history/sessions/sess_limit"+tt.query, "", cookie)
+			if response.Code != tt.want {
+				t.Fatalf("status = %d, want %d body=%s", response.Code, tt.want, response.Body.String())
+			}
+		})
 	}
 }

@@ -203,6 +203,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.History = historyStore
 	defer historyStore.Close()
 	go s.runHistoryCollector(ctx)
+	go s.runHistoryRetention(ctx)
 	go s.runManagedKeySync(ctx)
 	httpServer := &http.Server{
 		Addr:              s.Cfg.WebAddr,

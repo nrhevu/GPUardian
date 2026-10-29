@@ -16,6 +16,9 @@ const (
 	// Node identity and capabilities rarely change; the collector polls every
 	// node every 2s, so reuse Info briefly and refetch it on any failure.
 	nodeInfoCacheTTL = 30 * time.Second
+	// Retention pruning runs in bounded batches outside the ingest path.
+	historyPruneInterval = time.Hour
+	historyPruneTimeout  = 5 * time.Minute
 )
 
 type nodeInfoEntry struct {
@@ -37,6 +40,24 @@ func (s *Server) runHistoryCollector(ctx context.Context) {
 	for {
 		s.collectHistory(ctx)
 		s.refreshHistorySummaries(ctx, refreshed, retryAfter)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) runHistoryRetention(ctx context.Context) {
+	if s.History == nil {
+		return
+	}
+	ticker := time.NewTicker(historyPruneInterval)
+	defer ticker.Stop()
+	for {
+		pruneCtx, cancel := context.WithTimeout(ctx, historyPruneTimeout)
+		_ = s.History.PruneRetention(pruneCtx, time.Now())
+		cancel()
 		select {
 		case <-ctx.Done():
 			return
