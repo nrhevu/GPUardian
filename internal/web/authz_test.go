@@ -377,7 +377,7 @@ func TestManagedGatewayIgnoresClientKeyIdentity(t *testing.T) {
 		t.Fatalf("load test server: found=%v err=%v", ok, err)
 	}
 	managed.capabilities = []string{"managed_user_keys_v1"}
-	if err := server.syncManagedKeysToNodeOnce(t.Context(), record); err != nil {
+	if _, err := server.syncManagedKeysToNodeOnce(t.Context(), record); err != nil {
 		t.Fatal(err)
 	}
 	managed.mu.Lock()

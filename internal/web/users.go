@@ -74,6 +74,7 @@ type UserStore struct {
 	path          string
 	loaded        bool
 	users         []UserRecord
+	generation    uint64
 	passwordWork  chan struct{}
 	passwordQueue chan struct{}
 	keyCipher     *userKeyCipher
@@ -131,16 +132,24 @@ func (s *UserStore) Get(username string) (UserRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	users, err := s.loadLocked()
-	if err != nil {
+	if err := s.ensureLoadedLocked(); err != nil {
 		return UserRecord{}, false, err
 	}
-	for _, user := range users {
-		if user.Username == username && !user.Disabled {
-			return user, true, nil
+	// Every authenticated request looks up its user; copy only that record.
+	for i := range s.users {
+		if s.users[i].Username == username && !s.users[i].Disabled {
+			return cloneUserRecords(s.users[i : i+1])[0], true, nil
 		}
 	}
 	return UserRecord{}, false, nil
+}
+
+// Generation changes whenever the stored users are replaced, so callers can
+// cache values derived from them.
+func (s *UserStore) Generation() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation
 }
 
 func (s *UserStore) Authenticate(username, password string) (PublicUser, error) {
@@ -420,6 +429,14 @@ func (s *UserStore) releasePasswordWork() {
 	<-s.passwordWork
 }
 
+func (s *UserStore) ensureLoadedLocked() error {
+	if s.loaded {
+		return nil
+	}
+	_, err := s.loadLocked()
+	return err
+}
+
 func (s *UserStore) loadLocked() ([]UserRecord, error) {
 	if s.loaded {
 		return cloneUserRecords(s.users), nil
@@ -453,6 +470,7 @@ func (s *UserStore) loadLocked() ([]UserRecord, error) {
 	}
 	s.users = cloneUserRecords(users)
 	s.loaded = true
+	s.generation++
 	return cloneUserRecords(users), nil
 }
 
@@ -465,6 +483,7 @@ func (s *UserStore) saveLocked(users []UserRecord) error {
 	if committed {
 		s.users = cloneUserRecords(users)
 		s.loaded = true
+		s.generation++
 	}
 	return err
 }

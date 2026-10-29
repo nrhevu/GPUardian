@@ -262,29 +262,32 @@ func (s *UserStore) AuthenticateAccessToken(secret string) (AuthenticatedAccessT
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	users, err := s.loadLocked()
-	if err != nil {
+	if err := s.ensureLoadedLocked(); err != nil {
 		return AuthenticatedAccessToken{}, false
 	}
-	for i := range users {
-		if users[i].Disabled {
+	// Scan the cached records in place; only the periodic LastUsedAt write
+	// needs a private copy of the store.
+	for i := range s.users {
+		if s.users[i].Disabled {
 			continue
 		}
-		for j := range users[i].AccessTokens {
-			token := &users[i].AccessTokens[j]
+		for j := range s.users[i].AccessTokens {
+			token := s.users[i].AccessTokens[j]
 			if len(token.Hash) != len(want) || subtle.ConstantTimeCompare([]byte(token.Hash), want) != 1 {
 				continue
 			}
 			if token.RevokedAt != nil || !token.ExpiresAt.After(now) {
 				return AuthenticatedAccessToken{}, false
 			}
+			authenticated := AuthenticatedAccessToken{
+				User: s.users[i].Username, Role: s.users[i].Role, ID: token.ID, Scopes: append([]string(nil), token.Scopes...),
+			}
 			if token.LastUsedAt == nil || now.Sub(*token.LastUsedAt) >= accessTokenLastUsedWriteInterval {
-				token.LastUsedAt = &now
+				users := cloneUserRecords(s.users)
+				users[i].AccessTokens[j].LastUsedAt = &now
 				_ = s.saveLocked(users)
 			}
-			return AuthenticatedAccessToken{
-				User: users[i].Username, Role: users[i].Role, ID: token.ID, Scopes: append([]string(nil), token.Scopes...),
-			}, true
+			return authenticated, true
 		}
 	}
 	return AuthenticatedAccessToken{}, false

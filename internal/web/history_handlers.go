@@ -75,7 +75,12 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		next = encodeHistorySearchCursor(nextCursor)
 	}
 	response := map[string]any{"sessions": sessions, "next_cursor": next}
-	includeSummary := request.IncludeSummary == nil || *request.IncludeSummary
+	// The summary covers the whole filter, not the page; later pages reuse the
+	// first page's summary unless the caller asks again.
+	includeSummary := request.Cursor == ""
+	if request.IncludeSummary != nil {
+		includeSummary = *request.IncludeSummary
+	}
 	if includeSummary {
 		summary, err := s.historySummary(r.Context(), request.Filter)
 		if errors.Is(err, history.ErrInvalidSearchFilter) {

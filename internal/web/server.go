@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,17 @@ type Server struct {
 	managedKeySync      chan struct{}
 	managedKeyMu        sync.Mutex
 	managedKeyNode      map[string]managedKeyNodeState
+	managedKeySnapMu    sync.Mutex
+	managedKeySnap      managedKeySnapshotCache
+	nodeInfoMu          sync.Mutex
+	nodeInfo            map[string]nodeInfoEntry
+	reconcileMu         sync.Mutex
+	reconcileSeen       map[string]reconcileState
+}
+
+type reconcileState struct {
+	groups string
+	at     time.Time
 }
 
 type addServerRequest struct {
@@ -92,8 +104,15 @@ type fleetRefreshCall struct {
 }
 
 const (
-	fleetRefreshTimeout          = 20 * time.Second
-	fleetNodeTimeout             = 4 * time.Second
+	fleetRefreshTimeout = 20 * time.Second
+	fleetNodeTimeout    = 4 * time.Second
+	// A refresh waits for the slowest node (up to fleetNodeTimeout). Callers
+	// holding recently expired data wait this long, then get that data.
+	fleetStaleWait   = 750 * time.Millisecond
+	fleetMaxStaleAge = 30 * time.Second
+	// History reconciliation only needs to run when a node's live reservation
+	// groups change; this interval catches sessions recorded in between.
+	fleetReconcileInterval       = 30 * time.Second
 	maxFleetWorkers              = 16
 	maxNodeSnapshotRecords       = 4096
 	maxNodeSnapshotProcesses     = 2048
@@ -248,7 +267,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/history/sessions", s.requireSession(s.handleHistorySessions))
 	mux.HandleFunc("/api/history/sessions/", s.requireSession(s.handleHistorySessionAction))
 	mux.HandleFunc("/", s.handleStatic)
-	return s.securityMiddleware(mux)
+	return s.securityMiddleware(gzipMiddleware(mux))
 }
 
 func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
@@ -276,9 +295,13 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 			}
 			keys = filtered
 		}
-		nodeSync := s.managedKeyStatuses()
-		for i := range keys {
-			keys[i].NodeSync = nodeSync
+		// Per-node sync status is the same for every key and large for admins;
+		// return it only to callers that ask for it.
+		if queryIncludes(r, "node_sync") {
+			nodeSync := s.managedKeyStatuses()
+			for i := range keys {
+				keys[i].NodeSync = nodeSync
+			}
 		}
 		writeJSON(w, http.StatusOK, keys)
 		return
@@ -552,7 +575,7 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 				writeJSONError(w, http.StatusBadRequest, keyErr.Error())
 				return
 			}
-			if syncErr := s.syncManagedKeysToNode(r.Context(), record); syncErr != nil {
+			if syncErr := s.ensureManagedKeysOnNode(r.Context(), record); syncErr != nil {
 				writeJSONError(w, http.StatusServiceUnavailable, syncErr.Error())
 				return
 			}
@@ -643,7 +666,7 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 				writeJSONError(w, http.StatusBadRequest, keyErr.Error())
 				return
 			}
-			if syncErr := s.syncManagedKeysToNode(r.Context(), record); syncErr != nil {
+			if syncErr := s.ensureManagedKeysOnNode(r.Context(), record); syncErr != nil {
 				writeJSONError(w, http.StatusServiceUnavailable, syncErr.Error())
 				return
 			}
@@ -701,6 +724,18 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// queryIncludes reports whether a comma-separated include parameter names value.
+func queryIncludes(r *http.Request, value string) bool {
+	for _, raw := range r.URL.Query()["include"] {
+		for _, item := range strings.Split(raw, ",") {
+			if strings.EqualFold(strings.TrimSpace(item), value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func unsupportedExternalSessionError(err error) bool {
 	if err == nil {
 		return false
@@ -725,7 +760,29 @@ func (s *Server) handleFleetSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	session, _ := currentSession(r)
 	out = filterFleetSnapshot(out, session)
+	if r.URL.Query().Get("compact") == "1" {
+		out = compactFleetSnapshot(out)
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// compactFleetSnapshot drops per-node detail the dashboard never reads. The
+// input may be the shared cache, so nodes are copied rather than modified.
+func compactFleetSnapshot(in fleetSnapshot) fleetSnapshot {
+	out := fleetSnapshot{Servers: make([]serverSnapshot, len(in.Servers))}
+	for i, item := range in.Servers {
+		if item.Snapshot != nil {
+			snapshot := *item.Snapshot
+			snapshot.Tokens = nil
+			snapshot.SoftClaims = nil
+			snapshot.Leases = nil
+			snapshot.Bypasses = nil
+			snapshot.PS = nil
+			item.Snapshot = &snapshot
+		}
+		out.Servers[i] = item
+	}
+	return out
 }
 
 func (s *Server) cachedFleetSnapshot(ctx context.Context) (fleetSnapshot, error) {
@@ -736,25 +793,34 @@ func (s *Server) cachedFleetSnapshot(ctx context.Context) (fleetSnapshot, error)
 		s.fleetCacheMu.Unlock()
 		return out, nil
 	}
-	if call := s.fleetRefresh; call != nil {
-		s.fleetCacheMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return fleetSnapshot{}, ctx.Err()
-		case <-call.done:
-			return call.result, call.err
-		}
+	call := s.fleetRefresh
+	if call == nil {
+		call = &fleetRefreshCall{done: make(chan struct{})}
+		s.fleetRefresh = call
+		go s.refreshFleetSnapshot(call)
 	}
-	call := &fleetRefreshCall{done: make(chan struct{})}
-	s.fleetRefresh = call
+	// Invalidation after a mutation clears fleetCacheOK, so stale data is only
+	// served after plain TTL expiry, never in place of a requested refresh.
+	stale := s.fleetCache
+	haveStale := s.fleetCacheOK && now.Sub(s.fleetCacheAt) < fleetMaxStaleAge
 	s.fleetCacheMu.Unlock()
 
-	go s.refreshFleetSnapshot(call)
+	var staleReady <-chan time.Time
+	if haveStale {
+		timer := time.NewTimer(fleetStaleWait)
+		defer timer.Stop()
+		staleReady = timer.C
+	}
 	select {
 	case <-ctx.Done():
 		return fleetSnapshot{}, ctx.Err()
 	case <-call.done:
+		if call.err != nil && haveStale {
+			return stale, nil
+		}
 		return call.result, call.err
+	case <-staleReady:
+		return stale, nil
 	}
 }
 
@@ -808,13 +874,7 @@ func (s *Server) fetchFleetSnapshot(ctx context.Context) (fleetSnapshot, error) 
 					item.Error = err.Error()
 				} else {
 					if s.History != nil {
-						groups := make([]string, 0, len(snapshot.Reservations))
-						for _, reservation := range snapshot.Reservations {
-							if reservation.GroupID != "" {
-								groups = append(groups, reservation.GroupID)
-							}
-						}
-						_ = s.History.ReconcileOpenSessions(ctx, job.record.ID, groups, s.nowTime())
+						s.reconcileNodeHistory(ctx, job.record.ID, snapshot)
 					}
 					item.Online = true
 					item.Snapshot = &snapshot
@@ -847,6 +907,34 @@ func (s *Server) fetchFleetSnapshot(ctx context.Context) (fleetSnapshot, error) 
 		out.Servers[i] = serverSnapshot{Server: publicServerRecord(record), Error: message}
 	}
 	return out, nil
+}
+
+func (s *Server) reconcileNodeHistory(ctx context.Context, serverID string, snapshot model.NodeSnapshot) {
+	groups := make([]string, 0, len(snapshot.Reservations))
+	for _, reservation := range snapshot.Reservations {
+		if reservation.GroupID != "" {
+			groups = append(groups, reservation.GroupID)
+		}
+	}
+	sorted := slices.Clone(groups)
+	slices.Sort(sorted)
+	signature := strings.Join(slices.Compact(sorted), "\x00")
+	now := s.nowTime()
+	s.reconcileMu.Lock()
+	last, seen := s.reconcileSeen[serverID]
+	s.reconcileMu.Unlock()
+	if seen && last.groups == signature && now.Sub(last.at) < fleetReconcileInterval {
+		return
+	}
+	if err := s.History.ReconcileOpenSessions(ctx, serverID, groups, now); err != nil {
+		return
+	}
+	s.reconcileMu.Lock()
+	if s.reconcileSeen == nil {
+		s.reconcileSeen = make(map[string]reconcileState)
+	}
+	s.reconcileSeen[serverID] = reconcileState{groups: signature, at: now}
+	s.reconcileMu.Unlock()
 }
 
 func boundedFleetError(err error) string {
@@ -1171,9 +1259,16 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	candidate := filepath.Join(uiDir, clean)
 	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		if strings.HasPrefix(filepath.ToSlash(clean), "assets/") {
+			// Vite puts a content hash in every asset name.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		http.ServeFile(w, r, candidate)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, filepath.Join(uiDir, "index.html"))
 }
 

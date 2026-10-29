@@ -89,3 +89,37 @@ func TestNodeLayoutStoreRejectsUnknownAndDuplicateNodes(t *testing.T) {
 		t.Fatal("expected duplicate node error")
 	}
 }
+
+func TestNodeLayoutStoreGetDoesNotRewriteUnchangedLayout(t *testing.T) {
+	tests := []struct {
+		name    string
+		layout  NodeLayout
+		servers []string
+	}{
+		{name: "empty group", servers: []string{"srv_a"}, layout: NodeLayout{
+			Root:   []string{"grp_empty", "srv_a"},
+			Groups: []NodeGroupRecord{{ID: "grp_empty", Name: "Empty", NodeIDs: []string{}}},
+		}},
+		{name: "no nodes", servers: []string{}, layout: NodeLayout{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "node-layout.json")
+			store := NewNodeLayoutStore(path)
+			if _, err := store.Update(tt.layout, tt.servers); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if _, err := store.Get(tt.servers); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("Get rewrote an unchanged layout: stat err = %v", err)
+			}
+		})
+	}
+}

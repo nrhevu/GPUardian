@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -50,7 +50,7 @@ func (s *NodeLayoutStore) Get(serverIDs []string) (NodeLayout, error) {
 	if err != nil {
 		return NodeLayout{}, err
 	}
-	if !reflect.DeepEqual(layout, normalized) {
+	if !sameNodeLayout(layout, normalized) {
 		if err := s.saveLocked(normalized); err != nil {
 			return NodeLayout{}, err
 		}
@@ -189,6 +189,15 @@ func normalizeNodeLayout(layout NodeLayout, serverIDs []string, strict bool) (No
 		}
 	}
 	return result, nil
+}
+
+// sameNodeLayout treats nil and empty slices as equal: the cached copy uses nil
+// while normalization produces empty slices, and a reflect.DeepEqual mismatch
+// would rewrite the file on every GET.
+func sameNodeLayout(a, b NodeLayout) bool {
+	return slices.Equal(a.Root, b.Root) && slices.EqualFunc(a.Groups, b.Groups, func(x, y NodeGroupRecord) bool {
+		return x.ID == y.ID && x.Name == y.Name && slices.Equal(x.NodeIDs, y.NodeIDs)
+	})
 }
 
 func cloneNodeLayout(layout NodeLayout) NodeLayout {

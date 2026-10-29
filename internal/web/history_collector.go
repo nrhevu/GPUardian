@@ -11,7 +11,18 @@ import (
 	"gpuardian/internal/telemetry"
 )
 
-const historyPollInterval = 2 * time.Second
+const (
+	historyPollInterval = 2 * time.Second
+	// Node identity and capabilities rarely change; the collector polls every
+	// node every 2s, so reuse Info briefly and refetch it on any failure.
+	nodeInfoCacheTTL = 30 * time.Second
+)
+
+type nodeInfoEntry struct {
+	endpoint string
+	info     telemetry.Info
+	at       time.Time
+}
 
 type historySyncState struct {
 	failures int
@@ -85,6 +96,9 @@ func (s *Server) collectHistory(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			err := s.collectNodeHistory(ctx, client, record, owners)
+			if err != nil {
+				s.forgetNodeInfo(record.ID)
+			}
 			s.recordHistoryAttempt(record.ID, err, time.Now())
 		}()
 	}
@@ -94,7 +108,7 @@ func (s *Server) collectHistory(ctx context.Context) {
 func (s *Server) collectNodeHistory(ctx context.Context, client TelemetryNodeAPI, record ServerRecord, knownOwners map[string]bool) error {
 	nodeCtx, cancel := context.WithTimeout(ctx, fleetNodeTimeout)
 	defer cancel()
-	info, err := client.Info(nodeCtx, record)
+	info, infoCached, err := s.cachedNodeInfo(nodeCtx, client, record)
 	if err != nil {
 		return fmt.Errorf("node info: %w", err)
 	}
@@ -121,6 +135,14 @@ func (s *Server) collectNodeHistory(ctx context.Context, client TelemetryNodeAPI
 			cursor = gap.Gap.ResumeCursor
 			continue
 		}
+		if page.NodeID != info.NodeID && page.StreamID != "" && infoCached {
+			// A cached identity may predate a node replacement; confirm it
+			// before recording a gap.
+			s.forgetNodeInfo(record.ID)
+			if info, infoCached, err = s.cachedNodeInfo(nodeCtx, client, record); err != nil {
+				return fmt.Errorf("node info: %w", err)
+			}
+		}
 		if page.NodeID != info.NodeID || page.StreamID == "" {
 			_ = s.History.MarkGap(nodeCtx, record.ID, "node identity changed")
 			return errors.New("telemetry node identity changed")
@@ -134,6 +156,33 @@ func (s *Server) collectNodeHistory(ctx context.Context, client TelemetryNodeAPI
 		}
 	}
 	return nil
+}
+
+func (s *Server) cachedNodeInfo(ctx context.Context, client TelemetryNodeAPI, record ServerRecord) (telemetry.Info, bool, error) {
+	now := time.Now()
+	s.nodeInfoMu.Lock()
+	entry, ok := s.nodeInfo[record.ID]
+	s.nodeInfoMu.Unlock()
+	if ok && entry.endpoint == record.Endpoint && now.Sub(entry.at) < nodeInfoCacheTTL {
+		return entry.info, true, nil
+	}
+	info, err := client.Info(ctx, record)
+	if err != nil {
+		return telemetry.Info{}, false, err
+	}
+	s.nodeInfoMu.Lock()
+	if s.nodeInfo == nil {
+		s.nodeInfo = make(map[string]nodeInfoEntry)
+	}
+	s.nodeInfo[record.ID] = nodeInfoEntry{endpoint: record.Endpoint, info: info, at: now}
+	s.nodeInfoMu.Unlock()
+	return info, false, nil
+}
+
+func (s *Server) forgetNodeInfo(id string) {
+	s.nodeInfoMu.Lock()
+	delete(s.nodeInfo, id)
+	s.nodeInfoMu.Unlock()
 }
 
 func telemetryCapability(info telemetry.Info, capability string) bool {
