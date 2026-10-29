@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BarChart3,
@@ -32,10 +32,17 @@ const scheduleLaneGap = 2;
 const hourMs = 60 * 60 * 1000;
 const dayMs = 24 * hourMs;
 const historyPageSize = 50;
+const historyTimelineLimit = 180;
+const fleetPollInterval = 5000;
+const nodeLayoutRefreshInterval = 60_000;
+const emptyList = [];
 const themeStorageKey = "gpuardian-theme";
 const nodeGroupCollapseStorageKey = "gpuardian-collapsed-node-groups";
 const historyStartupCacheRootPrefix = "gpuardian-history-startup-";
-const historyStartupCachePrefix = `${historyStartupCacheRootPrefix}v2`;
+// v3 keeps saved_at/size metadata in a small index entry so pruning never has
+// to parse cached payloads; older-version entries are removed on prune.
+const historyStartupCachePrefix = `${historyStartupCacheRootPrefix}v3`;
+const historyStartupCacheIndexKey = `${historyStartupCachePrefix}-index`;
 const historyStartupCacheMaxAge = 25 * hourMs;
 const historyStartupCacheMaxBytes = 500_000;
 const historyStartupCacheTotalBytes = 1_500_000;
@@ -100,50 +107,73 @@ function readHistoryStartupCache(user, serverID) {
 function writeHistoryStartupCache(user, serverID, response) {
   if (!user || !serverID || !response || !Array.isArray(response.sessions)) return;
   try {
-    const value = JSON.stringify({ saved_at: Date.now(), response });
+    const savedAt = Date.now();
+    const value = JSON.stringify({ saved_at: savedAt, response });
     const key = historyStartupCacheKey(user, serverID);
+    const index = readHistoryStartupCacheIndex();
     if (value.length <= historyStartupCacheMaxBytes) {
       window.localStorage.setItem(key, value);
-      pruneHistoryStartupCache();
+      index[key] = { saved_at: savedAt, bytes: value.length };
     } else {
       window.localStorage.removeItem(key);
+      delete index[key];
     }
+    pruneHistoryStartupCache(index);
   } catch {
     // History remains usable when browser storage is unavailable or full.
   }
 }
 
-function pruneHistoryStartupCache() {
+function readHistoryStartupCacheIndex() {
+  try {
+    const index = JSON.parse(window.localStorage.getItem(historyStartupCacheIndexKey) || "{}");
+    return index && typeof index === "object" && !Array.isArray(index) ? index : {};
+  } catch {
+    return {};
+  }
+}
+
+// pruneHistoryStartupCache drops expired, over-budget, orphaned, and
+// old-format entries using only the small metadata index, so it never parses
+// the (up to 500 KB) cached payloads. Payload keys without index metadata are
+// treated as orphans and removed.
+function pruneHistoryStartupCache(index = readHistoryStartupCacheIndex()) {
   try {
     const now = Date.now();
+    const keys = [];
+    for (let position = 0; position < window.localStorage.length; position += 1) {
+      const key = window.localStorage.key(position);
+      if (key?.startsWith(historyStartupCacheRootPrefix) && key !== historyStartupCacheIndexKey) keys.push(key);
+    }
     const entries = [];
-    for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
-      const key = window.localStorage.key(index);
-      if (!key?.startsWith(historyStartupCacheRootPrefix)) continue;
-      const value = window.localStorage.getItem(key) || "";
-      if (!key.startsWith(`${historyStartupCachePrefix}:`)) {
+    for (const key of keys) {
+      const meta = index[key];
+      if (
+        !key.startsWith(`${historyStartupCachePrefix}:`) ||
+        !Number.isFinite(meta?.saved_at) ||
+        now - meta.saved_at > historyStartupCacheMaxAge
+      ) {
         window.localStorage.removeItem(key);
         continue;
       }
-      try {
-        const cached = JSON.parse(value);
-        if (!Number.isFinite(cached?.saved_at) || now - cached.saved_at > historyStartupCacheMaxAge) {
-          window.localStorage.removeItem(key);
-          continue;
-        }
-        entries.push({ key, savedAt: cached.saved_at, bytes: value.length });
-      } catch {
-        window.localStorage.removeItem(key);
-      }
+      entries.push({ key, savedAt: meta.saved_at, bytes: Number.isFinite(meta.bytes) ? meta.bytes : historyStartupCacheMaxBytes });
     }
     entries.sort((a, b) => b.savedAt - a.savedAt);
+    const nextIndex = {};
     let totalBytes = 0;
-    entries.forEach((entry, index) => {
+    entries.forEach((entry, position) => {
       totalBytes += entry.bytes;
-      if (index >= historyStartupCacheMaxEntries || totalBytes > historyStartupCacheTotalBytes) {
+      if (position >= historyStartupCacheMaxEntries || totalBytes > historyStartupCacheTotalBytes) {
         window.localStorage.removeItem(entry.key);
+      } else {
+        nextIndex[entry.key] = { saved_at: entry.savedAt, bytes: entry.bytes };
       }
     });
+    if (Object.keys(nextIndex).length > 0) {
+      window.localStorage.setItem(historyStartupCacheIndexKey, JSON.stringify(nextIndex));
+    } else {
+      window.localStorage.removeItem(historyStartupCacheIndexKey);
+    }
   } catch {
     // Cache cleanup is best-effort and must not affect the dashboard.
   }
@@ -159,6 +189,8 @@ function clearHistoryStartupCache(user) {
   } catch {
     // Logout must still complete when browser storage is blocked.
   }
+  // Rebuild the metadata index so it no longer lists the removed entries.
+  pruneHistoryStartupCache();
 }
 
 function isHistoryStartupQuery(filters, query, sort) {
@@ -254,6 +286,54 @@ function orderedServersFromLayout(layout, servers) {
   return result;
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+// replaceEqualDeep returns `next`, but reuses every subtree of `previous` that
+// is deeply equal (structural sharing). Poll responses are fresh JSON objects;
+// sharing unchanged parts keeps their identity stable so memoized components
+// and effects keyed on them skip work when nothing actually changed.
+function replaceEqualDeep(previous, next) {
+  if (previous === next) return previous;
+  const arrays = Array.isArray(previous) && Array.isArray(next);
+  if (!arrays && !(isPlainObject(previous) && isPlainObject(next))) return next;
+  const nextKeys = arrays ? null : Object.keys(next);
+  const size = arrays ? next.length : nextKeys.length;
+  const previousSize = arrays ? previous.length : Object.keys(previous).length;
+  const copy = arrays ? new Array(size) : {};
+  let shared = 0;
+  for (let index = 0; index < size; index += 1) {
+    const key = arrays ? index : nextKeys[index];
+    const value = replaceEqualDeep(previous[key], next[key]);
+    copy[key] = value;
+    if (value === previous[key] && (arrays ? index < previousSize : Object.prototype.hasOwnProperty.call(previous, key))) {
+      shared += 1;
+    }
+  }
+  return size === previousSize && shared === previousSize ? previous : copy;
+}
+
+// useEventCallback returns a function with a stable identity that always calls
+// the latest committed handler, so handlers passed to memoized children do not
+// defeat memoization. Only call the result from events/effects, not render.
+function useEventCallback(handler) {
+  const handlerRef = useRef(handler);
+  useLayoutEffect(() => {
+    handlerRef.current = handler;
+  });
+  return useCallback((...args) => handlerRef.current(...args), []);
+}
+
+function navItemClass(active) {
+  return [
+    "flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left text-[13px] font-medium whitespace-nowrap transition-colors max-md:w-auto max-md:shrink-0",
+    active
+      ? "border-sidebar-border bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+      : "border-transparent text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+  ].join(" ");
+}
+
 function App() {
   const [theme, setTheme] = useState(initialTheme);
   const [themeIsExplicit, setThemeIsExplicit] = useState(() => readStoredTheme() !== null);
@@ -304,7 +384,9 @@ function App() {
   const [historySort, setHistorySort] = useState({ field: "starts_at", direction: "desc" });
   const settingsRef = useRef(null);
   const historyRequestRef = useRef(0);
+  const historyQueryRef = useRef({ filters: historyFilters, search: historySearch });
   const dashboardRef = useRef(null);
+  const refreshControlRef = useRef(null);
 
   useEffect(() => {
     applyTheme(theme);
@@ -347,11 +429,18 @@ function App() {
   // document and resizes the inspector column by the inverse of the cursor
   // delta (drag right => narrower inspector). Both panels are clamped to
   // minimums so neither collapses: inspector >= 320px, GPU grid >= 360px.
+  // While dragging, the width is written to the grid's --inspector-width CSS
+  // variable once per animation frame (no React render); the state commits on
+  // mouseup.
   const startInspectorDrag = (e) => {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = inspectorWidth;
-    const onMove = (ev) => {
+    let latestWidth = startWidth;
+    let pointerX = startX;
+    let frame = 0;
+    const applyWidth = () => {
+      frame = 0;
       const grid = dashboardRef.current;
       if (!grid) return;
       const rect = grid.getBoundingClientRect();
@@ -362,12 +451,21 @@ function App() {
       // gets squeezed below minGrid and the splitter gap never collapses.
       const overhead = 40 + 14;
       const max = rect.width - minGrid - overhead;
-      const next = Math.min(max, Math.max(minInspector, startWidth - (ev.clientX - startX)));
-      setInspectorWidth(next);
+      latestWidth = Math.min(max, Math.max(minInspector, startWidth - (pointerX - startX)));
+      grid.style.setProperty("--inspector-width", `${latestWidth}px`);
+    };
+    const onMove = (ev) => {
+      pointerX = ev.clientX;
+      if (!frame) frame = window.requestAnimationFrame(applyWidth);
     };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+        applyWidth();
+      }
+      setInspectorWidth(latestWidth);
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -377,15 +475,33 @@ function App() {
     checkSession();
   }, []);
 
+  // requestRefresh routes user-triggered refreshes through the poll loop below;
+  // the returned promise settles once a refresh covering the request finishes.
+  const requestRefresh = useCallback(
+    (options) => refreshControlRef.current?.request(options) ?? Promise.resolve(),
+    [],
+  );
+
+  // Single refresh path. The fleet snapshot is polled every 5s; keys and the
+  // node layout are fetched only when requested (startup, focus, Keys view,
+  // after mutations) or, for the layout, at most once per minute. Every refresh
+  // (poll or user action via requestRefresh) aborts the in-flight one and
+  // inherits its pending work and waiters, and a sequence number drops any
+  // response that is no longer the latest, so an older poll can never
+  // overwrite newer data.
   useEffect(() => {
     if (!auth.authenticated) {
       return undefined;
     }
 
     let stopped = false;
-    let running = false;
     let timer;
     let controller;
+    let sequence = 0;
+    let inFlight = null;
+    let layoutLoadedAt = 0;
+    let pending = { keys: true, layout: true };
+    let waiters = [];
 
     function clearTimer() {
       if (timer !== undefined) {
@@ -394,52 +510,108 @@ function App() {
       }
     }
 
-    function schedule() {
+    function schedule(delay = fleetPollInterval) {
       clearTimer();
-      if (stopped || document.hidden) {
+      if (stopped || (document.hidden && waiters.length === 0)) {
         return;
       }
       timer = window.setTimeout(() => {
         timer = undefined;
         void poll();
-      }, 5000);
+      }, delay);
     }
 
     async function poll() {
-      if (stopped || running || document.hidden) {
+      clearTimer();
+      if (stopped || (document.hidden && waiters.length === 0 && !inFlight)) {
         return;
       }
-      running = true;
-      controller = new AbortController();
+      const previous = inFlight;
+      controller?.abort();
+      const requestID = ++sequence;
+      const request = {
+        keys: pending.keys || Boolean(previous?.keys),
+        layout: pending.layout || Boolean(previous?.layout) || Date.now() - layoutLoadedAt >= nodeLayoutRefreshInterval,
+        waiters: [...(previous?.waiters || []), ...waiters],
+      };
+      pending = { keys: false, layout: false };
+      waiters = [];
+      inFlight = request;
+      const ownController = new AbortController();
+      controller = ownController;
+      let loaded = false;
       try {
-        await refresh({ signal: controller.signal, isCurrent: () => !stopped });
+        loaded = await refresh({
+          signal: ownController.signal,
+          isCurrent: () => !stopped && requestID === sequence,
+          keys: request.keys,
+          layout: request.layout,
+        });
       } finally {
-        running = false;
-        controller = undefined;
-        schedule();
+        if (requestID === sequence) {
+          controller = undefined;
+          inFlight = null;
+          if (loaded && request.layout) {
+            layoutLoadedAt = Date.now();
+          } else if (!loaded) {
+            pending.keys ||= request.keys;
+            pending.layout ||= request.layout;
+          }
+          request.waiters.forEach((resolve) => resolve());
+          schedule();
+        }
       }
+    }
+
+    function queueRefresh({ keys = false, layout = false } = {}) {
+      pending.keys ||= keys;
+      pending.layout ||= layout;
+      return new Promise((resolve) => {
+        if (stopped) {
+          resolve();
+          return;
+        }
+        waiters.push(resolve);
+        schedule(0);
+      });
     }
 
     function handleVisibilityChange() {
       if (document.hidden) {
-        clearTimer();
+        if (waiters.length === 0) clearTimer();
         return;
       }
-      if (!running) {
-        clearTimer();
-        void poll();
-      }
+      if (!controller) schedule(0);
     }
 
+    function handleFocus() {
+      pending.keys = true;
+      pending.layout = true;
+      if (!controller) schedule(0);
+    }
+
+    refreshControlRef.current = { request: queueRefresh };
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    void poll();
+    window.addEventListener("focus", handleFocus);
+    schedule(0);
     return () => {
       stopped = true;
       clearTimer();
       controller?.abort();
+      inFlight?.waiters.forEach((resolve) => resolve());
+      waiters.forEach((resolve) => resolve());
+      waiters = [];
+      if (refreshControlRef.current?.request === queueRefresh) refreshControlRef.current = null;
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleFocus);
     };
   }, [auth.authenticated]);
+
+  useEffect(() => {
+    if (auth.authenticated && view === "keys") {
+      void requestRefresh({ keys: true });
+    }
+  }, [auth.authenticated, view]);
 
   useEffect(() => {
     if (auth.authenticated && auth.role === "admin" && view === "users") {
@@ -451,6 +623,11 @@ function App() {
   }, [auth.authenticated, auth.role, view]);
 
   useEffect(() => {
+    // The search box is already debounced (250ms) inside HistoryDashboard, so a
+    // search-only change loads immediately; other changes keep the 250ms delay.
+    const previous = historyQueryRef.current;
+    historyQueryRef.current = { filters: historyFilters, search: historySearch };
+    const searchOnlyChange = previous.search !== historySearch && previous.filters === historyFilters;
     if (!auth.authenticated || view !== "history") {
       return undefined;
     }
@@ -459,7 +636,8 @@ function App() {
     if (historyFilterErrors(historyFilters).length > 0) {
       return undefined;
     }
-    if (isHistoryStartupQuery(historyFilters, historySearch, historySort)) {
+    const startupQuery = isHistoryStartupQuery(historyFilters, historySearch, historySort);
+    if (startupQuery) {
       const cached = readHistoryStartupCache(auth.user, selectedServerId);
       if (cached) {
         setHistorySummary(cached.response.summary || null);
@@ -470,7 +648,7 @@ function App() {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void loadHistory({ filters: historyFilters, signal: controller.signal });
-    }, isHistoryStartupQuery(historyFilters, historySearch, historySort) ? 0 : 250);
+    }, startupQuery || searchOnlyChange ? 0 : 250);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
@@ -683,10 +861,10 @@ function App() {
     }
   }
 
-  async function openHistorySession(id) {
+  const openHistorySession = useCallback(async (id) => {
     try {
       const [session, response] = await Promise.all([
-        api(`/api/history/sessions/${id}`),
+        api(`/api/history/sessions/${id}?timeline_limit=${historyTimelineLimit}`),
         api(`/api/history/sessions/${id}/jobs`),
       ]);
       setHistoryTarget(session);
@@ -694,7 +872,7 @@ function App() {
     } catch (err) {
       setError(err.message);
     }
-  }
+  }, []);
 
   async function saveHistoryResult(values) {
     if (!historyTarget) {
@@ -708,40 +886,52 @@ function App() {
     await loadHistory();
   }
 
-  async function refresh({ signal, isCurrent } = {}) {
+  // refresh loads the compact fleet snapshot and, when asked, the keys and node
+  // layout. It only uses state setters, so the poll loop can hold on to it.
+  // Responses are merged with replaceEqualDeep so unchanged data keeps its
+  // identity. Returns true when the response was applied.
+  async function refresh({ signal, isCurrent, keys: includeKeys = false, layout: includeLayout = false } = {}) {
     try {
       const [snapshot, keys, layout] = await Promise.all([
-        api("/api/fleet/snapshot", { signal }),
-        api("/api/keys", { signal }),
-        api("/api/node-layout", { signal }).catch((err) => {
-          if (err.status === 404) return { root: [], groups: [] };
-          throw err;
-        }),
+        api("/api/fleet/snapshot?compact=1", { signal }),
+        includeKeys ? api("/api/keys", { signal }) : null,
+        includeLayout
+          ? api("/api/node-layout", { signal }).catch((err) => {
+            if (err.status === 404) return { root: [], groups: [] };
+            throw err;
+          })
+          : null,
       ]);
       if (signal?.aborted || (isCurrent && !isCurrent())) {
-        return;
+        return false;
       }
       const nextFleet = snapshot.servers || [];
       const serverList = nextFleet.map((item) => item.server).filter(Boolean);
-      setServers(serverList);
-      setFleet(nextFleet);
-      setNodeLayout(normalizeClientNodeLayout(layout, serverList));
-      setFixedKeys(keys || []);
+      setServers((current) => replaceEqualDeep(current, serverList));
+      setFleet((current) => replaceEqualDeep(current, nextFleet));
+      if (includeLayout) {
+        setNodeLayout((current) => replaceEqualDeep(current, normalizeClientNodeLayout(layout, serverList)));
+      }
+      if (includeKeys) {
+        setFixedKeys((current) => replaceEqualDeep(current, keys || []));
+      }
       setSelectedServerId((currentId) => {
         if (currentId && serverList.some((server) => server.id === currentId)) {
           return currentId;
         }
         return serverList[0]?.id || nextFleet[0]?.server?.id || "";
       });
+      return true;
     } catch (err) {
       if (signal?.aborted || err.name === "AbortError" || (isCurrent && !isCurrent())) {
-        return;
+        return false;
       }
       if (err.status === 401) {
         setAuth({ checking: false, authenticated: false, user: "", role: "" });
-        return;
+        return false;
       }
       setError(err.message);
+      return false;
     }
   }
 
@@ -750,10 +940,11 @@ function App() {
   }, [fleet, selectedServerId]);
 
   const currentServerId = current?.server?.id || selectedServerId;
-  const gpus = current?.snapshot?.gpus || [];
-  const tokens = current?.snapshot?.tokens || [];
-  const reservations = current?.snapshot?.reservations || [];
-  const authorizations = current?.snapshot?.authorizations || [];
+  // Fleet state is structurally shared across polls, so these arrays keep their
+  // identity until the selected node's data actually changes.
+  const gpus = current?.snapshot?.gpus || emptyList;
+  const reservations = current?.snapshot?.reservations || emptyList;
+  const authorizations = current?.snapshot?.authorizations || emptyList;
   const isAdmin = auth.role === "admin";
   const fixedKey = fixedKeys.find((key) => sameText(key.owner, auth.user)) || null;
   const scheduleToken = scheduleTarget
@@ -761,13 +952,16 @@ function App() {
         ? (fixedKeys.find((key) => sameText(key.owner, scheduleTarget.holder)) || fixedKey)
         : (sameText(scheduleTarget.holder, auth.user) ? fixedKey : null))
     : null;
-  const selectedGPUList = Array.from(selectedGPUs).sort((a, b) => a - b);
-  const allGPUIds = gpus.map((gpu) => gpu.id);
+  const selectedGPUList = useMemo(() => Array.from(selectedGPUs).sort((a, b) => a - b), [selectedGPUs]);
+  // GPU ids are integers; key the list on them so metric-only updates (which
+  // replace the gpus array) do not produce a new allGPUIds array.
+  const gpuIDsKey = gpus.map((gpu) => gpu.id).join(",");
+  const allGPUIds = useMemo(() => (gpuIDsKey ? gpuIDsKey.split(",").map(Number) : emptyList), [gpuIDsKey]);
   const allGPUsSelected =
     allGPUIds.length > 0 && allGPUIds.every((gpuId) => selectedGPUs.has(gpuId));
   const displayGPU = activeGPU ?? selectedGPUList[0] ?? gpus[0]?.id ?? 0;
 
-  function selectServer(id) {
+  const selectServer = useEventCallback((id) => {
     setSelectedServerId(id);
     setSelectedGPUs(new Set());
     setActiveGPU(null);
@@ -779,9 +973,9 @@ function App() {
       setHistorySessions([]);
       setHistoryNextCursor("");
     }
-  }
+  });
 
-  function toggleGPU(id) {
+  const toggleGPU = useCallback((id) => {
     setActiveGPU(id);
     setSelectedGPUs((previous) => {
       const next = new Set(previous);
@@ -792,7 +986,7 @@ function App() {
       }
       return next;
     });
-  }
+  }, []);
 
   function selectAllGPUs() {
     if (allGPUsSelected) {
@@ -842,7 +1036,7 @@ function App() {
       body: JSON.stringify(values),
     });
     setAddOpen(false);
-    await refresh();
+    await requestRefresh({ layout: true });
   }
 
   async function deleteServer(id) {
@@ -851,6 +1045,7 @@ function App() {
     if (currentServerId === id) {
       setSelectedServerId("");
     }
+    void requestRefresh({ layout: true });
   }
 
   async function persistNodeLayout(nextLayout) {
@@ -864,6 +1059,8 @@ function App() {
       });
       setNodeLayout(normalizeClientNodeLayout(stored, servers));
       setError("");
+      // Drop any poll that started before this write and re-read the layout.
+      void requestRefresh({ layout: true });
       return true;
     } catch (err) {
       setNodeLayout(previous);
@@ -905,11 +1102,11 @@ function App() {
     }
   }
 
-  function beginLayoutRename(kind, id, name) {
+  const beginLayoutRename = useEventCallback((kind, id, name) => {
     if (!isAdmin) return;
     setEditingLayoutItem({ kind, id });
     setLayoutNameDraft(name);
-  }
+  });
 
   async function finishLayoutRename() {
     const editing = editingLayoutItem;
@@ -935,10 +1132,26 @@ function App() {
       setServers((values) => values.map((server) => server.id === stored.id ? { ...server, ...stored } : server));
       setFleet((values) => values.map((entry) => entry.server?.id === stored.id ? { ...entry, server: { ...entry.server, ...stored } } : entry));
       setError("");
+      void requestRefresh();
     } catch (err) {
       setError(err.message);
     }
   }
+
+  const finishLayoutRenameEvent = useEventCallback(() => void finishLayoutRename());
+
+  const cancelLayoutRename = useCallback(() => {
+    setEditingLayoutItem(null);
+    setLayoutNameDraft("");
+  }, []);
+
+  const endLayoutDrag = useCallback(() => setDraggedLayoutItem(null), []);
+
+  const openServerMenu = useCallback((event, server) => {
+    event.preventDefault();
+    setNodeGroupMenu(null);
+    setServerMenu({ server, x: event.clientX, y: event.clientY });
+  }, []);
 
   function toggleNodeGroup(id) {
     setCollapsedNodeGroups((current) => {
@@ -949,7 +1162,7 @@ function App() {
     });
   }
 
-  function startLayoutDrag(event, item) {
+  const startLayoutDrag = useEventCallback((event, item) => {
     if (!isAdmin || editingLayoutItem) {
       event.preventDefault();
       return;
@@ -957,9 +1170,9 @@ function App() {
     setDraggedLayoutItem(item);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", `${item.kind}:${item.id}`);
-  }
+  });
 
-  function dropLayoutItem(event, target) {
+  const dropLayoutItem = useEventCallback((event, target) => {
     if (!isAdmin || !draggedLayoutItem) return;
     event.preventDefault();
     event.stopPropagation();
@@ -983,7 +1196,7 @@ function App() {
     }
     setDraggedLayoutItem(null);
     if (JSON.stringify(next) !== JSON.stringify(nodeLayout)) void persistNodeLayout(next);
-  }
+  });
 
   async function reserve(values) {
     if (selectedGPUList.length === 0) {
@@ -1017,7 +1230,7 @@ function App() {
         end: new Date(result.expires_at || values.end),
       });
       setSelectedGPUs(new Set());
-      await refresh();
+      await requestRefresh();
     } catch (err) {
       setReserveHint({
         title: "Reservation unavailable",
@@ -1041,7 +1254,7 @@ function App() {
     try {
       const key = await api(`/api/keys/${encodeURIComponent(owner)}/regenerate`, { method: "POST" });
       setSuccessKey(key.key || "");
-      await refresh();
+      await requestRefresh({ keys: true });
     } catch (err) {
       setError(err.message);
     }
@@ -1055,7 +1268,7 @@ function App() {
       method: "POST",
       body: JSON.stringify({ id: allowTarget.id, ...values }),
     });
-    void refresh();
+    void requestRefresh({ keys: true });
     return {
       ...result,
       id: result.authorization_id,
@@ -1072,7 +1285,7 @@ function App() {
       method: "POST",
       body: JSON.stringify({ id: ruleId }),
     });
-    void refresh();
+    void requestRefresh({ keys: true });
   }
 
   async function createUser(values) {
@@ -1102,7 +1315,7 @@ function App() {
       setRevokeTarget(null);
       setScheduleTarget(null);
       setReservationSuccess(null);
-      await refresh();
+      await requestRefresh({ keys: true });
     } catch (err) {
       setError(err.message);
       throw err;
@@ -1122,6 +1335,17 @@ function App() {
     }
     return nodeMatchesSearch(nodeServerByID.get(id));
   });
+  const fleetByServerID = useMemo(() => new Map(fleet.map((entry) => [entry.server?.id, entry])), [fleet]);
+  const keyReservations = useMemo(
+    () => (isAdmin ? reservations : reservations.filter((r) => sameText(r.holder, auth.user))),
+    [isAdmin, reservations, auth.user],
+  );
+  const allowTargetID = allowTarget?.id;
+  const allowTargetRules = useMemo(
+    () => authorizations.filter((authorization) => authorization.token_id === allowTargetID),
+    [authorizations, allowTargetID],
+  );
+  const loadMoreHistory = useEventCallback(() => loadHistory({ cursor: historyNextCursor, append: true }));
 
   if (auth.checking) {
     return <LoadingScreen />;
@@ -1148,20 +1372,13 @@ function App() {
     users: "Users",
   }[view];
 
-  const navItemClass = (active) => [
-    "flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left text-[13px] font-medium whitespace-nowrap transition-colors max-md:w-auto max-md:shrink-0",
-    active
-      ? "border-sidebar-border bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
-      : "border-transparent text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-  ].join(" ");
-
   return (
     <div className="flex h-screen overflow-hidden bg-background max-md:flex-col">
       <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r bg-sidebar max-md:relative max-md:h-auto max-md:w-full">
         <div className="flex h-14 shrink-0 items-center gap-2 border-b px-3">
           <img
             className="h-7 w-7 shrink-0 rounded-md"
-            src="/gpuardian-icon.svg"
+            src="/gpuardian-icon.png"
             alt="GPUardian"
           />
           <div className="flex min-w-0 flex-col">
@@ -1252,7 +1469,7 @@ function App() {
                         setNodeGroupMenu({ group, x: event.clientX, y: event.clientY });
                       } : undefined}
                       onDragStart={(event) => startLayoutDrag(event, { kind: "group", id: group.id })}
-                      onDragEnd={() => setDraggedLayoutItem(null)}
+                      onDragEnd={endLayoutDrag}
                       onDragOver={isAdmin ? (event) => {
                         event.preventDefault();
                         event.dataTransfer.dropEffect = "move";
@@ -1302,36 +1519,29 @@ function App() {
                         onDrop={isAdmin ? (event) => dropLayoutItem(event, { kind: "group", id: group.id }) : undefined}
                       >
                         {groupServers.map((server) => {
-                          const fleetItem = fleet.find((entry) => entry.server.id === server.id);
+                          const fleetItem = fleetByServerID.get(server.id);
+                          const editingNode = editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id;
                           return (
                             <SidebarNodeItem
                               key={server.id}
                               server={server}
-                              item={{ kind: "node", id: server.id, groupID: group.id }}
+                              groupID={group.id}
                               active={server.id === currentServerId}
                               nested
                               online={fleetItem?.online}
                               dryRun={fleetItem?.snapshot?.dry_run === true}
                               isAdmin={isAdmin}
-                              editing={editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id}
-                              draft={layoutNameDraft}
+                              editing={editingNode}
+                              draft={editingNode ? layoutNameDraft : ""}
                               dragging={draggedLayoutItem?.kind === "node" && draggedLayoutItem.id === server.id}
-                              itemClass={navItemClass}
                               onSelect={selectServer}
-                              onContextMenu={isAdmin ? (event) => {
-                                event.preventDefault();
-                                setNodeGroupMenu(null);
-                                setServerMenu({ server, x: event.clientX, y: event.clientY });
-                              } : undefined}
+                              onContextMenu={isAdmin ? openServerMenu : undefined}
                               onRenameStart={beginLayoutRename}
                               onDraft={setLayoutNameDraft}
-                              onFinishRename={() => void finishLayoutRename()}
-                              onCancelRename={() => {
-                                setEditingLayoutItem(null);
-                                setLayoutNameDraft("");
-                              }}
+                              onFinishRename={finishLayoutRenameEvent}
+                              onCancelRename={cancelLayoutRename}
                               onDragStart={startLayoutDrag}
-                              onDragEnd={() => setDraggedLayoutItem(null)}
+                              onDragEnd={endLayoutDrag}
                               onDrop={dropLayoutItem}
                             />
                           );
@@ -1344,35 +1554,28 @@ function App() {
               }
               const server = nodeServerByID.get(id);
               if (!server) return null;
-              const fleetItem = fleet.find((entry) => entry.server.id === server.id);
+              const fleetItem = fleetByServerID.get(server.id);
+              const editingNode = editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id;
               return (
                 <SidebarNodeItem
                   key={server.id}
                   server={server}
-                  item={{ kind: "node", id: server.id, groupID: "" }}
+                  groupID=""
                   active={server.id === currentServerId}
                   online={fleetItem?.online}
                   dryRun={fleetItem?.snapshot?.dry_run === true}
                   isAdmin={isAdmin}
-                  editing={editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id}
-                  draft={layoutNameDraft}
+                  editing={editingNode}
+                  draft={editingNode ? layoutNameDraft : ""}
                   dragging={draggedLayoutItem?.kind === "node" && draggedLayoutItem.id === server.id}
-                  itemClass={navItemClass}
                   onSelect={selectServer}
-                  onContextMenu={isAdmin ? (event) => {
-                    event.preventDefault();
-                    setNodeGroupMenu(null);
-                    setServerMenu({ server, x: event.clientX, y: event.clientY });
-                  } : undefined}
+                  onContextMenu={isAdmin ? openServerMenu : undefined}
                   onRenameStart={beginLayoutRename}
                   onDraft={setLayoutNameDraft}
-                  onFinishRename={() => void finishLayoutRename()}
-                  onCancelRename={() => {
-                    setEditingLayoutItem(null);
-                    setLayoutNameDraft("");
-                  }}
+                  onFinishRename={finishLayoutRenameEvent}
+                  onCancelRename={cancelLayoutRename}
                   onDragStart={startLayoutDrag}
-                  onDragEnd={() => setDraggedLayoutItem(null)}
+                  onDragEnd={endLayoutDrag}
                   onDrop={dropLayoutItem}
                 />
               );
@@ -1486,7 +1689,7 @@ function App() {
           <div
             className="dashboard-grid"
             ref={dashboardRef}
-            style={{ gridTemplateColumns: `minmax(0, 1fr) 14px ${inspectorWidth}px` }}
+            style={{ "--inspector-width": `${inspectorWidth}px`, gridTemplateColumns: "minmax(0, 1fr) 14px var(--inspector-width)" }}
           >
             <section className="content-panel">
               <div className="section-heading">
@@ -1513,7 +1716,7 @@ function App() {
                     key={gpu.id}
                     gpu={gpu}
                     selected={selectedGPUs.has(gpu.id)}
-                    onClick={() => toggleGPU(gpu.id)}
+                    onToggle={toggleGPU}
                   />
                 ))}
               </div>
@@ -1549,7 +1752,7 @@ function App() {
         ) : view === "keys" ? (
           <KeysView
             keys={isAdmin ? fixedKeys : (fixedKey ? [fixedKey] : [])}
-            reservations={isAdmin ? reservations : reservations.filter((r) => sameText(r.holder, auth.user))}
+            reservations={keyReservations}
             isAdmin={isAdmin}
             onAllow={setAllowTarget}
             onShow={showKey}
@@ -1570,7 +1773,7 @@ function App() {
             onFilters={setHistoryFilters}
             onSearch={setHistorySearch}
             onSort={setHistorySort}
-            onLoadMore={() => loadHistory({ cursor: historyNextCursor, append: true })}
+            onLoadMore={loadMoreHistory}
             onOpen={openHistorySession}
           />
         ) : (
@@ -1587,7 +1790,7 @@ function App() {
       {allowTarget && (
         <AllowKeyModal
           token={allowTarget}
-          rules={authorizations.filter((authorization) => authorization.token_id === allowTarget.id)}
+          rules={allowTargetRules}
           onClose={() => setAllowTarget(null)}
           onSubmit={allowKey}
           onRemove={revokeRule}
@@ -1702,10 +1905,10 @@ function App() {
   );
 }
 
-function SidebarNodeItem({ server, item, active, nested, online, dryRun, isAdmin, editing, draft, dragging, itemClass, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
+const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active, nested, online, dryRun, isAdmin, editing, draft, dragging, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
   return (
     <div
-      className={`${itemClass(active)} group/node select-none ${nested ? "ml-3" : ""} ${dragging ? "opacity-45" : ""}`.trim()}
+      className={`${navItemClass(active)} group/node select-none ${nested ? "ml-3" : ""} ${dragging ? "opacity-45" : ""}`.trim()}
       style={nested ? { width: "calc(100% - 0.75rem)" } : undefined}
       role="button"
       tabIndex={0}
@@ -1714,14 +1917,14 @@ function SidebarNodeItem({ server, item, active, nested, online, dryRun, isAdmin
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") onSelect(server.id);
       }}
-      onContextMenu={onContextMenu}
-      onDragStart={(event) => onDragStart(event, item)}
+      onContextMenu={onContextMenu ? (event) => onContextMenu(event, server) : undefined}
+      onDragStart={(event) => onDragStart(event, { kind: "node", id: server.id, groupID })}
       onDragEnd={onDragEnd}
       onDragOver={isAdmin ? (event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
       } : undefined}
-      onDrop={isAdmin ? (event) => onDrop(event, { kind: "node", id: server.id, groupID: item.groupID || "" }) : undefined}
+      onDrop={isAdmin ? (event) => onDrop(event, { kind: "node", id: server.id, groupID: groupID || "" }) : undefined}
     >
       <span
         className={`h-2 w-2 shrink-0 rounded-full ${online ? (dryRun ? "bg-status-warning-fg" : "bg-status-success-fg") : "bg-destructive"}`}
@@ -1757,10 +1960,13 @@ function SidebarNodeItem({ server, item, active, nested, online, dryRun, isAdmin
       )}
     </div>
   );
-}
+});
 
-function HistoryDashboard({ summary, sessions, servers, filters, search, sort, loading, loadingMore, nextCursor, onFilters, onSearch, onSort, onLoadMore, onOpen }) {
+const HistoryDashboard = memo(function HistoryDashboard({ summary, sessions, servers, filters, search, sort, loading, loadingMore, nextCursor, onFilters, onSearch, onSort, onLoadMore, onOpen }) {
   const [filterOpen, setFilterOpen] = useState(false);
+  // Keystrokes only re-render this view; the committed search is pushed to the
+  // App (which reloads history) after a 250ms pause.
+  const [searchDraft, setSearchDraft] = useState(search);
   const filterRef = useRef(null);
   const errors = historyFilterErrors(filters);
   const errorByRule = new Map(errors.map((item) => [item.id, item.message]));
@@ -1774,6 +1980,12 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
     ["Telemetry coverage", percentLabel(summary?.telemetry_coverage)],
     ["Jobs", summary?.jobs ?? 0],
   ];
+
+  useEffect(() => {
+    if (searchDraft === search) return undefined;
+    const timer = window.setTimeout(() => onSearch(searchDraft), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchDraft, search, onSearch]);
 
   useEffect(() => {
     if (!filterOpen) return undefined;
@@ -1904,8 +2116,8 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
               placeholder="Search session name…"
               aria-label="Search GPU activity"
               maxLength={1024}
-              value={search}
-              onChange={(event) => onSearch(event.target.value)}
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
             />
           </label>
         </div>
@@ -1921,27 +2133,7 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
               <HistorySortHeader label="Jobs" field="job_count" sort={sort} onSort={changeSort} />
               <HistorySortHeader label="Status" field="status" sort={sort} onSort={changeSort} />
             </div>
-            {sessions.map((session) => {
-              const observed = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.observed_ms || 0), 0);
-              const weighted = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.average_utilization_percent || 0) * (gpu.observed_ms || 0), 0);
-              const utilization = observed > 0 ? weighted / observed : null;
-              return (
-                <button className="history-table-row" key={session.id} onClick={() => onOpen(session.id)}>
-                  <span><strong>{session.purpose || "Reservation"}</strong><small>{session.server_name}</small></span>
-                  <span><em className={`history-type ${session.kind === "claimed_run" ? "claimed" : "reservation"}`}>{session.kind === "claimed_run" ? "Claimed" : "Reservation"}</em></span>
-                  <span>{session.owner}</span>
-                  <span>{compactDateTime(session.starts_at)}<small>to {compactDateTime(session.expires_at)}</small></span>
-                  <span>{session.gpus?.join(", ") || "—"}</span>
-                  <span>{utilization == null ? "—" : `${utilization.toFixed(1)}%`}</span>
-                  <span>{session.job_count || 0}</span>
-                  <span>
-                    <em className={`history-status ${session.status}`}>{session.status}</em>
-                    {session.revoked_at && <small>at {compactDateTime(session.revoked_at)}</small>}
-                    {session.history_quality === "partial" && <small>partial telemetry</small>}
-                  </span>
-                </button>
-              );
-            })}
+            {sessions.map((session) => <HistoryRow key={session.id} session={session} onOpen={onOpen} />)}
             {!loading && sessions.length === 0 && <div className="empty">No GPU activity matches this search and filters.</div>}
             {nextCursor && <button type="button" className="history-load-more" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? "Loading…" : "Load more"}</button>}
           </div>
@@ -1949,7 +2141,29 @@ function HistoryDashboard({ summary, sessions, servers, filters, search, sort, l
       </section>
     </section>
   );
-}
+});
+
+const HistoryRow = memo(function HistoryRow({ session, onOpen }) {
+  const observed = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.observed_ms || 0), 0);
+  const weighted = (session.gpu_summaries || []).reduce((sum, gpu) => sum + (gpu.average_utilization_percent || 0) * (gpu.observed_ms || 0), 0);
+  const utilization = observed > 0 ? weighted / observed : null;
+  return (
+    <button className="history-table-row" onClick={() => onOpen(session.id)}>
+      <span><strong>{session.purpose || "Reservation"}</strong><small>{session.server_name}</small></span>
+      <span><em className={`history-type ${session.kind === "claimed_run" ? "claimed" : "reservation"}`}>{session.kind === "claimed_run" ? "Claimed" : "Reservation"}</em></span>
+      <span>{session.owner}</span>
+      <span>{compactDateTime(session.starts_at)}<small>to {compactDateTime(session.expires_at)}</small></span>
+      <span>{session.gpus?.join(", ") || "—"}</span>
+      <span>{utilization == null ? "—" : `${utilization.toFixed(1)}%`}</span>
+      <span>{session.job_count || 0}</span>
+      <span>
+        <em className={`history-status ${session.status}`}>{session.status}</em>
+        {session.revoked_at && <small>at {compactDateTime(session.revoked_at)}</small>}
+        {session.history_quality === "partial" && <small>partial telemetry</small>}
+      </span>
+    </button>
+  );
+});
 
 function HistorySortHeader({ label, field, sort, onSort }) {
   const active = sort.field === field;
@@ -2027,7 +2241,9 @@ function HistoryRuleValue({ field, rule, onChange }) {
 
 function HistorySessionModal({ session, jobs, currentUser, onClose, onSave }) {
   const canEdit = session.result_editable && sameText(session.owner, currentUser);
-  const timeline = (session.timeline || []).slice(-180);
+  // The request already asks for at most historyTimelineLimit rows; the slice
+  // guards against gateways that ignore timeline_limit.
+  const timeline = (session.timeline || []).slice(-historyTimelineLimit);
   const authorizationRules = (session.authorization_scopes || []).map((scope, index) => ({
     ...scope,
     displayID: `#${index + 1}`,
@@ -2355,8 +2571,30 @@ function durationLabel(milliseconds) {
   return `${seconds}s`;
 }
 
+// Date.prototype.toLocale*String(locales, options) builds a new ICU formatter
+// on every call; these cached Intl.DateTimeFormat instances use the exact same
+// locales/options, so the output is identical at a fraction of the cost.
+const compactDateTimeFormat = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const timeLabelFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const rangeDayFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const rangeDayYearFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+const dateTimeLabelFormat = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+// formatDate mirrors toLocale*String for invalid dates, where
+// Intl.DateTimeFormat#format would throw instead of returning "Invalid Date".
+function formatDate(format, value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? "Invalid Date" : format.format(date);
+}
+
 function compactDateTime(value) {
-  return value ? new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  return value ? formatDate(compactDateTimeFormat, value) : "—";
 }
 
 function LoadingScreen() {
@@ -2511,14 +2749,14 @@ function userInitials(value) {
   return `${parts[0]?.[0] || "U"}${parts[1]?.[0] || parts[0]?.[1] || ""}`.toUpperCase();
 }
 
-function GPUCard({ gpu, selected, onClick }) {
+const GPUCard = memo(function GPUCard({ gpu, selected, onToggle }) {
   const state = gpu.state || "available";
   const memory = memoryMetric(gpu);
   const utilization = utilizationMetric(gpu);
   const label = gpuLabel(gpu);
   const subtitle = gpuSubtitle(gpu);
   return (
-    <button className={`gpu-card ${state} ${selected ? "selected" : ""}`} onClick={onClick}>
+    <button className={`gpu-card ${state} ${selected ? "selected" : ""}`} onClick={() => onToggle(gpu.id)}>
       <div className="gpu-title-row">
         <span className="checkbox">{selected ? "✓" : ""}</span>
         <h3>{label}</h3>
@@ -2531,7 +2769,7 @@ function GPUCard({ gpu, selected, onClick }) {
       {subtitle && <div className="gpu-subtitle">{subtitle}</div>}
     </button>
   );
-}
+});
 
 // gpuLabel renders the card title as the integer GPU index ("GPU 0"). The
 // vendor/model (e.g. "amd MI350") is shown separately as a muted subtitle via
@@ -2582,7 +2820,7 @@ function Legend() {
   );
 }
 
-function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
+const Schedule = memo(function Schedule({ gpu, allGPUs = emptyList, selected, reservations, onOpen }) {
   const [selectedDay, setSelectedDay] = useState(() => dateInputValue(new Date()));
   const [fitHours, setFitHours] = useState(minCalendarHours);
   const [nowMS, setNowMS] = useState(() => Date.now());
@@ -2612,7 +2850,10 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
   const baseHours = isToday ? Math.max(fitHours, remainingTodayHours) : 24;
   const targetGPUs = selected.length ? selected : allGPUs.length ? allGPUs : [gpu];
   const gpuReservations = reservations.filter((reservation) => targetGPUs.includes(reservation.gpu));
-  const scheduleJobs = groupScheduleReservations(gpuReservations);
+  // Grouping, lane layout, and colours depend only on the reservation fields
+  // in this signature, so polls that change nothing else reuse them.
+  const reservationsKey = reservationLayoutSignature(gpuReservations);
+  const scheduleJobs = useMemo(() => groupScheduleReservations(gpuReservations), [reservationsKey]);
   // When viewing today, always extend the timeline a little past midnight so
   // there is room to place overnight reservations; also cover any reservation
   // that spills further into the next day. Next-day hours render with the
@@ -2624,17 +2865,18 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
     return Number.isFinite(end.getTime()) && end > acc ? end : acc;
   }, spillFloor);
   const visibleHours = Math.max(baseHours, Math.ceil((spillEnd.getTime() - timelineStart.getTime()) / hourMs));
-  const timelineEnd = new Date(timelineStart.getTime() + visibleHours * hourMs);
+  const timelineStartMS = timelineStart.getTime();
+  const timelineEndMS = timelineStartMS + visibleHours * hourMs;
   const hourSlots = Array.from(
     { length: visibleHours },
-    (_, index) => new Date(timelineStart.getTime() + index * hourMs),
+    (_, index) => new Date(timelineStartMS + index * hourMs),
   );
-  const blocks = layoutScheduleBlocks(
+  const blocks = useMemo(() => layoutScheduleBlocks(
     scheduleJobs
-      .map((job) => scheduleBlock(job, timelineStart, timelineEnd))
+      .map((job) => scheduleBlock(job, new Date(timelineStartMS), new Date(timelineEndMS)))
       .filter(Boolean),
-  );
-  const colorByUser = reservationColorMap(blocks);
+  ), [scheduleJobs, timelineStartMS, timelineEndMS]);
+  const colorByUser = useMemo(() => reservationColorMap(blocks), [blocks]);
   const timelineWidth = Math.max(...blocks.map((block) => block.timelineWidth || 0), 0);
   const emptyLabel = selected.length === 0
     ? "All GPUs available all day"
@@ -2695,7 +2937,7 @@ function Schedule({ gpu, allGPUs = [], selected, reservations, onOpen }) {
       </div>
     </section>
   );
-}
+});
 
 function ScheduleBlockButton({ block, colors = reservationPalette[0], nowMS, onOpen }) {
   const gpuText = scheduleGPUText(block.gpus);
@@ -3892,6 +4134,21 @@ function groupScheduleReservations(reservations) {
   }));
 }
 
+// reservationLayoutSignature covers every field groupScheduleReservations and
+// the schedule layout read, in order.
+function reservationLayoutSignature(reservations) {
+  return JSON.stringify(reservations.map((reservation) => [
+    reservation.id,
+    reservation.group_id,
+    reservation.gpu,
+    reservation.holder,
+    reservation.purpose,
+    reservation.starts_at,
+    reservation.created_at,
+    reservation.expires_at,
+  ]));
+}
+
 function reservationGroupFallbackKey(reservation) {
   return [
     reservation.holder || "",
@@ -4157,19 +4414,15 @@ function sameText(left, right) {
 }
 
 function timeLabel(value) {
-  return new Date(value).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return formatDate(timeLabelFormat, value);
 }
 
 function reservationTimeRangeLabel(start, end, { includeYear = false } = {}) {
   const startDate = new Date(start);
   const endDate = new Date(end);
-  const dateOptions = {
-    month: "short",
-    day: "numeric",
-    ...(includeYear ? { year: "numeric" } : {}),
-  };
-  const startDay = startDate.toLocaleDateString(undefined, dateOptions);
-  const endDay = endDate.toLocaleDateString(undefined, dateOptions);
+  const dayFormat = includeYear ? rangeDayYearFormat : rangeDayFormat;
+  const startDay = formatDate(dayFormat, startDate);
+  const endDay = formatDate(dayFormat, endDate);
   const sameDay = startDate.getFullYear() === endDate.getFullYear()
     && startDate.getMonth() === endDate.getMonth()
     && startDate.getDate() === endDate.getDate();
@@ -4181,13 +4434,7 @@ function reservationTimeRangeLabel(start, end, { includeYear = false } = {}) {
 }
 
 function dateTimeLabel(value) {
-  return new Date(value).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDate(dateTimeLabelFormat, value);
 }
 
 createRoot(document.getElementById("root")).render(<App />);
