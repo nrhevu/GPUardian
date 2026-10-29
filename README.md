@@ -1,8 +1,8 @@
 <!-- markdownlint-disable MD001 MD041 -->
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/nrhevu/GPUardian/main/web/ui/public/gpuardian-logo.svg">
-    <img alt="GPUardian" src="https://raw.githubusercontent.com/nrhevu/GPUardian/main/web/ui/public/gpuardian-logo.svg" width=25%>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/nrhevu/GPUardian/main/docs/assets/gpuardian-logo.svg">
+    <img alt="GPUardian" src="https://raw.githubusercontent.com/nrhevu/GPUardian/main/docs/assets/gpuardian-logo.svg" width=25%>
   </picture>
 </p>
 
