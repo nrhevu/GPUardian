@@ -56,6 +56,9 @@ var (
 	ErrTokenExpired   = errors.New("token expired")
 	ErrTokenRevoked   = errors.New("token revoked")
 	ErrTokenNotFound  = errors.New("token not found")
+	// ErrAuthorizationLimit reports that a token already holds the maximum
+	// number of active authorizations.
+	ErrAuthorizationLimit = errors.New("active authorization limit reached for token")
 )
 
 type Store struct {
@@ -2059,7 +2062,7 @@ func (s *Store) checkActiveAuthorizationCapacityLocked(candidate model.Authoriza
 		}
 	}
 	if active >= maxActiveAuthorizationsPerToken {
-		return fmt.Errorf("active authorization limit reached for token: maximum %d", maxActiveAuthorizationsPerToken)
+		return fmt.Errorf("%w: maximum %d", ErrAuthorizationLimit, maxActiveAuthorizationsPerToken)
 	}
 	return nil
 }

@@ -847,15 +847,23 @@ func validateRequestValue(label, value string) error {
 }
 
 func (s *Server) addAuthorization(tokenSecret string, authorization *model.Authorization) error {
-	s.enforceMu.Lock()
-	defer s.enforceMu.Unlock()
-	return s.addAuthorizationLocked(tokenSecret, authorization)
+	return s.withAuthorizationCapacity(authorization.TokenHash, func() error {
+		s.enforceMu.Lock()
+		defer s.enforceMu.Unlock()
+		return s.addAuthorizationLocked(tokenSecret, authorization)
+	})
 }
 
 func (s *Server) persistAuthorization(tokenSecret string, token model.Token, authorization *model.Authorization) error {
 	if strings.TrimSpace(tokenSecret) != "" || !token.Managed {
 		return s.addAuthorization(tokenSecret, authorization)
 	}
+	return s.withAuthorizationCapacity(token.Hash, func() error {
+		return s.persistManagedAuthorization(token, authorization)
+	})
+}
+
+func (s *Server) persistManagedAuthorization(token model.Token, authorization *model.Authorization) error {
 	s.enforceMu.Lock()
 	defer s.enforceMu.Unlock()
 	current, err := s.Store.ManagedTokenByID(token.ID, time.Now())

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -292,5 +293,29 @@ func TestCachedResolverReusesFullKubernetesWorkload(t *testing.T) {
 	}
 	if base.calls != 1 {
 		t.Fatalf("runtime workload lookups = %d, want 1", base.calls)
+	}
+}
+
+func TestParseDockerContainersReadsIDsAndAliases(t *testing.T) {
+	out := []byte("ABC123\ttrainer\n\ndef456\tprimary,/alias\nfff789\t\n")
+	containers, err := parseDockerContainers(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []DockerContainer{
+		{ID: "abc123", Names: []string{"trainer"}},
+		{ID: "def456", Names: []string{"primary", "alias"}},
+		{ID: "fff789"},
+	}
+	if len(containers) != len(want) {
+		t.Fatalf("containers = %+v, want %+v", containers, want)
+	}
+	for i := range want {
+		if containers[i].ID != want[i].ID || strings.Join(containers[i].Names, ",") != strings.Join(want[i].Names, ",") {
+			t.Fatalf("containers[%d] = %+v, want %+v", i, containers[i], want[i])
+		}
+	}
+	if _, err := parseDockerContainers([]byte("\ttrainer\n")); err == nil {
+		t.Fatal("a row without a container id was accepted")
 	}
 }

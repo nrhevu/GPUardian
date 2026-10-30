@@ -36,6 +36,18 @@ type CachedLookup interface {
 	CachedKubernetesWorkload(containerID string) (KubernetesWorkload, bool)
 }
 
+// DockerContainer is one container known to the Docker daemon, running or
+// stopped.
+type DockerContainer struct {
+	ID    string
+	Names []string
+}
+
+// DockerContainerLister lists every Docker container on the host in one call.
+type DockerContainerLister interface {
+	DockerContainers(ctx context.Context) ([]DockerContainer, error)
+}
+
 var ErrNotFound = errors.New("runtime object not found")
 
 type CLIResolver struct {
@@ -197,6 +209,16 @@ func (r *CachedResolver) DockerContainerName(ctx context.Context, containerID st
 	return r.resolve(ctx, r.dockerNames, r.dockerNameCalls, key, r.successTTL(defaultDockerNameTTL), func() (string, error) {
 		return r.Base.DockerContainerName(ctx, containerID)
 	})
+}
+
+// DockerContainers is never cached: callers use it to decide that a container
+// is gone, which a stale listing must not claim.
+func (r *CachedResolver) DockerContainers(ctx context.Context) ([]DockerContainer, error) {
+	lister, ok := r.Base.(DockerContainerLister)
+	if !ok {
+		return nil, errors.ErrUnsupported
+	}
+	return lister.DockerContainers(ctx)
 }
 
 func (r *CachedResolver) CachedDockerContainerName(containerID string) (string, bool) {
@@ -415,6 +437,40 @@ func (r CLIResolver) DockerContainerName(ctx context.Context, containerID string
 		return "", errors.New("docker inspect returned empty container name")
 	}
 	return name, nil
+}
+
+func (r CLIResolver) DockerContainers(ctx context.Context) ([]DockerContainer, error) {
+	ctx, cancel := r.withTimeout(ctx)
+	defer cancel()
+	out, err := limitedCommandOutput(ctx, "docker", "ps", "--all", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}")
+	if err != nil {
+		return nil, err
+	}
+	return parseDockerContainers(out)
+}
+
+// parseDockerContainers reads `docker ps --format '{{.ID}}\t{{.Names}}'`
+// output. Names is comma-separated when legacy links add aliases.
+func parseDockerContainers(out []byte) ([]DockerContainer, error) {
+	var containers []DockerContainer
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		id, names, _ := strings.Cut(line, "\t")
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			return nil, fmt.Errorf("docker ps returned a container without an id: %q", line)
+		}
+		container := DockerContainer{ID: id}
+		for _, name := range strings.Split(names, ",") {
+			if name = strings.TrimPrefix(strings.TrimSpace(name), "/"); name != "" {
+				container.Names = append(container.Names, name)
+			}
+		}
+		containers = append(containers, container)
+	}
+	return containers, nil
 }
 
 func (r CLIResolver) NamespaceForContainer(ctx context.Context, containerID string) (string, error) {
