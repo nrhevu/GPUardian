@@ -110,7 +110,7 @@ func (s *Server) collectHistory(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, record := range records {
 		record := record
-		if !s.historyNodeReady(record.ID, time.Now()) {
+		if record.Archived || !s.historyNodeReady(record.ID, time.Now()) {
 			continue
 		}
 		wg.Add(1)

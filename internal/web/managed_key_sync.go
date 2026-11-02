@@ -184,7 +184,7 @@ func (s *Server) syncManagedKeysAcrossFleet(ctx context.Context, force bool) {
 	}
 	due := records[:0]
 	for _, record := range records {
-		if force || s.managedKeySyncDue(record.ID) {
+		if !record.Archived && (force || s.managedKeySyncDue(record.ID)) {
 			due = append(due, record)
 		}
 	}
@@ -269,7 +269,9 @@ func (s *Server) managedKeyStatuses() []ManagedKeyNodeStatus {
 	for _, record := range records {
 		state, ok := s.managedKeyNode[record.ID]
 		item := ManagedKeyNodeStatus{NodeID: record.ID, Node: record.Name, Status: "pending"}
-		if ok {
+		if record.Archived {
+			item.Status = "archived"
+		} else if ok {
 			item.SnapshotID, item.SyncedAt, item.Error = state.SnapshotID, state.SyncedAt, state.LastError
 			if state.LastError != "" {
 				item.Status = "error"

@@ -26,6 +26,7 @@ type ServerRecord struct {
 	Endpoint      string    `json:"endpoint"`
 	RootKey       string    `json:"root_key"`
 	TLSSkipVerify bool      `json:"tls_skip_verify,omitempty"`
+	Archived      bool      `json:"archived,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -35,6 +36,7 @@ type PublicServerRecord struct {
 	Name          string    `json:"name"`
 	Endpoint      string    `json:"endpoint"`
 	TLSSkipVerify bool      `json:"tls_skip_verify,omitempty"`
+	Archived      bool      `json:"archived,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -181,6 +183,32 @@ func (r *Registry) Rename(id, name string) (ServerRecord, error) {
 	return ServerRecord{}, os.ErrNotExist
 }
 
+// SetArchived marks a node archived or active. Archived nodes stay registered,
+// with their history, but the gateway stops contacting them.
+func (r *Registry) SetArchived(id string, archived bool) (ServerRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	records, err := r.loadLocked()
+	if err != nil {
+		return ServerRecord{}, err
+	}
+	for i := range records {
+		if records[i].ID != id {
+			continue
+		}
+		if records[i].Archived == archived {
+			return records[i], nil
+		}
+		records[i].Archived = archived
+		records[i].UpdatedAt = time.Now().UTC()
+		if err := r.saveLocked(records); err != nil {
+			return ServerRecord{}, err
+		}
+		return records[i], nil
+	}
+	return ServerRecord{}, os.ErrNotExist
+}
+
 func (r *Registry) loadLocked() ([]ServerRecord, error) {
 	if r.loaded {
 		return append([]ServerRecord(nil), r.records...), nil
@@ -254,6 +282,7 @@ func publicServerRecord(record ServerRecord) PublicServerRecord {
 		Name:          record.Name,
 		Endpoint:      record.Endpoint,
 		TLSSkipVerify: record.TLSSkipVerify,
+		Archived:      record.Archived,
 		CreatedAt:     record.CreatedAt,
 		UpdatedAt:     record.UpdatedAt,
 	}

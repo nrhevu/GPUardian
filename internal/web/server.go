@@ -78,6 +78,10 @@ type renameServerRequest struct {
 	Name string `json:"name"`
 }
 
+type archiveServerRequest struct {
+	Archived bool `json:"archived"`
+}
+
 type createUserRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -534,7 +538,32 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "server not found")
 		return
 	}
+	if record.Archived && r.Method == http.MethodPost && (action == "reservations" || action == "allow") {
+		writeJSONError(w, http.StatusConflict, "node is archived")
+		return
+	}
 	switch {
+	case action == "archive" && r.Method == http.MethodPost:
+		if session.Role != RoleAdmin {
+			writeJSONError(w, http.StatusForbidden, "admin access required")
+			return
+		}
+		var req archiveServerRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		stored, err := s.Registry.SetArchived(id, req.Archived)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !stored.Archived {
+			// The node missed key changes while archived.
+			s.requestManagedKeySync()
+		}
+		s.clearFleetCache()
+		writeJSON(w, http.StatusOK, publicServerRecord(stored))
 	case action == "" && r.Method == http.MethodPatch:
 		if session.Role != RoleAdmin {
 			writeJSONError(w, http.StatusForbidden, "admin access required")
@@ -886,6 +915,10 @@ func (s *Server) fetchFleetSnapshot(ctx context.Context) (fleetSnapshot, error) 
 	}
 	dispatching := true
 	for i, record := range records {
+		if record.Archived {
+			out.Servers[i] = serverSnapshot{Server: publicServerRecord(record)}
+			continue
+		}
 		select {
 		case jobs <- snapshotJob{index: i, record: record}:
 		case <-ctx.Done():

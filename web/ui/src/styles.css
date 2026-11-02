@@ -1061,6 +1061,14 @@ button {
   background: var(--danger-bg);
 }
 
+.server-context-menu button.menu-item {
+  color: var(--text);
+}
+
+.server-context-menu button.menu-item:hover {
+  background: var(--well-strong);
+}
+
 .brand-mark {
   width: 28px;
   height: 28px;
@@ -1307,6 +1315,12 @@ h2 {
   border-radius: 8px;
   color: var(--danger-deep);
   background: var(--red-soft);
+}
+
+.banner.banner-muted {
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--well);
 }
 
 .dashboard-grid {

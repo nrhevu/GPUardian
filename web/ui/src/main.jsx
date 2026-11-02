@@ -936,7 +936,7 @@ function App() {
   }
 
   const current = useMemo(() => {
-    return fleet.find((item) => item.server.id === selectedServerId) || fleet[0] || null;
+    return fleet.find((item) => item.server.id === selectedServerId) || fleet.find((item) => !item.server.archived) || fleet[0] || null;
   }, [fleet, selectedServerId]);
 
   const currentServerId = current?.server?.id || selectedServerId;
@@ -1046,6 +1046,23 @@ function App() {
       setSelectedServerId("");
     }
     void requestRefresh({ layout: true });
+  }
+
+  async function setServerArchived(server, archived) {
+    try {
+      const stored = await api(`/api/servers/${server.id}/archive`, {
+        method: "POST",
+        body: JSON.stringify({ archived }),
+      });
+      // The gateway omits `archived` when false, so set it explicitly.
+      const next = { ...stored, archived: stored.archived === true };
+      setServers((values) => values.map((item) => item.id === next.id ? { ...item, ...next } : item));
+      setFleet((values) => values.map((entry) => entry.server?.id === next.id ? { ...entry, server: { ...entry.server, ...next } } : entry));
+      setError("");
+      void requestRefresh();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function persistNodeLayout(nextLayout) {
@@ -1529,6 +1546,7 @@ function App() {
                               active={server.id === currentServerId}
                               nested
                               online={fleetItem?.online}
+                              archived={server.archived === true}
                               dryRun={fleetItem?.snapshot?.dry_run === true}
                               isAdmin={isAdmin}
                               editing={editingNode}
@@ -1563,6 +1581,7 @@ function App() {
                   groupID=""
                   active={server.id === currentServerId}
                   online={fleetItem?.online}
+                  archived={server.archived === true}
                   dryRun={fleetItem?.snapshot?.dry_run === true}
                   isAdmin={isAdmin}
                   editing={editingNode}
@@ -1591,7 +1610,7 @@ function App() {
         <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="truncate text-sm font-semibold">{viewTitle}</h1>
-            <StatusPill tone={current?.online ? "success" : current?.server ? "danger" : "neutral"} className="min-w-0">
+            <StatusPill tone={current?.server?.archived ? "neutral" : current?.online ? "success" : current?.server ? "danger" : "neutral"} className="min-w-0">
               <span className="truncate">{current?.server?.name || "No node selected"}</span>
             </StatusPill>
             {current?.snapshot?.dry_run === true && <DryRunBadge />}
@@ -1684,6 +1703,11 @@ function App() {
 
         {error && <div className="banner" role="alert">{error}</div>}
         {current?.error && <div className="banner" role="alert">{current.error}</div>}
+        {current?.server?.archived && (
+          <div className="banner banner-muted" role="status">
+            This node is archived. The gateway no longer contacts it{isAdmin ? "; right-click it in the sidebar to unarchive." : "."}
+          </div>
+        )}
 
         {view === "gpu" ? (
           <div
@@ -1860,25 +1884,42 @@ function App() {
         />
       )}
       {serverMenu && (
-        <DeleteContextMenu
+        <ContextMenu
           menu={serverMenu}
-          label="Delete node"
           onClose={() => setServerMenu(null)}
-          onDelete={() => {
-            setServerMenu(null);
-            setDeleteServerTarget(serverMenu.server);
-          }}
+          items={[
+            {
+              label: serverMenu.server.archived ? "Unarchive node" : "Archive node",
+              onSelect: () => {
+                setServerMenu(null);
+                void setServerArchived(serverMenu.server, !serverMenu.server.archived);
+              },
+            },
+            {
+              label: "Delete node",
+              danger: true,
+              onSelect: () => {
+                setServerMenu(null);
+                setDeleteServerTarget(serverMenu.server);
+              },
+            },
+          ]}
         />
       )}
       {nodeGroupMenu && (
-        <DeleteContextMenu
+        <ContextMenu
           menu={nodeGroupMenu}
-          label="Delete group"
           onClose={() => setNodeGroupMenu(null)}
-          onDelete={() => {
-            setNodeGroupMenu(null);
-            setDeleteNodeGroupTarget(nodeGroupMenu.group);
-          }}
+          items={[
+            {
+              label: "Delete group",
+              danger: true,
+              onSelect: () => {
+                setNodeGroupMenu(null);
+                setDeleteNodeGroupTarget(nodeGroupMenu.group);
+              },
+            },
+          ]}
         />
       )}
       {deleteServerTarget && (
@@ -1905,10 +1946,10 @@ function App() {
   );
 }
 
-const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active, nested, online, dryRun, isAdmin, editing, draft, dragging, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
+const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active, nested, online, archived, dryRun, isAdmin, editing, draft, dragging, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
   return (
     <div
-      className={`${navItemClass(active)} group/node select-none ${nested ? "ml-3" : ""} ${dragging ? "opacity-45" : ""}`.trim()}
+      className={`${navItemClass(active)} group/node select-none ${nested ? "ml-3" : ""} ${dragging ? "opacity-45" : archived ? "opacity-60" : ""}`.trim()}
       style={nested ? { width: "calc(100% - 0.75rem)" } : undefined}
       role="button"
       tabIndex={0}
@@ -1927,8 +1968,8 @@ const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active,
       onDrop={isAdmin ? (event) => onDrop(event, { kind: "node", id: server.id, groupID: groupID || "" }) : undefined}
     >
       <span
-        className={`h-2 w-2 shrink-0 rounded-full ${online ? (dryRun ? "bg-status-warning-fg" : "bg-status-success-fg") : "bg-destructive"}`}
-        title={dryRun ? "Dry run: the daemon monitors GPU processes but does not kill them." : undefined}
+        className={`h-2 w-2 shrink-0 rounded-full ${archived ? "bg-muted-foreground" : online ? (dryRun ? "bg-status-warning-fg" : "bg-status-success-fg") : "bg-destructive"}`}
+        title={archived ? "Archived: the gateway no longer contacts this node." : dryRun ? "Dry run: the daemon monitors GPU processes but does not kill them." : undefined}
       />
       {editing ? (
         <input
@@ -1948,7 +1989,7 @@ const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active,
         />
       ) : (
         <span
-          className={`min-w-0 flex-1 truncate ${active ? "text-sidebar-primary-foreground" : "text-foreground"}`}
+          className={`min-w-0 flex-1 truncate ${archived ? "text-muted-foreground" : active ? "text-sidebar-primary-foreground" : "text-foreground"}`}
           onDoubleClick={(event) => {
             event.stopPropagation();
             onRenameStart("node", server.id, server.name);
@@ -3712,7 +3753,7 @@ function DeleteUserModal({ user, onClose, onSubmit }) {
   );
 }
 
-function DeleteContextMenu({ menu, label, onClose, onDelete }) {
+function ContextMenu({ menu, items, onClose }) {
   useEffect(() => {
     const close = () => onClose();
     // Defer attaching the click listener so the right-click that opened the
@@ -3734,13 +3775,16 @@ function DeleteContextMenu({ menu, label, onClose, onDelete }) {
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <button
-        type="button"
-        className="danger-menu-item"
-        onClick={onDelete}
-      >
-        {label}
-      </button>
+      {items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          className={item.danger ? "danger-menu-item" : "menu-item"}
+          onClick={item.onSelect}
+        >
+          {item.label}
+        </button>
+      ))}
     </div>
   );
 }
