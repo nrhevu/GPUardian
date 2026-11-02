@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"gpuardian/internal/httpgzip"
 	"gpuardian/internal/model"
 	"gpuardian/internal/netlimit"
 	"gpuardian/internal/protocol"
@@ -81,6 +82,10 @@ func (s *Server) startNodeHTTP(ctx context.Context) (func(), error) {
 }
 
 func (s *Server) nodeHTTPHandler() http.Handler {
+	return httpgzip.Middleware(s.nodeAPIHandler())
+}
+
+func (s *Server) nodeAPIHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.nodeAuth(s.handleNodeHealth))
 	mux.HandleFunc("/api/v1/snapshot", s.nodeAuth(s.handleNodeSnapshot))
@@ -228,17 +233,47 @@ func (s *Server) handleNodeTelemetry(w http.ResponseWriter, r *http.Request, _ s
 		}
 		limit = parsed
 	}
-	page, err := s.Telemetry.Page(strings.TrimSpace(r.URL.Query().Get("cursor")), limit)
-	if err != nil {
-		var gap *telemetry.CursorGap
-		if errors.As(err, &gap) {
-			writeHTTPJSON(w, http.StatusGone, gap)
+	var wait time.Duration
+	if text := strings.TrimSpace(r.URL.Query().Get("wait")); text != "" {
+		parsed, err := time.ParseDuration(text)
+		if err != nil || parsed < 0 || parsed > telemetry.MaxPageWait {
+			writeHTTPError(w, http.StatusBadRequest, "wait must be a duration between 0s and "+telemetry.MaxPageWait.String())
 			return
 		}
-		writeHTTPError(w, http.StatusBadRequest, "invalid telemetry cursor")
-		return
+		wait = parsed
 	}
-	writeHTTPJSON(w, http.StatusOK, page)
+	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
+	var timeout <-chan time.Time
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	for {
+		changed := s.Telemetry.Changed()
+		page, err := s.Telemetry.Page(cursor, limit)
+		if err != nil {
+			var gap *telemetry.CursorGap
+			if errors.As(err, &gap) {
+				writeHTTPJSON(w, http.StatusGone, gap)
+				return
+			}
+			writeHTTPError(w, http.StatusBadRequest, "invalid telemetry cursor")
+			return
+		}
+		if len(page.Events) > 0 || timeout == nil {
+			writeHTTPJSON(w, http.StatusOK, page)
+			return
+		}
+		select {
+		case <-changed:
+		case <-timeout:
+			writeHTTPJSON(w, http.StatusOK, page)
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func (s *Server) handleNodeReservations(w http.ResponseWriter, r *http.Request, rootKey string) {

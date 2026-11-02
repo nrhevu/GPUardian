@@ -20,6 +20,7 @@ import (
 
 	"gpuardian/internal/config"
 	"gpuardian/internal/history"
+	"gpuardian/internal/httpgzip"
 	"gpuardian/internal/model"
 	"gpuardian/internal/netlimit"
 	"gpuardian/internal/protocol"
@@ -33,6 +34,7 @@ type Server struct {
 	Client   NodeAPI
 	History  *history.Store
 
+	events              *fleetEvents
 	fleetCacheMu        sync.Mutex
 	fleetCache          fleetSnapshot
 	fleetCacheAt        time.Time
@@ -161,6 +163,7 @@ func New(cfg config.Config) *Server {
 		historySync:    make(map[string]historySyncState),
 		managedKeySync: make(chan struct{}, 1),
 		managedKeyNode: make(map[string]managedKeyNodeState),
+		events:         newFleetEvents(),
 	}
 }
 
@@ -219,6 +222,7 @@ func (s *Server) Run(ctx context.Context) error {
 		MaxHeaderBytes:    1 << 20,
 		TLSConfig:         tlsConfig,
 	}
+	httpServer.RegisterOnShutdown(s.events.close)
 	listener, err := net.Listen("tcp", s.Cfg.WebAddr)
 	if err != nil {
 		return err
@@ -267,12 +271,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/servers/", s.requireSession(s.handleServerAction))
 	mux.HandleFunc("/api/node-layout", s.requireSession(s.handleNodeLayout))
 	mux.HandleFunc("/api/fleet/snapshot", s.requireSession(s.handleFleetSnapshot))
+	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history/summary", s.requireSession(s.handleHistorySummary))
 	mux.HandleFunc("/api/history/search", s.requireSession(s.handleHistorySearch))
 	mux.HandleFunc("/api/history/sessions", s.requireSession(s.handleHistorySessions))
 	mux.HandleFunc("/api/history/sessions/", s.requireSession(s.handleHistorySessionAction))
 	mux.HandleFunc("/", s.handleStatic)
-	return s.securityMiddleware(gzipMiddleware(mux))
+	return s.securityMiddleware(httpgzip.Middleware(mux))
 }
 
 func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
@@ -1077,10 +1082,15 @@ func (s *Server) fleetSnapshotCacheTTL() time.Duration {
 	return time.Second
 }
 
+// clearFleetCache forces the next fleet read to query the nodes, and tells
+// event-stream clients to make that read.
 func (s *Server) clearFleetCache() {
 	s.fleetCacheMu.Lock()
-	defer s.fleetCacheMu.Unlock()
 	s.fleetCacheOK = false
+	s.fleetCacheMu.Unlock()
+	if s.events != nil {
+		s.events.publish()
+	}
 }
 
 func (s *Server) canRevoke(ctx context.Context, record ServerRecord, session sessionInfo, id string) (bool, error) {

@@ -138,3 +138,40 @@ func TestOutboxPrunesExpiredSegmentsByPrefix(t *testing.T) {
 		t.Fatalf("expired segment file still present: %v", err)
 	}
 }
+
+func TestOutboxChangedClosesOnAppendOnly(t *testing.T) {
+	root := t.TempDir()
+	box, err := Open(filepath.Join(root, "node.id"), filepath.Join(root, "outbox"), "boot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+	changed := box.Changed()
+	if _, err := box.Page("", 10); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-changed:
+		t.Fatal("changed closed without an append")
+	default:
+	}
+	if _, err := box.AppendBatch(nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-changed:
+		t.Fatal("changed closed by an empty batch")
+	default:
+	}
+	if _, err := box.Append(EventDaemonStarted, struct{}{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-changed:
+	default:
+		t.Fatal("changed not closed by an append")
+	}
+	if next := box.Changed(); next == changed {
+		t.Fatal("Changed returned the closed channel after the append")
+	}
+}

@@ -34,6 +34,9 @@ const dayMs = 24 * hourMs;
 const historyPageSize = 50;
 const historyTimelineLimit = 180;
 const fleetPollInterval = 5000;
+// While the event stream is connected, discrete changes arrive as events and
+// polling only refreshes GPU metrics, so it can run less often.
+const fleetPollIntervalWithEvents = 10_000;
 const nodeLayoutRefreshInterval = 60_000;
 const emptyList = [];
 const themeStorageKey = "gpuardian-theme";
@@ -482,9 +485,11 @@ function App() {
     [],
   );
 
-  // Single refresh path. The fleet snapshot is polled every 5s; keys and the
-  // node layout are fetched only when requested (startup, focus, Keys view,
-  // after mutations) or, for the layout, at most once per minute. Every refresh
+  // Single refresh path. The fleet snapshot is polled every 5s, or every 10s
+  // while the /api/events stream is connected; a `fleet` event from that
+  // stream refreshes at once. Keys and the node layout are fetched only when
+  // requested (startup, focus, Keys view, after mutations) or, for the layout,
+  // at most once per minute. Every refresh
   // (poll or user action via requestRefresh) aborts the in-flight one and
   // inherits its pending work and waiters, and a sequence number drops any
   // response that is no longer the latest, so an older poll can never
@@ -497,6 +502,8 @@ function App() {
     let stopped = false;
     let timer;
     let controller;
+    let events;
+    let eventsReady = false;
     let sequence = 0;
     let inFlight = null;
     let layoutLoadedAt = 0;
@@ -510,7 +517,7 @@ function App() {
       }
     }
 
-    function schedule(delay = fleetPollInterval) {
+    function schedule(delay = eventsReady ? fleetPollIntervalWithEvents : fleetPollInterval) {
       clearTimer();
       if (stopped || (document.hidden && waiters.length === 0)) {
         return;
@@ -576,17 +583,48 @@ function App() {
       });
     }
 
+    function openEvents() {
+      if (events || stopped || document.hidden || typeof EventSource === "undefined") return;
+      const source = new EventSource("/api/events");
+      events = source;
+      let connectedBefore = false;
+      source.addEventListener("ready", () => {
+        // The first connect follows the startup poll; a reconnect may have
+        // missed changes, so it refreshes.
+        const reconnected = connectedBefore;
+        connectedBefore = true;
+        eventsReady = true;
+        if (reconnected) schedule(0);
+      });
+      source.addEventListener("fleet", () => schedule(0));
+      source.onerror = () => {
+        eventsReady = false;
+        // A refused stream (signed out, too many streams) is not retried by
+        // the browser; polling carries on and the stream reopens on focus.
+        if (source.readyState === EventSource.CLOSED) closeEvents();
+      };
+    }
+
+    function closeEvents() {
+      events?.close();
+      events = undefined;
+      eventsReady = false;
+    }
+
     function handleVisibilityChange() {
       if (document.hidden) {
+        closeEvents();
         if (waiters.length === 0) clearTimer();
         return;
       }
+      openEvents();
       if (!controller) schedule(0);
     }
 
     function handleFocus() {
       pending.keys = true;
       pending.layout = true;
+      openEvents();
       if (!controller) schedule(0);
     }
 
@@ -594,8 +632,10 @@ function App() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("focus", handleFocus);
     schedule(0);
+    openEvents();
     return () => {
       stopped = true;
+      closeEvents();
       clearTimer();
       controller?.abort();
       inFlight?.waiters.forEach((resolve) => resolve());

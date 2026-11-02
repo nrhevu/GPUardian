@@ -42,6 +42,15 @@ const (
 	EventGap                 = "telemetry.gap"
 )
 
+const (
+	// CapabilityTelemetryWait marks a node whose telemetry endpoint accepts
+	// `wait`: an empty page is held until an event arrives or the wait ends.
+	CapabilityTelemetryWait = "telemetry_wait_v1"
+	// MaxPageWait bounds `wait`. It stays below the node HTTP read timeout,
+	// which would otherwise cancel the held request.
+	MaxPageWait = 10 * time.Second
+)
+
 type Event struct {
 	Seq        uint64          `json:"seq"`
 	OccurredAt time.Time       `json:"occurred_at"`
@@ -212,6 +221,8 @@ type Outbox struct {
 	// totalBytes is the sum of segments[].size.
 	totalBytes int64
 	current    *os.File
+	// changed is closed and replaced whenever events are appended.
+	changed chan struct{}
 }
 
 // BatchEvent is one event for AppendBatch.
@@ -265,7 +276,7 @@ func (o *Outbox) Info() Info {
 	defer o.mu.Unlock()
 	return Info{
 		NodeID: o.nodeID, BootID: o.bootID, StreamID: o.streamID, TelemetrySchema: SchemaVersion,
-		Capabilities: []string{"telemetry_v1", "reservation_external_session_id", "job_tracking", "gpu_samples", "managed_user_keys_v1", "managed_key_authority_v1"},
+		Capabilities: []string{"telemetry_v1", "reservation_external_session_id", "job_tracking", "gpu_samples", "managed_user_keys_v1", "managed_key_authority_v1", CapabilityTelemetryWait},
 	}
 }
 
@@ -297,6 +308,11 @@ func (o *Outbox) AppendBatch(batch []BatchEvent) ([]Event, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	appended := make([]Event, 0, len(batch))
+	defer func() {
+		if len(appended) > 0 {
+			o.signalChangedLocked()
+		}
+	}()
 	unsynced := false
 	for i, item := range batch {
 		occurredAt := item.OccurredAt
@@ -337,6 +353,24 @@ func (o *Outbox) AppendBatch(batch []BatchEvent) ([]Event, error) {
 	}
 	o.pruneLocked(time.Now().UTC())
 	return appended, nil
+}
+
+// Changed returns a channel that is closed by the next append. Take it before
+// reading a Page so an append between the two is not missed.
+func (o *Outbox) Changed() <-chan struct{} {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.changed == nil {
+		o.changed = make(chan struct{})
+	}
+	return o.changed
+}
+
+func (o *Outbox) signalChangedLocked() {
+	if o.changed != nil {
+		close(o.changed)
+	}
+	o.changed = make(chan struct{})
 }
 
 func (o *Outbox) syncIfLocked(unsynced bool) error {

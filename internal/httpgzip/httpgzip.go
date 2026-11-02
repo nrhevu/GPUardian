@@ -1,4 +1,5 @@
-package web
+// Package httpgzip compresses HTTP responses for clients that accept gzip.
+package httpgzip
 
 import (
 	"compress/gzip"
@@ -19,10 +20,10 @@ var gzipWriterPool = sync.Pool{New: func() any {
 	return writer
 }}
 
-// gzipMiddleware compresses JSON and text-like static responses. The gateway
-// is exposed without a compressing proxy, and the fleet snapshot polled every
-// few seconds plus the UI bundle are mostly compressible text.
-func gzipMiddleware(next http.Handler) http.Handler {
+// Middleware compresses JSON and text-like responses. The gateway is exposed
+// without a compressing proxy and node snapshots are polled every few seconds,
+// so both serve mostly compressible text. Event streams pass through unbuffered.
+func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Accept-Encoding")
 		if r.Method == http.MethodHead || r.Header.Get("Range") != "" || !acceptsGzip(r.Header.Get("Accept-Encoding")) {
@@ -61,6 +62,9 @@ func compressibleContentType(contentType string) bool {
 		return false
 	}
 	switch {
+	case mediaType == "text/event-stream":
+		// Buffering would hold events back until the threshold fills.
+		return false
 	case strings.HasPrefix(mediaType, "text/"):
 		return true
 	case mediaType == "application/json", mediaType == "application/javascript",

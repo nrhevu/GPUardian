@@ -42,6 +42,7 @@ internal/model/       Shared domain types
 internal/web/         Web gateway: HTTP handlers, sessions, users, registry, keys, history
 internal/history/     Reservation history SQLite store (history.db)
 internal/netlimit/    Rate limiting for gateway endpoints
+internal/httpgzip/    Gzip response middleware shared by the gateway and node daemon
 internal/amdsmi/      amd-smi wrapper (AMD provider)
 internal/nvidiasmi/   nvidia-smi wrapper (NVIDIA provider)
 internal/gpusmi/      Vendor-neutral GPU provider interfaces shared by daemon

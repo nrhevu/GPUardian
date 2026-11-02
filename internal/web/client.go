@@ -60,6 +60,13 @@ type TelemetryNodeAPI interface {
 	Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int) (telemetry.Page, error)
 }
 
+// TelemetryWaitNodeAPI long-polls nodes that advertise
+// telemetry.CapabilityTelemetryWait: an empty page is held open until an event
+// arrives or wait elapses.
+type TelemetryWaitNodeAPI interface {
+	TelemetryWait(ctx context.Context, server ServerRecord, cursor string, limit int, wait time.Duration) (telemetry.Page, error)
+}
+
 type ManagedKeyNodeAPI interface {
 	SyncManagedUserKeys(ctx context.Context, server ServerRecord, snapshot protocol.ManagedUserKeySnapshot) (protocol.ManagedUserKeySyncResult, error)
 }
@@ -88,6 +95,10 @@ func (c NodeClient) Info(ctx context.Context, server ServerRecord) (telemetry.In
 }
 
 func (c NodeClient) Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int) (telemetry.Page, error) {
+	return c.TelemetryWait(ctx, server, cursor, limit, 0)
+}
+
+func (c NodeClient) TelemetryWait(ctx context.Context, server ServerRecord, cursor string, limit int, wait time.Duration) (telemetry.Page, error) {
 	endpoint, err := joinURL(server.Endpoint, "/api/v1/telemetry", c.AllowInsecureNodes)
 	if err != nil {
 		return telemetry.Page{}, err
@@ -103,8 +114,11 @@ func (c NodeClient) Telemetry(ctx context.Context, server ServerRecord, cursor s
 	if limit > 0 {
 		query.Set("limit", fmt.Sprintf("%d", limit))
 	}
+	if wait > 0 {
+		query.Set("wait", wait.String())
+	}
 	parsed.RawQuery = query.Encode()
-	requestCtx, cancel := context.WithTimeout(ctx, c.timeout())
+	requestCtx, cancel := context.WithTimeout(ctx, c.timeout()+wait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
