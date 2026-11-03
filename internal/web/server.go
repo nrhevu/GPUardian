@@ -41,6 +41,8 @@ type Server struct {
 	fleetCacheOK        bool
 	fleetCacheTTL       time.Duration
 	fleetRefresh        *fleetRefreshCall
+	lastSnapMu          sync.Mutex
+	lastSnap            map[string]lastNodeSnapshot
 	now                 func() time.Time
 	sessionKey          []byte
 	sessionKeyErr       error
@@ -116,6 +118,9 @@ const (
 	// holding recently expired data wait this long, then get that data.
 	fleetStaleWait   = 750 * time.Millisecond
 	fleetMaxStaleAge = 30 * time.Second
+	// A node whose snapshot fetch fails keeps showing its last good snapshot,
+	// marked stale, for this long before it is reported offline.
+	fleetNodeStaleGrace = 30 * time.Second
 	// History reconciliation only needs to run when a node's live reservation
 	// groups change; this interval catches sessions recorded in between.
 	fleetReconcileInterval       = 30 * time.Second
@@ -144,6 +149,15 @@ type serverSnapshot struct {
 	Online   bool                `json:"online"`
 	Error    string              `json:"error,omitempty"`
 	Snapshot *model.NodeSnapshot `json:"snapshot,omitempty"`
+	// Stale marks a snapshot kept from SnapshotAt because the latest fetch
+	// failed with Error.
+	Stale      bool      `json:"stale,omitempty"`
+	SnapshotAt time.Time `json:"snapshot_at,omitzero"`
+}
+
+type lastNodeSnapshot struct {
+	snapshot model.NodeSnapshot
+	at       time.Time
 }
 
 func New(cfg config.Config) *Server {
@@ -905,9 +919,17 @@ func (s *Server) fetchFleetSnapshot(ctx context.Context) (fleetSnapshot, error) 
 				item := serverSnapshot{Server: publicServerRecord(job.record)}
 				if err != nil {
 					item.Error = boundedFleetError(err)
+					// One failed fetch should not blank the node's page.
+					if last, ok := s.recentNodeSnapshot(job.record.ID); ok && budget.accept(last.snapshot) == nil {
+						item.Online = true
+						item.Stale = true
+						item.SnapshotAt = last.at
+						item.Snapshot = &last.snapshot
+					}
 				} else if err := budget.accept(snapshot); err != nil {
 					item.Error = err.Error()
 				} else {
+					s.rememberNodeSnapshot(job.record.ID, snapshot)
 					if s.History != nil {
 						s.reconcileNodeHistory(ctx, job.record.ID, snapshot)
 					}
@@ -935,6 +957,7 @@ func (s *Server) fetchFleetSnapshot(ctx context.Context) (fleetSnapshot, error) 
 	}
 	close(jobs)
 	wg.Wait()
+	s.pruneNodeSnapshots(records)
 	for i, record := range records {
 		if out.Servers[i].Server.ID != "" {
 			continue
@@ -974,6 +997,45 @@ func (s *Server) reconcileNodeHistory(ctx context.Context, serverID string, snap
 	}
 	s.reconcileSeen[serverID] = reconcileState{groups: signature, at: now}
 	s.reconcileMu.Unlock()
+}
+
+func (s *Server) rememberNodeSnapshot(id string, snapshot model.NodeSnapshot) {
+	s.lastSnapMu.Lock()
+	defer s.lastSnapMu.Unlock()
+	if s.lastSnap == nil {
+		s.lastSnap = make(map[string]lastNodeSnapshot)
+	}
+	s.lastSnap[id] = lastNodeSnapshot{snapshot: snapshot, at: s.nowTime()}
+}
+
+// recentNodeSnapshot returns the node's last good snapshot if it is within
+// fleetNodeStaleGrace.
+func (s *Server) recentNodeSnapshot(id string) (lastNodeSnapshot, bool) {
+	s.lastSnapMu.Lock()
+	defer s.lastSnapMu.Unlock()
+	last, ok := s.lastSnap[id]
+	if !ok || s.nowTime().Sub(last.at) > fleetNodeStaleGrace {
+		return lastNodeSnapshot{}, false
+	}
+	return last, true
+}
+
+// pruneNodeSnapshots drops kept snapshots of nodes that were removed or
+// archived.
+func (s *Server) pruneNodeSnapshots(records []ServerRecord) {
+	active := make(map[string]bool, len(records))
+	for _, record := range records {
+		if !record.Archived {
+			active[record.ID] = true
+		}
+	}
+	s.lastSnapMu.Lock()
+	defer s.lastSnapMu.Unlock()
+	for id := range s.lastSnap {
+		if !active[id] {
+			delete(s.lastSnap, id)
+		}
+	}
 }
 
 func boundedFleetError(err error) string {

@@ -1742,7 +1742,14 @@ function App() {
         </header>
 
         {error && <div className="banner" role="alert">{error}</div>}
-        {current?.error && <div className="banner" role="alert">{current.error}</div>}
+        {current?.error &&
+          (current.stale ? (
+            <div className="banner banner-muted" role="status">
+              Couldn't refresh this node; showing data from {formatDate(clockTimeFormat, current.snapshot_at)}. {current.error}
+            </div>
+          ) : (
+            <div className="banner" role="alert">{current.error}</div>
+          ))}
         {current?.server?.archived && (
           <div className="banner banner-muted" role="status">
             This node is archived. The gateway no longer contacts it{isAdmin ? "; right-click it in the sidebar to unarchive." : "."}
@@ -2657,6 +2664,7 @@ function durationLabel(milliseconds) {
 // locales/options, so the output is identical at a fraction of the cost.
 const compactDateTimeFormat = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const timeLabelFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const clockTimeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const rangeDayFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 const rangeDayYearFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
 const dateTimeLabelFormat = new Intl.DateTimeFormat(undefined, {

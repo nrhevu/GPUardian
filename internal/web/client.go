@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"gpuardian/internal/model"
@@ -413,7 +415,8 @@ func (c NodeClient) call(ctx context.Context, server ServerRecord, rootKey, meth
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, method, endpoint, payload)
+	trace := &nodeCallTrace{start: time.Now()}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(requestCtx, trace.clientTrace()), method, endpoint, payload)
 	if err != nil {
 		return err
 	}
@@ -431,7 +434,7 @@ func (c NodeClient) call(ctx context.Context, server ServerRecord, rootKey, meth
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		return err
+		return trace.annotate(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -450,7 +453,7 @@ func (c NodeClient) call(ctx context.Context, server ServerRecord, rootKey, meth
 	}
 	data, err := readLimitedNodeBody(resp.Body, c.successLimit())
 	if err != nil {
-		return fmt.Errorf("node %s: %w", server.Name, err)
+		return fmt.Errorf("node %s: %w", server.Name, trace.annotate(err))
 	}
 	if out == nil || len(bytes.TrimSpace(data)) == 0 {
 		return nil
@@ -461,6 +464,66 @@ func (c NodeClient) call(ctx context.Context, server ServerRecord, rootKey, meth
 		}
 	}
 	return json.Unmarshal(data, out)
+}
+
+// nodeCallTrace records how far a node request got, so a timeout can say
+// whether the node was unreachable, silent, or slow to finish its reply.
+type nodeCallTrace struct {
+	start time.Time
+
+	mu        sync.Mutex
+	gotConn   bool
+	reused    bool
+	idle      time.Duration
+	wrote     time.Duration
+	wroteOK   bool
+	firstByte time.Duration
+	gotByte   bool
+}
+
+func (t *nodeCallTrace) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			t.gotConn, t.reused, t.idle = true, info.Reused, info.IdleTime
+		},
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			t.wrote, t.wroteOK = time.Since(t.start), true
+		},
+		GotFirstResponseByte: func() {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			t.firstByte, t.gotByte = time.Since(t.start), true
+		},
+	}
+}
+
+// annotate adds the stage a timed-out request reached to err.
+func (t *nodeCallTrace) annotate(err error) error {
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	conn := "a new connection"
+	if t.reused {
+		conn = fmt.Sprintf("a connection reused after %s idle", t.idle.Round(time.Second))
+	}
+	var stage string
+	switch {
+	case !t.gotConn:
+		stage = "could not connect to the node"
+	case !t.wroteOK:
+		stage = "connected on " + conn + " but the request was not sent"
+	case !t.gotByte:
+		stage = fmt.Sprintf("request sent at %s on %s; the node sent nothing back", t.wrote.Round(time.Millisecond), conn)
+	default:
+		stage = fmt.Sprintf("the node started replying at %s but did not finish", t.firstByte.Round(time.Millisecond))
+	}
+	return fmt.Errorf("%w (%s)", err, stage)
 }
 
 func validateGenericNodeJSON(data []byte) error {

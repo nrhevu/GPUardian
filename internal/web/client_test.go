@@ -429,3 +429,40 @@ func TestJoinURLAllowsHTTPWithExplicitOptIn(t *testing.T) {
 func testNodeRecord(endpoint string) ServerRecord {
 	return ServerRecord{Name: "node-a", Endpoint: endpoint, RootKey: "rk_test", TLSSkipVerify: true}
 }
+
+func TestNodeClientTimeoutSaysWhereTheRequestStalled(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/snapshot" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"gpus":[`))
+			w.(http.Flusher).Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	clients := newNodeHTTPClients()
+	defer clients.closeIdleConnections()
+	client := NodeClient{Timeout: 200 * time.Millisecond, clients: clients}
+	record := testNodeRecord(server.URL)
+	for _, test := range []struct {
+		name string
+		call func() error
+		want string
+	}{
+		{name: "silent node", call: func() error { _, err := client.Info(context.Background(), record); return err }, want: "on a new connection; the node sent nothing back"},
+		{name: "unfinished reply", call: func() error { _, err := client.Snapshot(context.Background(), record); return err }, want: "the node started replying"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.call()
+			if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want a deadline error mentioning %q", err, test.want)
+			}
+		})
+	}
+}
