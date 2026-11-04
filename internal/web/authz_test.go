@@ -37,12 +37,12 @@ type managedAuthzNodeClient struct {
 func (c *managedAuthzNodeClient) Info(context.Context, ServerRecord) (telemetry.Info, error) {
 	capabilities := c.capabilities
 	if len(capabilities) == 0 {
-		capabilities = []string{"managed_user_keys_v1"}
+		capabilities = []string{"managed_user_keys_v1", telemetry.CapabilityTelemetryWait}
 	}
 	return telemetry.Info{NodeID: "node-managed", Capabilities: capabilities}, nil
 }
 
-func (c *managedAuthzNodeClient) Telemetry(context.Context, ServerRecord, string, int) (telemetry.Page, error) {
+func (c *managedAuthzNodeClient) Telemetry(context.Context, ServerRecord, string, int, time.Duration) (telemetry.Page, error) {
 	return telemetry.Page{}, nil
 }
 

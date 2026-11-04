@@ -12,16 +12,18 @@ import (
 )
 
 const (
-	// historyPollInterval paces nodes without telemetry long-polling, and the
-	// collector's check for added, removed or archived nodes.
+	// historyPollInterval paces the collector's check for added, removed or
+	// archived nodes, the retry backoff, and a node that answers a long poll
+	// with an empty page too quickly.
 	historyPollInterval = 2 * time.Second
 	// historyLongPollWait is how long a node may hold an empty telemetry page.
 	historyLongPollWait = telemetry.MaxPageWait
 	// historyMinLongPoll is the shortest held request treated as a real wait;
-	// an empty page returned sooner falls back to polling.
+	// an empty page returned sooner waits historyPollInterval before the next.
 	historyMinLongPoll = time.Second
-	// Node identity and capabilities rarely change; the collector polls every
-	// node every 2s, so reuse Info briefly and refetch it on any failure.
+	// Node identity and capabilities rarely change; the collector asks every
+	// node for telemetry several times a minute, so reuse Info briefly and
+	// refetch it on any failure.
 	nodeInfoCacheTTL = 30 * time.Second
 	// Retention pruning runs in bounded batches outside the ingest path.
 	historyPruneInterval = time.Hour
@@ -113,8 +115,8 @@ func (s *Server) superviseHistoryWorkers(ctx context.Context, workers map[string
 	}
 }
 
-// runNodeHistory follows one node's telemetry stream. Nodes that support it
-// hold the request open until events arrive; the rest are polled.
+// runNodeHistory follows one node's telemetry stream; the node holds each
+// request open until events arrive.
 func (s *Server) runNodeHistory(ctx context.Context, client TelemetryNodeAPI, id string) {
 	for ctx.Err() == nil {
 		if delay := s.historyRetryDelay(id, time.Now()); delay > 0 {
@@ -128,12 +130,12 @@ func (s *Server) runNodeHistory(ctx context.Context, client TelemetryNodeAPI, id
 			return
 		}
 		started := time.Now()
-		result, err := s.collectNodeHistory(ctx, client, record, s.historyOwners(), historyLongPollWait)
+		events, err := s.collectNodeHistory(ctx, client, record, s.historyOwners(), historyLongPollWait)
 		if err != nil {
 			s.forgetNodeInfo(record.ID)
 		}
 		s.recordHistoryAttempt(record.ID, err, time.Now())
-		if err == nil && (!result.longPolled || (result.events == 0 && time.Since(started) < historyMinLongPoll)) {
+		if err == nil && events == 0 && time.Since(started) < historyMinLongPoll {
 			if !sleepContext(ctx, historyPollInterval) {
 				return
 			}
@@ -237,51 +239,64 @@ func (s *Server) historyOwners() map[string]bool {
 	return owners
 }
 
-type historyCollectResult struct {
-	events     int
-	longPolled bool
+// errNodeTelemetryOutdated rejects node daemons from before telemetry
+// long-polling; the gateway no longer polls their telemetry.
+var errNodeTelemetryOutdated = fmt.Errorf("node daemon must be upgraded: it does not support telemetry long-polling (%s)", telemetry.CapabilityTelemetryWait)
+
+// requireNodeTelemetryWait refuses to register a node whose daemon predates
+// telemetry long-polling.
+func (s *Server) requireNodeTelemetryWait(ctx context.Context, record ServerRecord) error {
+	client, ok := s.Client.(TelemetryNodeAPI)
+	if !ok {
+		return nil // Test adapters opt out; the production client always implements this API.
+	}
+	info, err := client.Info(ctx, record)
+	if err != nil {
+		return fmt.Errorf("query node telemetry capability: %w", err)
+	}
+	if !telemetryCapability(info, telemetry.CapabilityTelemetryWait) {
+		return errNodeTelemetryOutdated
+	}
+	return nil
 }
 
-// collectNodeHistory applies the node's pending telemetry pages. With wait > 0
-// and a node that supports it, the first page is long-polled. Node calls carry
-// the node client's own timeouts.
-func (s *Server) collectNodeHistory(ctx context.Context, client TelemetryNodeAPI, record ServerRecord, knownOwners map[string]bool, wait time.Duration) (historyCollectResult, error) {
-	var result historyCollectResult
+// collectNodeHistory applies the node's pending telemetry pages and returns
+// how many events they held. With wait > 0 the first page is long-polled.
+// Node calls carry the node client's own timeouts.
+func (s *Server) collectNodeHistory(ctx context.Context, client TelemetryNodeAPI, record ServerRecord, knownOwners map[string]bool, wait time.Duration) (int, error) {
+	events := 0
 	infoCtx, cancel := context.WithTimeout(ctx, fleetNodeTimeout)
 	info, infoCached, err := s.cachedNodeInfo(infoCtx, client, record)
 	cancel()
 	if err != nil {
-		return result, fmt.Errorf("node info: %w", err)
+		return events, fmt.Errorf("node info: %w", err)
 	}
 	if info.NodeID == "" {
-		return result, errors.New("node info is missing node_id")
+		return events, errors.New("node info is missing node_id")
 	}
 	if info.TelemetrySchema < 1 || !telemetryCapability(info, "telemetry_v1") {
-		return result, errors.New("node does not support telemetry history")
+		return events, errors.New("node does not support telemetry history")
 	}
-	waitClient, canWait := client.(TelemetryWaitNodeAPI)
-	if !canWait || !telemetryCapability(info, telemetry.CapabilityTelemetryWait) {
-		wait = 0
+	if !telemetryCapability(info, telemetry.CapabilityTelemetryWait) {
+		return events, errNodeTelemetryOutdated
 	}
 	cursor, err := s.History.SyncCursor(ctx, record.ID)
 	if err != nil {
-		return result, err
+		return events, err
 	}
 	for pages := 0; pages < 32; pages++ {
-		var page telemetry.Page
-		if pages == 0 && wait > 0 {
-			result.longPolled = true
-			page, err = waitClient.TelemetryWait(ctx, record, cursor, telemetry.MaxPageLimit, wait)
-		} else {
-			page, err = client.Telemetry(ctx, record, cursor, telemetry.MaxPageLimit)
+		pageWait := wait
+		if pages > 0 {
+			pageWait = 0
 		}
+		page, err := client.Telemetry(ctx, record, cursor, telemetry.MaxPageLimit, pageWait)
 		if err != nil {
 			var gap *TelemetryGapError
 			if !errors.As(err, &gap) {
-				return result, err
+				return events, err
 			}
 			if err := s.History.MarkGap(ctx, record.ID, gap.Gap.Reason); err != nil {
-				return result, err
+				return events, err
 			}
 			cursor = gap.Gap.ResumeCursor
 			continue
@@ -294,17 +309,17 @@ func (s *Server) collectNodeHistory(ctx context.Context, client TelemetryNodeAPI
 			info, infoCached, err = s.cachedNodeInfo(infoCtx, client, record)
 			cancel()
 			if err != nil {
-				return result, fmt.Errorf("node info: %w", err)
+				return events, fmt.Errorf("node info: %w", err)
 			}
 		}
 		if page.NodeID != info.NodeID || page.StreamID == "" {
 			_ = s.History.MarkGap(ctx, record.ID, "node identity changed")
-			return result, errors.New("telemetry node identity changed")
+			return events, errors.New("telemetry node identity changed")
 		}
 		if err := s.History.ApplyPageWithOwners(ctx, record.ID, record.Name, page, knownOwners); err != nil {
-			return result, err
+			return events, err
 		}
-		result.events += len(page.Events)
+		events += len(page.Events)
 		if pageChangesFleet(page) {
 			// The node's reservations, authorizations or jobs moved on; drop
 			// the cached fleet view and tell event-stream clients.
@@ -312,10 +327,10 @@ func (s *Server) collectNodeHistory(ctx context.Context, client TelemetryNodeAPI
 		}
 		cursor = page.NextCursor
 		if !page.HasMore {
-			return result, nil
+			return events, nil
 		}
 	}
-	return result, nil
+	return events, nil
 }
 
 // pageChangesFleet reports whether a page holds events other than periodic GPU

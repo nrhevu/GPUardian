@@ -126,12 +126,11 @@ func TestFleetEventsCapsStreamsPerUserAndCloses(t *testing.T) {
 	}
 }
 
-// waitTestNodeClient reports whether collection long-polled or polled.
+// waitTestNodeClient records the wait of every telemetry request.
 type waitTestNodeClient struct {
 	*authzNodeClient
 	capabilities []string
 	waits        chan time.Duration
-	polls        chan struct{}
 	infoErr      error
 }
 
@@ -142,17 +141,12 @@ func (c *waitTestNodeClient) Info(context.Context, ServerRecord) (telemetry.Info
 	return telemetry.Info{NodeID: "node_wait", StreamID: "stream_wait", TelemetrySchema: telemetry.SchemaVersion, Capabilities: c.capabilities}, nil
 }
 
-func (c *waitTestNodeClient) Telemetry(context.Context, ServerRecord, string, int) (telemetry.Page, error) {
-	c.polls <- struct{}{}
-	return telemetry.Page{SchemaVersion: telemetry.SchemaVersion, NodeID: "node_wait", StreamID: "stream_wait"}, nil
-}
-
-func (c *waitTestNodeClient) TelemetryWait(_ context.Context, _ ServerRecord, _ string, _ int, wait time.Duration) (telemetry.Page, error) {
+func (c *waitTestNodeClient) Telemetry(_ context.Context, _ ServerRecord, _ string, _ int, wait time.Duration) (telemetry.Page, error) {
 	c.waits <- wait
 	return telemetry.Page{SchemaVersion: telemetry.SchemaVersion, NodeID: "node_wait", StreamID: "stream_wait"}, nil
 }
 
-func TestCollectNodeHistoryLongPollsOnlyCapableNodes(t *testing.T) {
+func TestCollectNodeHistoryRequiresLongPollingNodes(t *testing.T) {
 	server, base, serverID := newAuthzServer(t)
 	historyStore, err := history.Open(filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {
@@ -167,25 +161,69 @@ func TestCollectNodeHistoryLongPollsOnlyCapableNodes(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
 		capabilities []string
-		wantWait     bool
+		wantErr      error
 	}{
-		{name: "capable node", capabilities: []string{"telemetry_v1", telemetry.CapabilityTelemetryWait}, wantWait: true},
-		{name: "older node", capabilities: []string{"telemetry_v1"}},
+		{name: "capable node", capabilities: []string{"telemetry_v1", telemetry.CapabilityTelemetryWait}},
+		{name: "older node", capabilities: []string{"telemetry_v1"}, wantErr: errNodeTelemetryOutdated},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &waitTestNodeClient{authzNodeClient: base, capabilities: tt.capabilities, waits: make(chan time.Duration, 1), polls: make(chan struct{}, 1)}
+			client := &waitTestNodeClient{authzNodeClient: base, capabilities: tt.capabilities, waits: make(chan time.Duration, 1)}
 			server.forgetNodeInfo(record.ID)
-			result, err := server.collectNodeHistory(context.Background(), client, record, nil, historyLongPollWait)
+			_, err := server.collectNodeHistory(context.Background(), client, record, nil, historyLongPollWait)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				if len(client.waits) != 0 {
+					t.Fatal("collector requested telemetry from an outdated node")
+				}
+				return
+			}
+			if len(client.waits) != 1 {
+				t.Fatalf("telemetry requests = %d, want 1", len(client.waits))
+			}
+			if wait := <-client.waits; wait != historyLongPollWait {
+				t.Fatalf("wait = %s, want %s", wait, historyLongPollWait)
+			}
+		})
+	}
+}
+
+func TestRegisteringNodeRequiresTelemetryLongPolling(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		capabilities []string
+		wantStatus   int
+	}{
+		{name: "current daemon", capabilities: []string{"telemetry_v1", telemetry.CapabilityTelemetryWait}, wantStatus: http.StatusCreated},
+		{name: "older daemon", capabilities: []string{"telemetry_v1"}, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, base, _ := newAuthzServer(t)
+			server.Client = &waitTestNodeClient{authzNodeClient: base, capabilities: tt.capabilities, waits: make(chan time.Duration, 1)}
+			before, err := server.Registry.List()
 			if err != nil {
 				t.Fatal(err)
 			}
-			waited, polled := len(client.waits) == 1, len(client.polls) == 1
-			if result.longPolled != tt.wantWait || waited != tt.wantWait || polled == tt.wantWait {
-				t.Fatalf("longPolled=%v waits=%d polls=%d, want long poll %v", result.longPolled, len(client.waits), len(client.polls), tt.wantWait)
+			cookie := testSessionCookie(t, server, "admin", RoleAdmin)
+			response := requestJSON(server.routes(), http.MethodPost, "/api/servers", `{"name":"new-node","endpoint":"https://new-node:8192","root_key":"rk"}`, cookie)
+			if response.Code != tt.wantStatus {
+				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), tt.wantStatus)
 			}
-			if tt.wantWait {
-				if wait := <-client.waits; wait != historyLongPollWait {
-					t.Fatalf("wait = %s, want %s", wait, historyLongPollWait)
+			after, err := server.Registry.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			added := len(after) - len(before)
+			if tt.wantStatus == http.StatusCreated && added != 1 {
+				t.Fatalf("registry grew by %d, want 1", added)
+			}
+			if tt.wantStatus != http.StatusCreated {
+				if added != 0 {
+					t.Fatalf("outdated daemon was registered")
+				}
+				if !strings.Contains(response.Body.String(), "must be upgraded") {
+					t.Fatalf("error does not ask for an upgrade: %s", response.Body.String())
 				}
 			}
 		})

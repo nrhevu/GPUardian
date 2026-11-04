@@ -92,7 +92,9 @@ uses the standard-library `unittest` runner shown above.
 - **`internal/protocol` is the wire contract.** Both the daemon and gateway
   speak the JSON `protocol.Request`/`protocol.Response` envelope over the
   node API. Changes here are cross-component and must stay backward-compatible
-  with deployed daemons.
+  with deployed daemons. The exception is telemetry: the gateway requires
+  `telemetry_wait_v1` (long-polled `/api/v1/telemetry`) and no longer polls
+  daemons that lack it, so do not reintroduce that fallback.
 - **Daemon (`internal/daemon`, `internal/enforce`) must stay host-only.** It
   reads `/proc`, `/sys/fs/cgroup`, and the GPU vendor's SMI CLI (`amd-smi` or
   `nvidia-smi`, selected in `internal/gpusmi` and wired in

@@ -57,16 +57,11 @@ type NodeAPI interface {
 	Revoke(ctx context.Context, server ServerRecord, args protocol.RevokeArgs) (map[string]string, error)
 }
 
+// TelemetryNodeAPI reads a node's telemetry stream. With wait > 0 the node
+// holds an empty page open until an event arrives or wait elapses.
 type TelemetryNodeAPI interface {
 	Info(ctx context.Context, server ServerRecord) (telemetry.Info, error)
-	Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int) (telemetry.Page, error)
-}
-
-// TelemetryWaitNodeAPI long-polls nodes that advertise
-// telemetry.CapabilityTelemetryWait: an empty page is held open until an event
-// arrives or wait elapses.
-type TelemetryWaitNodeAPI interface {
-	TelemetryWait(ctx context.Context, server ServerRecord, cursor string, limit int, wait time.Duration) (telemetry.Page, error)
+	Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int, wait time.Duration) (telemetry.Page, error)
 }
 
 type ManagedKeyNodeAPI interface {
@@ -96,11 +91,7 @@ func (c NodeClient) Info(ctx context.Context, server ServerRecord) (telemetry.In
 	return info, err
 }
 
-func (c NodeClient) Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int) (telemetry.Page, error) {
-	return c.TelemetryWait(ctx, server, cursor, limit, 0)
-}
-
-func (c NodeClient) TelemetryWait(ctx context.Context, server ServerRecord, cursor string, limit int, wait time.Duration) (telemetry.Page, error) {
+func (c NodeClient) Telemetry(ctx context.Context, server ServerRecord, cursor string, limit int, wait time.Duration) (telemetry.Page, error) {
 	endpoint, err := joinURL(server.Endpoint, "/api/v1/telemetry", c.AllowInsecureNodes)
 	if err != nil {
 		return telemetry.Page{}, err

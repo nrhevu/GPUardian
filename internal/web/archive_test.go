@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"gpuardian/internal/history"
 	"gpuardian/internal/model"
@@ -49,7 +50,7 @@ func (c *archiveTestNodeClient) Info(_ context.Context, server ServerRecord) (te
 	return telemetry.Info{}, errors.New("telemetry unavailable")
 }
 
-func (c *archiveTestNodeClient) Telemetry(_ context.Context, server ServerRecord, _ string, _ int) (telemetry.Page, error) {
+func (c *archiveTestNodeClient) Telemetry(_ context.Context, server ServerRecord, _ string, _ int, _ time.Duration) (telemetry.Page, error) {
 	c.record(server, "telemetry")
 	return telemetry.Page{}, nil
 }

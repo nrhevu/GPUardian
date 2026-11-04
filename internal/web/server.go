@@ -453,6 +453,10 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := s.requireNodeTelemetryWait(r.Context(), record); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := s.syncManagedKeysToNode(r.Context(), record); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return

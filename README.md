@@ -313,6 +313,11 @@ If registration fails:
 - certificate hostname error: issue a certificate whose SAN matches the
   endpoint.
 - `401` or `403`: confirm the root key came from the same node.
+- `node daemon must be upgraded`: the node runs a daemon from before
+  telemetry long-polling (`telemetry_wait_v1`). Install the current
+  `gpuardian` binary on the node and restart the daemon. The gateway also
+  stops collecting history from already registered nodes running such a
+  daemon until they are upgraded.
 
 ### 6. (Optional) Put TLS in front with a reverse proxy
 
