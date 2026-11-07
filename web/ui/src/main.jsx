@@ -1577,6 +1577,7 @@ function App() {
                       >
                         {groupServers.map((server) => {
                           const fleetItem = fleetByServerID.get(server.id);
+                          const status = nodeStatus(fleetItem, server.archived === true);
                           const editingNode = editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id;
                           return (
                             <SidebarNodeItem
@@ -1585,9 +1586,9 @@ function App() {
                               groupID={group.id}
                               active={server.id === currentServerId}
                               nested
-                              online={fleetItem?.online}
                               archived={server.archived === true}
-                              dryRun={fleetItem?.snapshot?.dry_run === true}
+                              statusTone={status.tone}
+                              statusTitle={status.title}
                               isAdmin={isAdmin}
                               editing={editingNode}
                               draft={editingNode ? layoutNameDraft : ""}
@@ -1613,6 +1614,7 @@ function App() {
               const server = nodeServerByID.get(id);
               if (!server) return null;
               const fleetItem = fleetByServerID.get(server.id);
+              const status = nodeStatus(fleetItem, server.archived === true);
               const editingNode = editingLayoutItem?.kind === "node" && editingLayoutItem.id === server.id;
               return (
                 <SidebarNodeItem
@@ -1620,9 +1622,9 @@ function App() {
                   server={server}
                   groupID=""
                   active={server.id === currentServerId}
-                  online={fleetItem?.online}
                   archived={server.archived === true}
-                  dryRun={fleetItem?.snapshot?.dry_run === true}
+                  statusTone={status.tone}
+                  statusTitle={status.title}
                   isAdmin={isAdmin}
                   editing={editingNode}
                   draft={editingNode ? layoutNameDraft : ""}
@@ -1650,7 +1652,7 @@ function App() {
         <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="truncate text-sm font-semibold">{viewTitle}</h1>
-            <StatusPill tone={current?.server?.archived ? "neutral" : current?.online ? "success" : current?.server ? "danger" : "neutral"} className="min-w-0">
+            <StatusPill tone={current?.server ? nodeStatus(current, current.server.archived === true).tone : "neutral"} className="min-w-0">
               <span className="truncate">{current?.server?.name || "No node selected"}</span>
             </StatusPill>
             {current?.snapshot?.dry_run === true && <DryRunBadge />}
@@ -1750,6 +1752,9 @@ function App() {
           ) : (
             <div className="banner" role="alert">{current.error}</div>
           ))}
+        {current?.online && !current.server?.archived && !current.snapshot?.gpus?.length && (
+          <div className="banner" role="alert">{noGPUsMessage}</div>
+        )}
         {current?.server?.archived && (
           <div className="banner banner-muted" role="status">
             This node is archived. The gateway no longer contacts it{isAdmin ? "; right-click it in the sidebar to unarchive." : "."}
@@ -1993,7 +1998,7 @@ function App() {
   );
 }
 
-const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active, nested, online, archived, dryRun, isAdmin, editing, draft, dragging, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
+const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active, nested, archived, statusTone, statusTitle, isAdmin, editing, draft, dragging, onSelect, onContextMenu, onRenameStart, onDraft, onFinishRename, onCancelRename, onDragStart, onDragEnd, onDrop }) {
   return (
     <div
       className={`${navItemClass(active)} group/node select-none ${nested ? "ml-3" : ""} ${dragging ? "opacity-45" : archived ? "opacity-60" : ""}`.trim()}
@@ -2015,8 +2020,8 @@ const SidebarNodeItem = memo(function SidebarNodeItem({ server, groupID, active,
       onDrop={isAdmin ? (event) => onDrop(event, { kind: "node", id: server.id, groupID: groupID || "" }) : undefined}
     >
       <span
-        className={`h-2 w-2 shrink-0 rounded-full ${archived ? "bg-muted-foreground" : online ? (dryRun ? "bg-status-warning-fg" : "bg-status-success-fg") : "bg-destructive"}`}
-        title={archived ? "Archived: the gateway no longer contacts this node." : dryRun ? "Dry run: the daemon monitors GPU processes but does not kill them." : undefined}
+        className={`h-2 w-2 shrink-0 rounded-full ${statusDotClasses[statusTone] || statusDotClasses.danger}`}
+        title={statusTitle}
       />
       {editing ? (
         <input
@@ -2807,6 +2812,27 @@ function LoginScreen({ error, registrationEnabled, theme, onLogin, onRegister, o
     </div>
   );
 }
+
+const noGPUsMessage = "This node answers but reports no GPUs. Check that its GPU driver is loaded and that amd-smi or nvidia-smi works.";
+
+// nodeStatus picks the tone of a node's sidebar dot and header pill from its
+// fleet entry. A node that answers without listing any GPU cannot be used, so
+// it is not shown as healthy.
+function nodeStatus(item, archived) {
+  if (archived) return { tone: "neutral", title: "Archived: the gateway no longer contacts this node." };
+  if (!item?.online) return { tone: "danger", title: item?.error || undefined };
+  if (!item.snapshot?.gpus?.length) return { tone: "danger", title: noGPUsMessage };
+  if (item.stale) return { tone: "warning", title: `Couldn't refresh this node; showing data from ${formatDate(clockTimeFormat, item.snapshot_at)}.` };
+  if (item.snapshot?.dry_run) return { tone: "warning", title: "Dry run: the daemon monitors GPU processes but does not kill them." };
+  return { tone: "success" };
+}
+
+const statusDotClasses = {
+  success: "bg-status-success-fg",
+  warning: "bg-status-warning-fg",
+  danger: "bg-destructive",
+  neutral: "bg-muted-foreground",
+};
 
 const statusPillClasses = {
   info: "bg-status-info-bg text-status-info-fg",
